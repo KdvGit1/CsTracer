@@ -1,8 +1,8 @@
 export async function POST(request: Request) {
   try {
-    const apiKey = process.env.STEAM_WEB_API_KEY;
-    if (!apiKey) return Response.json({ error: "STEAM_WEB_API_KEY yapılandırılmadı." }, { status: 503 });
-    const body = await request.json() as { steamid?: string; authCode?: string; knownCode?: string };
+    const body = await request.json() as { steamid?: string; apiKey?: string; authCode?: string; knownCode?: string };
+    const apiKey = process.env.STEAM_WEB_API_KEY || body.apiKey?.trim();
+    if (!apiKey) return Response.json({ error: "Steam Web API key gerekli. Ayarlardaki resmî Steam bağlantısından oluşturabilirsin." }, { status: 400 });
     if (!/^\d{17}$/.test(body.steamid || "") || !body.authCode || !body.knownCode) {
       return Response.json({ error: "SteamID64, Game Authentication Code ve son match token gerekli." }, { status: 400 });
     }

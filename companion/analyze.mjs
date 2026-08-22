@@ -127,6 +127,37 @@ function distance(a, b) {
   return Math.hypot(number(a, ["X", "x"]) - number(b, ["X", "x"]), number(a, ["Y", "y"]) - number(b, ["Y", "y"]));
 }
 
+function teamSide(teamNumber) {
+  return Number(teamNumber) === 3 ? "CT" : Number(teamNumber) === 2 ? "T" : "Unknown";
+}
+
+function eventWeapon(record) {
+  return text(record, ["weapon", "weapon_name", "active_weapon"]).toLowerCase().replace(/^weapon_/, "");
+}
+
+function weaponLabel(weapon) {
+  const labels = {
+    ak47: "AK-47", m4a1: "M4A4", m4a1_silencer: "M4A1-S", awp: "AWP", ssg08: "SSG 08",
+    galilar: "Galil AR", famas: "FAMAS", aug: "AUG", sg556: "SG 553", mp9: "MP9", mac10: "MAC-10",
+    mp7: "MP7", mp5sd: "MP5-SD", ump45: "UMP-45", p90: "P90", bizon: "PP-Bizon",
+    deagle: "Desert Eagle", elite: "Dual Berettas", fiveseven: "Five-SeveN", tec9: "Tec-9",
+    hkp2000: "P2000", usp_silencer: "USP-S", glock: "Glock-18", p250: "P250", cz75a: "CZ75-Auto",
+    revolver: "R8 Revolver", mag7: "MAG-7", nova: "Nova", sawedoff: "Sawed-Off", xm1014: "XM1014",
+    m249: "M249", negev: "Negev",
+  };
+  return labels[weapon] || weapon.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function isGun(weapon) {
+  return Boolean(weapon) && !/knife|bayonet|grenade|flash|smoke|molotov|incendiary|inferno|taser|c4|world|decoy/.test(weapon);
+}
+
+function movingShot(record) {
+  const vx = Number(role(record, "user", "velocity_X") ?? role(record, "player", "velocity_X") ?? 0);
+  const vy = Number(role(record, "user", "velocity_Y") ?? role(record, "player", "velocity_Y") ?? 0);
+  return Math.hypot(vx, vy) > 50;
+}
+
 function buildPlayerReport(player, grouped, ticks, header) {
   const deathsAll = grouped.player_death.filter((record) => !isWarmup(record));
   const deaths = deathsAll.filter((record) => matchesPlayer(record, "user", player));
@@ -148,11 +179,7 @@ function buildPlayerReport(player, grouped, ticks, header) {
   }
   const openingKills = Array.from(firstDeaths.values()).filter((record) => matchesPlayer(record, "attacker", player)).length;
   const openingDeaths = Array.from(firstDeaths.values()).filter((record) => matchesPlayer(record, "user", player)).length;
-  const movingShots = shots.filter((record) => {
-    const vx = Number(role(record, "user", "velocity_X") ?? role(record, "player", "velocity_X") ?? 0);
-    const vy = Number(role(record, "user", "velocity_Y") ?? role(record, "player", "velocity_Y") ?? 0);
-    return Math.hypot(vx, vy) > 50;
-  }).length;
+  const movingShots = shots.filter(movingShot).length;
   const utilityDamage = hurts.filter((record) => /grenade|inferno|molotov|incendiary/i.test(text(record, ["weapon", "weapon_name"])))
     .reduce((sum, record) => sum + number(record, ["dmg_health", "health_damage", "damage"], 0), 0);
   const enemyBlindSeconds = blinds.reduce((sum, record) => sum + number(record, ["blind_duration", "duration"], 0), 0);
@@ -178,9 +205,87 @@ function buildPlayerReport(player, grouped, ticks, header) {
       round, tick, time: number(record, ["game_time"], 0), zone: translateZone(zoneRaw),
       x, y, z, killer: killerName || "Bilinmiyor", weapon: text(record, ["weapon", "weapon_name"]),
       nearestTeammate: nearestTeammate === null ? null : Math.round(nearestTeammate),
-      usedRecentFlash: recentFlash, traded,
+      usedRecentFlash: recentFlash, traded, side: teamSide(team),
     };
   });
+
+  const killDetails = kills.map((record) => {
+    const tick = number(record, ["tick"]);
+    const tickRow = rowForPlayerAtTick(ticks, tick, player);
+    const zoneRaw = role(record, "attacker", "last_place_name") ?? value(tickRow, ["last_place_name", "place_name"], "");
+    const x = Number(role(record, "attacker", "X") ?? value(tickRow, ["X", "x"], 0));
+    const y = Number(role(record, "attacker", "Y") ?? value(tickRow, ["Y", "y"], 0));
+    const z = Number(role(record, "attacker", "Z") ?? value(tickRow, ["Z", "z"], 0));
+    const team = Number(role(record, "attacker", "team_num") ?? value(tickRow, ["team_num"], 0));
+    const headshot = value(record, ["headshot"], false) === true || value(record, ["headshot"]) === 1;
+    return {
+      round: roundNumber(record), tick, time: number(record, ["game_time"], 0), zone: translateZone(zoneRaw),
+      x, y, z, victim: playerName(record, "user") || "Bilinmiyor", weapon: text(record, ["weapon", "weapon_name"]),
+      headshot, side: teamSide(team),
+    };
+  });
+
+  const sideStats = ["CT", "T"].map((side) => {
+    const sideDeaths = deathDetails.filter((detail) => detail.side === side);
+    const sideKills = killDetails.filter((detail) => detail.side === side);
+    const sideHurts = hurts.filter((record) => teamSide(role(record, "attacker", "team_num")) === side);
+    const sideShots = shots.filter((record) => teamSide(role(record, "user", "team_num") ?? role(record, "player", "team_num")) === side);
+    const sideAssists = assists.filter((record) => teamSide(role(record, "assister", "team_num")) === side);
+    const observedRounds = new Set([
+      ...sideDeaths.map((detail) => detail.round),
+      ...sideKills.map((detail) => detail.round),
+      ...sideHurts.map(roundNumber),
+      ...sideShots.map(roundNumber),
+    ].filter((round) => round >= 0));
+    const sideDamage = sideHurts.reduce((sum, record) => sum + number(record, ["dmg_health", "health_damage", "damage"], 0), 0);
+    const sideZones = new Map();
+    for (const detail of sideDeaths) sideZones.set(detail.zone, (sideZones.get(detail.zone) || 0) + 1);
+    const [sideTopZone = "Veri yok", sideTopZoneDeaths = 0] = [...sideZones.entries()].sort((a, b) => b[1] - a[1])[0] || [];
+    const sideUntraded = sideDeaths.filter((detail) => !detail.traded).length;
+    return {
+      side,
+      rounds: observedRounds.size,
+      kills: sideKills.length,
+      deaths: sideDeaths.length,
+      assists: sideAssists.length,
+      damage: sideDamage,
+      adr: observedRounds.size ? Math.round(sideDamage / observedRounds.size * 10) / 10 : 0,
+      shots: sideShots.length,
+      movingShotPercent: sideShots.length ? Math.round(sideShots.filter(movingShot).length / sideShots.length * 100) : 0,
+      tradePercent: sideDeaths.length ? Math.round((sideDeaths.length - sideUntraded) / sideDeaths.length * 100) : 0,
+      topZone: sideTopZone,
+      topZoneDeaths: sideTopZoneDeaths,
+    };
+  });
+
+  const weaponNames = new Set([
+    ...shots.map(eventWeapon),
+    ...kills.map(eventWeapon),
+    ...hurts.map(eventWeapon),
+  ].filter(isGun));
+  const weaponStats = [...weaponNames].map((weapon) => {
+    const weaponShots = shots.filter((record) => eventWeapon(record) === weapon);
+    const weaponKills = kills.filter((record) => eventWeapon(record) === weapon);
+    const weaponHurts = hurts.filter((record) => eventWeapon(record) === weapon);
+    const weaponDamage = weaponHurts.reduce((sum, record) => sum + number(record, ["dmg_health", "health_damage", "damage"], 0), 0);
+    const weaponHeadshots = weaponKills.filter((record) => value(record, ["headshot"], false) === true || value(record, ["headshot"]) === 1).length;
+    const efficiency = weaponShots.length ? Math.round(weaponKills.length / weaponShots.length * 1000) / 10 : 0;
+    const score = Math.min(100, Math.round(weaponKills.length * 9 + weaponDamage / 22 + Math.min(25, weaponShots.length / 3)));
+    const status = weaponKills.length >= 5 && weaponShots.length >= 35 ? "signature" : weaponKills.length >= 3 ? "strong" : weaponShots.length >= 18 ? "developing" : "sample";
+    return {
+      weapon,
+      label: weaponLabel(weapon),
+      kills: weaponKills.length,
+      damage: weaponDamage,
+      shots: weaponShots.length,
+      headshots: weaponHeadshots,
+      headshotPercent: weaponKills.length ? Math.round(weaponHeadshots / weaponKills.length * 100) : 0,
+      movingShotPercent: weaponShots.length ? Math.round(weaponShots.filter(movingShot).length / weaponShots.length * 100) : 0,
+      efficiency,
+      score,
+      status,
+    };
+  }).sort((a, b) => b.kills - a.kills || b.damage - a.damage || b.shots - a.shots).slice(0, 10);
 
   const zoneCounts = new Map();
   for (const detail of deathDetails) zoneCounts.set(detail.zone, (zoneCounts.get(detail.zone) || 0) + 1);
@@ -217,7 +322,8 @@ function buildPlayerReport(player, grouped, ticks, header) {
     flashesThrown: flashes.length, shots: shots.length,
     movingShotPercent: shots.length ? Math.round(movingShots / shots.length * 100) : 0,
     tradePercent: deaths.length ? Math.round((deaths.length - untradedDeaths) / deaths.length * 100) : 0,
-    topZone, topZoneDeaths, unflashedDeaths, untradedDeaths, impact, deathDetails, recommendations,
+    topZone, topZoneDeaths, unflashedDeaths, untradedDeaths, impact,
+    deathDetails, killDetails, sideStats, weaponStats, recommendations,
   };
 }
 

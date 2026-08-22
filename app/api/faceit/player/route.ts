@@ -1,7 +1,7 @@
 export async function GET(request: Request) {
   try {
-    const apiKey = process.env.FACEIT_API_KEY;
-    if (!apiKey) return Response.json({ error: "FACEIT_API_KEY yapılandırılmadı." }, { status: 503 });
+    const apiKey = process.env.FACEIT_API_KEY || request.headers.get("X-Faceit-Api-Key")?.trim();
+    if (!apiKey) return Response.json({ error: "FACEIT Data API key gerekli. Ayarlardaki resmî geliştirici bağlantısından oluşturabilirsin." }, { status: 400 });
     const nickname = new URL(request.url).searchParams.get("nickname")?.trim();
     if (!nickname) return Response.json({ error: "FACEIT kullanıcı adı gerekli." }, { status: 400 });
     const headers = { Authorization: `Bearer ${apiKey}`, Accept: "application/json" };

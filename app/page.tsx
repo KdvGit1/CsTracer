@@ -75,22 +75,32 @@ async function readDemoFiles(directory: LocalDirectoryHandle) {
 }
 
 const sampleMetrics = [
-  { label: "Rating", value: "1.08", delta: "+0.06", tone: "good" },
-  { label: "ADR", value: "78.4", delta: "+4.2", tone: "good" },
-  { label: "KAST", value: "%71", delta: "-%3", tone: "warn" },
-  { label: "Trade", value: "%19", delta: "-%8", tone: "bad" },
+  { label: "K / D", value: "—", delta: "demo gerekli", tone: "warn" },
+  { label: "ADR", value: "—", delta: "demo gerekli", tone: "warn" },
+  { label: "Headshot", value: "—", delta: "demo gerekli", tone: "warn" },
+  { label: "Trade", value: "—", delta: "demo gerekli", tone: "warn" },
 ];
 
-const sampleEvidence = [
-  { round: "R04", time: "01:18", text: "Flash desteği olmadan ikinci temas", type: "Pozisyon" },
-  { round: "R09", time: "00:54", text: "İlk mermide 92 u/s hareket", type: "Aim" },
-  { round: "R16", time: "01:22", text: "Yakın takım arkadaşı 14.8 m uzakta", type: "Trade" },
-];
+const sampleEvidence: { round: string; time: string; text: string; type: string }[] = [];
 
 type Recommendation = { id: string; title: string; body: string; confidence: number };
 type DeathDetail = {
   round: number; tick: number; time: number; zone: string; x: number; y: number; z: number;
   killer: string; weapon: string; nearestTeammate: number | null; usedRecentFlash: boolean; traded: boolean;
+  side?: "CT" | "T" | "Unknown";
+};
+type KillDetail = {
+  round: number; tick: number; time: number; zone: string; x: number; y: number; z: number;
+  victim: string; weapon: string; headshot: boolean; side: "CT" | "T" | "Unknown";
+};
+type SideStat = {
+  side: "CT" | "T"; rounds: number; kills: number; deaths: number; assists: number; damage: number;
+  adr: number; shots: number; movingShotPercent: number; tradePercent: number; topZone: string; topZoneDeaths: number;
+};
+type WeaponStat = {
+  weapon: string; label: string; kills: number; damage: number; shots: number; headshots: number;
+  headshotPercent: number; movingShotPercent: number; efficiency: number; score: number;
+  status: "signature" | "strong" | "developing" | "sample";
 };
 type PlayerReport = {
   player: { name: string; steamid: string }; map: string; rounds: number; kills: number; deaths: number;
@@ -98,6 +108,7 @@ type PlayerReport = {
   utilityDamage: number; enemyBlindSeconds: number; flashesThrown: number; shots: number;
   movingShotPercent: number; tradePercent: number; topZone: string; topZoneDeaths: number;
   unflashedDeaths: number; untradedDeaths: number; impact: number; deathDetails: DeathDetail[];
+  killDetails?: KillDetail[]; sideStats?: SideStat[]; weaponStats?: WeaponStat[];
   recommendations: Recommendation[];
 };
 type CoachSeverity = "priority" | "watch" | "strong";
@@ -219,13 +230,6 @@ function buildCoachPacket(report: PlayerReport): CoachPacket {
   };
 }
 
-const sampleMapDeaths = [
-  { round: 4, tick: 18120, zone: "A Short", x: 515, y: 1810, z: 128 },
-  { round: 9, tick: 42780, zone: "A Short", x: 610, y: 1905, z: 128 },
-  { round: 16, tick: 79140, zone: "A Short", x: 675, y: 2010, z: 128 },
-  { round: 19, tick: 94820, zone: "A Short", x: 760, y: 2110, z: 128 },
-];
-
 export default function Home() {
   const workerRef = useRef<Worker | null>(null);
   const [status, setStatus] = useState<ParseStatus>("idle");
@@ -243,9 +247,11 @@ export default function Home() {
   const [mapLevel, setMapLevel] = useState<"upper" | "lower">("upper");
   const [aiInsight, setAiInsight] = useState<AiInsight | null>(null);
   const [steamId, setSteamId] = useState("");
+  const [steamWebApiKey, setSteamWebApiKey] = useState("");
   const [steamAuthCode, setSteamAuthCode] = useState("");
   const [steamKnownCode, setSteamKnownCode] = useState("");
   const [faceitNickname, setFaceitNickname] = useState("");
+  const [faceitApiKey, setFaceitApiKey] = useState("");
   const [sourceMessage, setSourceMessage] = useState("");
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [demoDirectory, setDemoDirectory] = useState<LocalDirectoryHandle | null>(null);
@@ -253,6 +259,8 @@ export default function Home() {
   const [archiveMessage, setArchiveMessage] = useState("");
   const [archiveBusy, setArchiveBusy] = useState(false);
   const [companionState, setCompanionState] = useState<CompanionState>("checking");
+  const [sideFilter, setSideFilter] = useState<"all" | "CT" | "T">("all");
+  const [activeSection, setActiveSection] = useState("dashboard");
 
   useEffect(() => {
     let cancelled = false;
@@ -316,16 +324,57 @@ export default function Home() {
     text: `${item.zone} · ${item.usedRecentFlash ? "yakın flash var" : "yakın flash yok"}${item.nearestTeammate ? ` · takım ${item.nearestTeammate}u` : ""}`,
     type: item.traded ? "Trade" : "Pozisyon",
   })) : sampleEvidence;
-  const deathsOnMap = report?.deathDetails.slice(0, 24) || sampleMapDeaths;
+  const deathsOnMap = report?.deathDetails || [];
+  const killsOnMap = report?.killDetails || [];
   const radarMap = radarMapFor(report?.map || "de_dust2");
   const visibleDeaths = deathsOnMap.filter((death) => {
+    if (sideFilter !== "all" && death.side !== sideFilter) return false;
     if (!radarMap?.lowerImage || radarMap.lowerMaxZ === undefined) return true;
     return mapLevel === "lower" ? death.z < radarMap.lowerMaxZ : death.z >= radarMap.lowerMaxZ;
   });
+  const visibleKills = killsOnMap.filter((kill) => {
+    if (sideFilter !== "all" && kill.side !== sideFilter) return false;
+    if (!radarMap?.lowerImage || radarMap.lowerMaxZ === undefined) return true;
+    return mapLevel === "lower" ? kill.z < radarMap.lowerMaxZ : kill.z >= radarMap.lowerMaxZ;
+  });
   const radarImage = mapLevel === "lower" && radarMap?.lowerImage ? radarMap.lowerImage : radarMap?.image;
+  const ctStats = report?.sideStats?.find((item) => item.side === "CT");
+  const tStats = report?.sideStats?.find((item) => item.side === "T");
+  const weaponStats = report?.weaponStats || [];
+  const strongestWeapon = weaponStats[0];
+  const developmentWeapon = [...weaponStats].filter((item) => item.shots >= 12 && item !== strongestWeapon).sort((a, b) => a.efficiency - b.efficiency || b.shots - a.shots)[0] || weaponStats[1];
+  const weakerSide = ctStats && tStats
+    ? ((ctStats.kills / Math.max(1, ctStats.deaths)) <= (tStats.kills / Math.max(1, tStats.deaths)) ? ctStats : tStats)
+    : ctStats || tStats;
+  const primaryDevelopmentFinding = coachPacket?.priorities[0];
+  const developmentSteps = report ? [
+    {
+      number: "01", duration: "15 dk", title: primaryDevelopmentFinding?.title || "Maçın en güçlü tekrarını düzelt",
+      reason: primaryDevelopmentFinding?.evidence || "Kural motorunun öncelikli bulgusu.",
+      work: primaryDevelopmentFinding?.action || "İlgili roundları sırayla incele ve tek davranış hedefi seç.",
+      success: primaryDevelopmentFinding?.id === "movement" ? "Hareketli atışı sonraki demoda %12 altına indir." : "Aynı hata kümesini sonraki demoda en az %30 azalt.",
+    },
+    {
+      number: "02", duration: "12 dk", title: developmentWeapon ? `${developmentWeapon.label} gelişim bloğu` : "Ana tüfek mekanik bloğu",
+      reason: developmentWeapon ? `${developmentWeapon.shots} atış, ${developmentWeapon.kills} kill, %${developmentWeapon.movingShotPercent} hareketli atış.` : "Silah örneği henüz yeterli değil.",
+      work: developmentWeapon?.movingShotPercent && developmentWeapon.movingShotPercent > 12 ? "Counter-strafe sonrası 3–5 mermilik burst çalış; her seride tamamen durduğunu kontrol et." : "İlk mermi, recoil reset ve orta mesafe spray transfer bloklarını ayrı çalış.",
+      success: developmentWeapon ? `${developmentWeapon.label} ile hareketli atış oranını düşürürken kill/atış verimini koru.` : "En az 30 kayıtlı atıştan sonra tekrar ölç.",
+    },
+    {
+      number: "03", duration: "10 dk", title: weakerSide ? `${weakerSide.side} tarafı round incelemesi` : "CT/T taraf incelemesi",
+      reason: weakerSide ? `${weakerSide.kills}/${weakerSide.deaths} K/D · en yoğun ölüm ${weakerSide.topZone}.` : "Taraf ayrımı için yeni parser sonucu bekleniyor.",
+      work: weakerSide ? `${weakerSide.side} tarafındaki ilk üç ölümü izle; temas amacı, takım görüşü, utility ve kaçış rotasını not et.` : "Demoyu güncel yerel parser ile yeniden analiz et.",
+      success: weakerSide ? `${weakerSide.topZone} bölgesinde ikinci plansız teması tekrarlama.` : "CT ve T verisini ayrı oluştur.",
+    },
+  ] : [];
 
   function playerKey(item: PlayerReport) {
     return item.player.steamid || item.player.name;
+  }
+
+  function navigateTo(sectionId: string) {
+    setActiveSection(sectionId);
+    document.getElementById(sectionId)?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function applyReports(nextReports: PlayerReport[]) {
@@ -387,6 +436,7 @@ export default function Home() {
   async function analyzeFile(file: File) {
     setAiInsight(null);
     setMapLevel("upper");
+    setSideFilter("all");
     setError("");
     setFileName(file.name);
     if (!file.name.toLowerCase().endsWith(".dem")) {
@@ -549,6 +599,8 @@ export default function Home() {
         dimensions: coachPacket.dimensions,
         findings: coachPacket.findings,
         positionZones: coachPacket.positionZones,
+        sideStats: report.sideStats || [],
+        weaponStats: (report.weaponStats || []).slice(0, 8),
       },
       positionEvidence: report.deathDetails.slice(0, 30).map((detail) => ({
         round: detail.round, tick: detail.tick, zone: detail.zone, weapon: detail.weapon,
@@ -566,7 +618,7 @@ export default function Home() {
           keep_alive: 0,
           options: { num_ctx: 4096, temperature: 0.2 },
           messages: [
-            { role: "system", content: "Sen TRACER'ın CS2 koç editörüsün; serbestçe hüküm veren bir otorite değilsin. KURAL_KITABI ve deterministicAssessment birincil kaynaktır. Veride olmayan pozisyonu, utility kullanımını, aim sebebini veya takım planını uydurma. Korelasyonu neden gibi yazma; belirsizse 'olabilir' de ve hangi round görüntüsünün doğrulaması gerektiğini belirt. Aim/hareket, tüm konum dağılımı, trade/takım oyunu, utility, opening disiplini ve genel etkiyi birlikte yorumla. En fazla 3 öncelik seç, güçlü alanları da söyle ve tek antrenman planı ver. Yalnızca JSON döndür: {title, summary, priorities:[{area,evidence,interpretation,action}], strengths:[string], sessionPlan, confidence}." },
+            { role: "system", content: "Sen TRACER'ın CS2 koç editörüsün; serbestçe hüküm veren bir otorite değilsin. KURAL_KITABI ve deterministicAssessment birincil kaynaktır. Veride olmayan pozisyonu, utility kullanımını, aim sebebini veya takım planını uydurma. Korelasyonu neden gibi yazma; belirsizse 'olabilir' de ve hangi round görüntüsünün doğrulaması gerektiğini belirt. CT ve T taraflarını ayrı karşılaştır; aim/hareket, tüm konum dağılımı, trade/takım oyunu, utility, opening disiplini, silah profili ve genel etkiyi birlikte yorumla. Silah uzmanlığı için tek maçın yalnızca aday gösterebileceğini açıkça koru. En fazla 3 öncelik seç, güçlü alanları da söyle ve tek antrenman planı ver. Yalnızca JSON döndür: {title, summary, priorities:[{area,evidence,interpretation,action}], strengths:[string], sessionPlan, confidence}." },
             { role: "user", content: `KURAL_KITABI VE MAÇ KANITI:\n${JSON.stringify(coachInput)}` },
           ],
         }),
@@ -599,7 +651,7 @@ export default function Home() {
   async function checkSteamMatch() {
     setSourceMessage("Valve maç geçmişi kontrol ediliyor…");
     try {
-      const response = await fetch("/api/steam/next", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ steamid: steamId, authCode: steamAuthCode, knownCode: steamKnownCode }) });
+      const response = await fetch("/api/steam/next", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ steamid: steamId, apiKey: steamWebApiKey, authCode: steamAuthCode, knownCode: steamKnownCode }) });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Valve sorgusu başarısız");
       setSourceMessage(payload.nextCode ? `Yeni maç bulundu: ${payload.nextCode}` : "Yeni Valve maçı yok; geçmiş güncel.");
@@ -612,7 +664,7 @@ export default function Home() {
   async function checkFaceit() {
     setSourceMessage("FACEIT profili kontrol ediliyor…");
     try {
-      const response = await fetch(`/api/faceit/player?nickname=${encodeURIComponent(faceitNickname)}`);
+      const response = await fetch(`/api/faceit/player?nickname=${encodeURIComponent(faceitNickname)}`, { headers: faceitApiKey ? { "X-Faceit-Api-Key": faceitApiKey } : {} });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "FACEIT sorgusu başarısız");
       setSourceMessage(`${payload.player.nickname} bulundu · ${payload.matches.length} son maç hazır.`);
@@ -626,10 +678,12 @@ export default function Home() {
       <aside className="sidebar">
         <div className="brand"><span>TR</span><strong>TRACER</strong></div>
         <nav aria-label="Ana menü">
-          <a className="nav-item active" href="#dashboard"><span>⌁</span> Genel bakış</a>
-          <a className="nav-item" href="#matches"><span>▤</span> Maçlar</a>
-          <a className="nav-item" href="#maps"><span>⌖</span> Haritalar</a>
-          <a className="nav-item" href="#training"><span>↗</span> Gelişim planı</a>
+          <button className={`nav-item ${activeSection === "dashboard" ? "active" : ""}`} onClick={() => navigateTo("dashboard")}><span>⌁</span> Genel bakış</button>
+          <button className={`nav-item ${activeSection === "side-analysis" ? "active" : ""}`} onClick={() => navigateTo("side-analysis")}><span>CT</span> Taraf analizi</button>
+          <button className={`nav-item ${activeSection === "weapon-profile" ? "active" : ""}`} onClick={() => navigateTo("weapon-profile")}><span>⌁</span> Silah profili</button>
+          <button className={`nav-item ${activeSection === "map-analysis" ? "active" : ""}`} onClick={() => navigateTo("map-analysis")}><span>⌖</span> Harita olayları</button>
+          <button className={`nav-item ${activeSection === "development" ? "active" : ""}`} onClick={() => navigateTo("development")}><span>↗</span> Gelişim planı</button>
+          <button className="nav-item" onClick={() => { setArchiveOpen(true); void refreshCompanion(); }}><span>▤</span> Yerel maçlar</button>
         </nav>
         <div className="sidebar-spacer" />
         <button className={`ai-status ${ollamaState}`} onClick={() => setSettingsOpen(true)}>
@@ -661,10 +715,10 @@ export default function Home() {
 
         <div className="match-strip">
           <div className="map-thumb"><span>A</span><span>B</span></div>
-          <div><p>{report ? "YÜKLENEN DEMO" : "SON ANALİZ"}</p><b>{report ? `${report.map || "Bilinmeyen harita"} · ${fileName}` : "Dust II · Premier"}</b></div>
-          <span className="win-pill">{report ? `${report.rounds} ROUND` : "GALİBİYET"}</span>
-          <b className="score">{report ? report.kills : 13} <i>:</i> {report ? report.deaths : 9}</b>
-          <div className="match-meta"><span>{report ? "Tarayıcıda yerel analiz" : "Bugün, 21:42"}</span><span>{report ? `${report.assists} asist · ${report.adr} ADR` : "41 dk · CT 7:5 / T 6:4"}</span></div>
+          <div><p>{report ? "YÜKLENEN DEMO" : "ANALİZ BEKLİYOR"}</p><b>{report ? `${report.map || "Bilinmeyen harita"} · ${fileName}` : "Yerel maçlardan bir demo seç veya yükle"}</b></div>
+          <span className="win-pill">{report ? `${report.rounds} ROUND` : "HAZIR"}</span>
+          <b className="score">{report ? report.kills : "—"} <i>:</i> {report ? report.deaths : "—"}</b>
+          <div className="match-meta"><span>{report ? "Cihazında yerel analiz" : "Sahte istatistik gösterilmiyor"}</span><span>{report ? `${report.assists} asist · ${report.adr} ADR` : "Gerçek demo verisi bekleniyor"}</span></div>
           <button className="icon-button" aria-label="Yerel maç arşivini aç" onClick={() => { setArchiveOpen(true); void refreshCompanion(); }}>⌄</button>
         </div>
 
@@ -697,10 +751,25 @@ export default function Home() {
           ))}
           <article className="metric-card focus-score">
             <span>Maç etkisi</span>
-            <div><strong>{report?.impact ?? 74}</strong><small>/100</small></div>
-            <div className="score-line"><i style={{ width: `${report?.impact ?? 74}%` }} /></div>
+            <div><strong>{report?.impact ?? "—"}</strong><small>/100</small></div>
+            <div className="score-line"><i style={{ width: `${report?.impact ?? 0}%` }} /></div>
           </article>
         </div>
+
+        <section className="side-analysis" id="side-analysis">
+          <div className="section-title-row"><div><p className="eyebrow">CT / T AYRIMI</p><h2>İki taraf, iki farklı oyun problemi</h2></div><span>{report?.sideStats?.length ? "Gerçek taraf verisi" : "Yeni parser analizi gerekli"}</span></div>
+          <div className="side-grid">
+            {([ctStats, tStats] as (SideStat | undefined)[]).map((side, index) => {
+              const sideName = index === 0 ? "CT" : "T";
+              return <article className={`side-card ${sideName.toLowerCase()}`} key={sideName}>
+                <header><span>{sideName}</span><div><b>{sideName === "CT" ? "Savunma tarafı" : "Hücum tarafı"}</b><small>{side ? `${side.rounds} gözlenen round` : "Demo yeniden analiz edildiğinde dolar"}</small></div></header>
+                <div className="side-metrics"><div><span>K / D</span><b>{side ? `${side.kills} / ${side.deaths}` : "—"}</b></div><div><span>ADR</span><b>{side?.adr ?? "—"}</b></div><div><span>Trade</span><b>{side ? `%${side.tradePercent}` : "—"}</b></div><div><span>Hareketli atış</span><b>{side ? `%${side.movingShotPercent}` : "—"}</b></div></div>
+                <footer><span>En çok öldüğün bölge</span><b>{side ? `${side.topZone} · ${side.topZoneDeaths}` : "—"}</b></footer>
+              </article>;
+            })}
+          </div>
+          <p className="data-caveat">Taraf ADR’sindeki round sayısı oyuncunun olay ürettiği roundlardan hesaplanır. Sessiz roundlar nedeniyle genel ADR kadar kesin olmayabilir; K/D ve ölüm bölgeleri doğrudan olay kaydıdır.</p>
+        </section>
 
         <div className="dashboard-grid">
           <article className="coach-card">
@@ -737,52 +806,53 @@ export default function Home() {
             </div>
           </article>
 
-          <article className="map-card">
+          <article className="map-card" id="map-analysis">
             <div className="section-head">
-              <div><p>KONUMLANDIRMA</p><h3>Ölüm yoğunluğu</h3></div>
-              {radarMap?.lowerImage && <div className="segmented"><button className={mapLevel === "upper" ? "selected" : ""} onClick={() => setMapLevel("upper")}>ÜST</button><button className={mapLevel === "lower" ? "selected" : ""} onClick={() => setMapLevel("lower")}>ALT</button></div>}
+              <div><p>HARİTA OLAYLARI</p><h3>Kill ve ölüm konumların</h3></div>
+              <div className="map-controls">
+                <div className="segmented side-segment"><button className={sideFilter === "all" ? "selected" : ""} onClick={() => setSideFilter("all")}>TÜMÜ</button><button className={sideFilter === "CT" ? "selected" : ""} onClick={() => setSideFilter("CT")}>CT</button><button className={sideFilter === "T" ? "selected" : ""} onClick={() => setSideFilter("T")}>T</button></div>
+                {radarMap?.lowerImage && <div className="segmented"><button className={mapLevel === "upper" ? "selected" : ""} onClick={() => setMapLevel("upper")}>ÜST</button><button className={mapLevel === "lower" ? "selected" : ""} onClick={() => setMapLevel("lower")}>ALT</button></div>}
+              </div>
             </div>
-            <div className="radar" role="img" aria-label={`${report?.map || "Dust II"} üzerinde ölüm noktaları`}>
+            <div className="radar" role="img" aria-label={`${report?.map || "Harita"} üzerinde kill ve ölüm noktaları`}>
               {radarImage && <img className="radar-image" src={radarImage} alt="" draggable="false" />}
               {!radarMap && <div className="radar-unavailable">Bu harita için radar kalibrasyonu henüz yok.</div>}
               {radarMap && visibleDeaths.map((item, index) => {
+                if (item.x === 0 && item.y === 0) return null;
                 const point = worldToRadar(item.x, item.y, radarMap);
                 if (point.left < 0 || point.left > 100 || point.top < 0 || point.top > 100) return null;
-                return <span key={`${item.tick}-${index}`} className="death dynamic-death" style={{ left: `${point.left}%`, top: `${point.top}%` }} title={`R${item.round} · ${item.zone} · ${Math.round(item.x)}, ${Math.round(item.y)}`}>×</span>;
+                return <span key={`d-${item.tick}-${index}`} className="death dynamic-death" style={{ left: `${point.left}%`, top: `${point.top}%` }} title={`Ölüm · ${item.side || "?"} · R${item.round} · ${item.zone} · ${item.killer} (${item.weapon})`}>×</span>;
               })}
-              <div className="map-callout"><b>{report ? `${report.topZoneDeaths} ölüm` : "4 ölüm"}</b><span>{report ? report.topZone : "A Short · 37 m² alan"}</span></div>
+              {radarMap && visibleKills.map((item, index) => {
+                if (item.x === 0 && item.y === 0) return null;
+                const point = worldToRadar(item.x, item.y, radarMap);
+                if (point.left < 0 || point.left > 100 || point.top < 0 || point.top > 100) return null;
+                return <span key={`k-${item.tick}-${index}`} className="kill dynamic-kill" style={{ left: `${point.left}%`, top: `${point.top}%` }} title={`Kill · ${item.side} · R${item.round} · ${item.zone} · ${item.weapon}${item.headshot ? " · HS" : ""}`}>＋</span>;
+              })}
+              {!report && <div className="radar-empty"><b>Harita olayı yok</b><span>Demo analiz edildiğinde gerçek kill ve ölüm noktaları burada görünür.</span></div>}
+              {report && <div className="map-event-count"><span><i className="red-dot"/>{visibleDeaths.length} ölüm</span><span><i className="green-dot"/>{visibleKills.length} kill</span><b>{sideFilter === "all" ? "CT + T" : sideFilter}</b></div>}
             </div>
-            <div className="map-legend"><span><i className="red-dot"/>Ölüm</span><span>{radarMap?.label || report?.map || "Bilinmeyen harita"}</span><button>Valve radar · gerçek dünya koordinatı</button></div>
+            <div className="map-legend"><span><i className="red-dot"/>Ölüm</span><span><i className="green-dot"/>Kill</span><span>{radarMap?.label || report?.map || "Bilinmeyen harita"}</span><button>İşaretin üzerine gel: round, taraf, silah</button></div>
           </article>
         </div>
 
-        <section className="lower-grid">
-          <article className="breakdown-card">
-            <div className="section-head"><div><p>MEKANİK</p><h3>Çatışma profili</h3></div><span className="versus">Son 10 maç</span></div>
-            <div className="bar-row"><span>Opening düello</span><div><i style={{width:`${report ? Math.min(100, 50+(report.openingKills-report.openingDeaths)*10) : 78}%`}}/></div><b>{report ? `${report.openingKills}-${report.openingDeaths}` : "78"}</b></div>
-            <div className="bar-row"><span>Counter-strafe</span><div><i className="orange" style={{width:`${report ? 100-report.movingShotPercent : 54}%`}}/></div><b>{report ? 100-report.movingShotPercent : 54}</b></div>
-            <div className="bar-row"><span>Utility hasarı</span><div><i style={{width:`${report ? Math.min(100, report.utilityDamage/2) : 69}%`}}/></div><b>{report?.utilityDamage ?? 69}</b></div>
-            <div className="bar-row"><span>Flash süresi</span><div><i className="orange" style={{width:`${report ? Math.min(100, report.enemyBlindSeconds*4) : 61}%`}}/></div><b>{report ? `${report.enemyBlindSeconds}s` : "61"}</b></div>
-          </article>
-          <article className="timeline-card">
-            <div className="section-head"><div><p>ROUND AKIŞI</p><h3>Etki zaman çizgisi</h3></div><span className="versus">13–9</span></div>
-            <div className="round-bars">
-              {[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22].map((round) => (
-                <span key={round} className={[4,9,16,19].includes(round) ? "lost bad-round" : [2,5,7,12,15,18,21].includes(round) ? "impact" : round % 3 === 0 ? "lost" : "neutral"} title={`Round ${round}`} />
-              ))}
-            </div>
-            <div className="timeline-note"><span>✦</span><p><b>{report ? `${report.topZone} tekrar ediyor` : "CT tarafında erken düşüş"}</b> · {report ? `${report.topZoneDeaths} ölüm, ${report.unflashedDeaths} tanesinde yakın flash yok.` : "İlk ölüm olduğun 5 roundun 4'ü kaybedildi."}</p></div>
-          </article>
+        <section className="weapon-profile" id="weapon-profile">
+          <div className="section-title-row"><div><p className="eyebrow">SİLAH UZMANLIĞI</p><h2>Hangi silahın taşıyor, hangisi seni yavaşlatıyor?</h2><p>Tek maç “uzmanım” demek için yetmez; TRACER bu maçtan uzmanlık ve gelişim adayları çıkarır.</p></div><span>{weaponStats.length ? `${weaponStats.length} silah ölçüldü` : "Demo verisi bekleniyor"}</span></div>
+          <div className="weapon-highlights">
+            <article className="weapon-hero strong"><span>BU MAÇTAKİ GÜÇLÜ SİLAH</span><h3>{strongestWeapon?.label || "—"}</h3><p>{strongestWeapon ? `${strongestWeapon.kills} kill · ${strongestWeapon.damage} hasar · %${strongestWeapon.headshotPercent} HS` : "Gerçek silah olayları analiz edildiğinde görünür."}</p><div><i style={{ width: `${strongestWeapon?.score || 0}%` }}/></div><small>{strongestWeapon ? `${strongestWeapon.score}/100 maç içi kanıt skoru` : "Örnek istatistik gösterilmiyor"}</small></article>
+            <article className="weapon-hero develop"><span>GELİŞİM ADAYI</span><h3>{developmentWeapon?.label || "—"}</h3><p>{developmentWeapon ? `${developmentWeapon.shots} atış · ${developmentWeapon.kills} kill · %${developmentWeapon.movingShotPercent} hareketli atış` : "Yeterli ikinci silah örneği yok."}</p><b>{developmentWeapon ? (developmentWeapon.movingShotPercent > 12 ? "Önce duruş ve ilk burst" : "İlk mermi ve recoil reset") : "Yeni demo bekleniyor"}</b><small>Bu öneri kullanım hacmi ve verime göre seçilir.</small></article>
+          </div>
+          <div className="weapon-table" role="table" aria-label="Silah performansı">
+            <div className="weapon-table-head" role="row"><span>Silah</span><span>Kill</span><span>Hasar</span><span>Atış</span><span>HS</span><span>Hareketli</span><span>Durum</span></div>
+            {weaponStats.map((weapon) => <div className="weapon-row" role="row" key={weapon.weapon}><b>{weapon.label}</b><span>{weapon.kills}</span><span>{weapon.damage}</span><span>{weapon.shots}</span><span>%{weapon.headshotPercent}</span><span>%{weapon.movingShotPercent}</span><em className={weapon.status}>{weapon.status === "signature" ? "Uzmanlık adayı" : weapon.status === "strong" ? "Güçlü" : weapon.status === "developing" ? "Geliştir" : "Az örnek"}</em></div>)}
+            {!weaponStats.length && <div className="weapon-empty">Silah bazlı kill, hasar ve atış verisi için demoyu güncel yerel parser ile analiz et.</div>}
+          </div>
         </section>
 
-        <section className="analysis-matrix" id="training">
-          <div className="matrix-title"><div><p className="eyebrow">TAM ANALİZ SETİ</p><h2>Tek maçta dört performans katmanı</h2></div><span>{report ? "Gerçek demo verisi" : "Örnek görünüm"}</span></div>
-          <div className="analysis-cards">
-            <article><header><span>01</span><div><b>Aim & hareket</b><small>Atış anındaki davranış</small></div></header><dl><div><dt>Hareketli atış</dt><dd>%{report?.movingShotPercent ?? 18}</dd></div><div><dt>Headshot</dt><dd>%{report?.headshotPercent ?? 48}</dd></div><div><dt>Toplam atış</dt><dd>{report?.shots ?? 286}</dd></div></dl></article>
-            <article><header><span>02</span><div><b>Pozisyon & trade</b><small>Harita ve takım mesafesi</small></div></header><dl><div><dt>Yoğun ölüm alanı</dt><dd>{report?.topZone ?? "A Short"}</dd></div><div><dt>Trade oranı</dt><dd>%{report?.tradePercent ?? 19}</dd></div><div><dt>Çevrilmeyen ölüm</dt><dd>{report?.untradedDeaths ?? 4}</dd></div></dl></article>
-            <article><header><span>03</span><div><b>Utility etkisi</b><small>Flash ve alan hasarı</small></div></header><dl><div><dt>Utility hasarı</dt><dd>{report?.utilityDamage ?? 78}</dd></div><div><dt>Rakip kör süresi</dt><dd>{report?.enemyBlindSeconds ?? 12.4}s</dd></div><div><dt>Atılan flash</dt><dd>{report?.flashesThrown ?? 7}</dd></div></dl></article>
-            <article><header><span>04</span><div><b>Round etkisi</b><small>Açılış ve sürdürülebilirlik</small></div></header><dl><div><dt>Opening</dt><dd>{report ? `${report.openingKills}-${report.openingDeaths}` : "3-2"}</dd></div><div><dt>ADR</dt><dd>{report?.adr ?? 78.4}</dd></div><div><dt>Etki skoru</dt><dd>{report?.impact ?? 74}/100</dd></div></dl></article>
-          </div>
+        <section className="development-plan" id="development">
+          <div className="development-intro"><div><p className="eyebrow">GELİŞİM PLANI</p><h2>İstatistiği bir sonraki çalışma seansına çevir</h2><p>Bu bölüm yalnızca “kötü oynadın” demez. Öncelikli hatayı, kullanılacak drill’i, taraf incelemesini ve başarı ölçütünü tek sıraya koyar.</p></div><span>Toplam {developmentSteps.reduce((sum, item) => sum + Number.parseInt(item.duration), 0) || 37} dk</span></div>
+          {developmentSteps.length ? <div className="plan-grid">{developmentSteps.map((step) => <article key={step.number}><header><span>{step.number}</span><em>{step.duration}</em></header><h3>{step.title}</h3><p><b>Neden?</b>{step.reason}</p><p><b>Ne yapacaksın?</b>{step.work}</p><footer><span>Başarı ölçütü</span><b>{step.success}</b></footer></article>)}</div> : <div className="plan-empty"><b>Kişisel plan için bir demo analiz et.</b><span>TRACER taraf, pozisyon, silah ve koç bulgularını tek çalışma sırasına dönüştürecek.</span><button onClick={() => { setArchiveOpen(true); void refreshCompanion(); }}>Yerel maç seç</button></div>}
+          <div className="plan-protocol"><span>Profesyonel gelişim döngüsü</span><b>Analiz et → tek davranış hedefi seç → 30–40 dk çalış → sonraki demoda aynı metriği yeniden ölç</b><p>Bir maç rastlantı olabilir. “Uzmanlık” veya kalıcı zayıflık etiketi için aynı haritada en az 5 demo karşılaştır.</p></div>
         </section>
       </section>
 
@@ -824,7 +894,7 @@ export default function Home() {
 
       {settingsOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSettingsOpen(false); }}>
-          <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+          <section className="settings-modal integration-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
             <button className="modal-close" onClick={() => setSettingsOpen(false)} aria-label="Ayarları kapat">×</button>
             <p className="eyebrow">YEREL AI</p>
             <h2 id="settings-title">Ollama bağlantısı</h2>
@@ -841,19 +911,31 @@ export default function Home() {
             </details>
             <hr/>
             <p className="eyebrow">MAÇ KAYNAKLARI</p>
-            <details className="source-details">
-              <summary className="source-row"><div><b>Valve Premier / Competitive</b><span>Game Authentication Code + son match token</span></div><em>Yapılandır →</em></summary>
-              <div className="source-form">
-                <input aria-label="SteamID64" placeholder="SteamID64 (17 hane)" value={steamId} onChange={(event) => setSteamId(event.target.value)} />
-                <input aria-label="Game Authentication Code" type="password" placeholder="Game Authentication Code" value={steamAuthCode} onChange={(event) => setSteamAuthCode(event.target.value)} />
-                <input aria-label="Son match token" placeholder="CSGO-xxxxx-… son match token" value={steamKnownCode} onChange={(event) => setSteamKnownCode(event.target.value)} />
-                <button className="ghost-button" onClick={checkSteamMatch}>Sonraki maçı kontrol et</button>
-              </div>
-            </details>
-            <details className="source-details">
-              <summary className="source-row"><div><b>FACEIT</b><span>Maç geçmişi ve demo URL senkronizasyonu</span></div><em>Yapılandır →</em></summary>
-              <div className="source-form source-form-faceit"><input aria-label="FACEIT kullanıcı adı" placeholder="FACEIT kullanıcı adı" value={faceitNickname} onChange={(event) => setFaceitNickname(event.target.value)} /><button className="ghost-button" onClick={checkFaceit}>Profili kontrol et</button></div>
-            </details>
+            <div className="connection-wizard">
+              <section className="connect-card steam-connect">
+                <header><span>01</span><div><b>Steam Premier / Competitive</b><small>SteamID64 + Web API key + Game Authentication Code + paylaşım kodu</small></div><em>Özel</em></header>
+                <div className="connect-steps">
+                  <div><span>1</span><p><b>Resmî Steam kod sayfasını aç</b><small>Steam’e giriş yap; CS2 maç geçmişi erişim kodunu oluştur veya mevcut kodunu görüntüle.</small></p><a href="https://help.steampowered.com/en/wizard/HelpWithGameIssue/?appid=730&issueid=128" target="_blank" rel="noreferrer">Steam kod sayfasını aç ↗</a></div>
+                  <div><span>2</span><p><b>Steam Web API key oluştur</b><small>Valve maç geçmişi endpoint’i geliştirici API anahtarı da ister.</small></p><a href="https://steamcommunity.com/dev/apikey" target="_blank" rel="noreferrer">API key sayfasını aç ↗</a></div>
+                  <div><span>3</span><p><b>Dört değeri buraya yapıştır</b><small>Anahtarlar yalnızca açık sayfadaki sorguda kullanılır; tarayıcı depolamasına yazılmaz.</small></p></div>
+                </div>
+                <div className="guided-form">
+                  <label><span>SteamID64</span><input inputMode="numeric" placeholder="17 haneli SteamID64" value={steamId} onChange={(event) => setSteamId(event.target.value.trim())} /></label>
+                  <label><span>Steam Web API key</span><input type="password" autoComplete="off" placeholder="Steam geliştirici anahtarın" value={steamWebApiKey} onChange={(event) => setSteamWebApiKey(event.target.value.trim())} /></label>
+                  <label><span>Game Authentication Code</span><input type="password" autoComplete="off" placeholder="AAAA-AAAAA-AAAA" value={steamAuthCode} onChange={(event) => setSteamAuthCode(event.target.value.trim())} /></label>
+                  <label><span>Son maç paylaşım kodu</span><input placeholder="CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx" value={steamKnownCode} onChange={(event) => setSteamKnownCode(event.target.value.trim())} /></label>
+                  <button className="upload-button" onClick={checkSteamMatch}>Bağlantıyı doğrula</button>
+                </div>
+                <footer><span>?</span><p>Paylaşım kodu aynı Steam hesabına ait olmalı. Steam bu yöntemde geçersiz kod denemelerini hızla sınırlar.</p><a href="https://developer.valvesoftware.com/wiki/Counter-Strike%3A_Global_Offensive_Access_Match_History" target="_blank" rel="noreferrer">Valve rehberi ↗</a></footer>
+              </section>
+              <section className="connect-card faceit-connect">
+                <header><span>02</span><div><b>FACEIT</b><small>Herkese açık maç geçmişi için yalnızca kullanıcı adı</small></div><em>Şifresiz</em></header>
+                <p className="connect-explainer">TRACER senden FACEIT şifresi istemez. Kendi FACEIT Developer App’inden oluşturduğun Data API key ve kullanıcı adıyla herkese açık maç geçmişini okur; anahtar bu sayfada saklanmaz.</p>
+                <div className="faceit-key-links"><a href="https://developers.faceit.com/" target="_blank" rel="noreferrer">FACEIT Developer Portal’ı aç ↗</a><a href="https://docs.faceit.com/docs/data-api/" target="_blank" rel="noreferrer">Data API key rehberi ↗</a></div>
+                <div className="faceit-quick"><input type="password" autoComplete="off" aria-label="FACEIT Data API key" placeholder="FACEIT Data API key" value={faceitApiKey} onChange={(event) => setFaceitApiKey(event.target.value.trim())} /><input aria-label="FACEIT kullanıcı adı" placeholder="FACEIT kullanıcı adın" value={faceitNickname} onChange={(event) => setFaceitNickname(event.target.value)} /><button className="upload-button" onClick={checkFaceit}>Profili bul</button><a href="https://www.faceit.com/en/login" target="_blank" rel="noreferrer">FACEIT’te oturum aç ↗</a></div>
+                <details className="oauth-note"><summary>Tek tık OAuth bağlantısı neden henüz yok?</summary><p>FACEIT Connect için kayıtlı bir OAuth istemcisi, izin ekranı, yönlendirme adresi ve güvenli sunucu tarafı kod değişimi gerekir. Sahte bir “bağlan” butonu yerine şimdilik şifresiz kullanıcı adı akışı kullanılıyor.</p><a href="https://docs.faceit.com/getting-started/authentication/oauth2/" target="_blank" rel="noreferrer">Resmî FACEIT OAuth rehberi ↗</a></details>
+              </section>
+            </div>
             {sourceMessage && <div className="connection-result">{sourceMessage}</div>}
           </section>
         </div>
