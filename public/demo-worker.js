@@ -190,6 +190,7 @@ function buildPlayerReport(player, grouped, ticks, header) {
     const zoneRaw = role(record, "user", "last_place_name") ?? value(tickRow, ["last_place_name", "place_name"], "");
     const x = Number(role(record, "user", "X") ?? value(tickRow, ["X", "x"], 0));
     const y = Number(role(record, "user", "Y") ?? value(tickRow, ["Y", "y"], 0));
+    const z = Number(role(record, "user", "Z") ?? value(tickRow, ["Z", "z"], 0));
     const team = Number(role(record, "user", "team_num") ?? value(tickRow, ["team_num"], 0));
     const sameTick = ticks.filter((candidate) => number(candidate, ["tick"]) === tick && Number(value(candidate, ["team_num"], -1)) === team);
     const teammateDistances = sameTick.filter((candidate) => text(candidate, ["steamid", "steam_id"]) !== player.steamid && text(candidate, ["name"]) !== player.name).map((candidate) => distance({ X:x, Y:y }, candidate));
@@ -205,6 +206,7 @@ function buildPlayerReport(player, grouped, ticks, header) {
       zone: translateZone(zoneRaw),
       x,
       y,
+      z,
       killer: killerName || "Bilinmiyor",
       weapon: text(record, ["weapon", "weapon_name"]),
       nearestTeammate: nearestTeammate === null ? null : Math.round(nearestTeammate),

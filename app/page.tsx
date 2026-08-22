@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, useMemo, useRef, useState } from "react";
+import { radarMapFor, worldToRadar } from "./map-data";
 
 const sampleMetrics = [
   { label: "Rating", value: "1.08", delta: "+0.06", tone: "good" },
@@ -17,7 +18,7 @@ const sampleEvidence = [
 
 type Recommendation = { id: string; title: string; body: string; confidence: number };
 type DeathDetail = {
-  round: number; tick: number; time: number; zone: string; x: number; y: number;
+  round: number; tick: number; time: number; zone: string; x: number; y: number; z: number;
   killer: string; weapon: string; nearestTeammate: number | null; usedRecentFlash: boolean; traded: boolean;
 };
 type PlayerReport = {
@@ -31,6 +32,13 @@ type PlayerReport = {
 type AiInsight = { title: string; diagnosis: string; action: string; confidence?: number };
 type ParseStatus = "idle" | "reading" | "parsing" | "ready" | "error";
 
+const sampleMapDeaths = [
+  { round: 4, tick: 18120, zone: "A Short", x: 515, y: 1810, z: 128 },
+  { round: 9, tick: 42780, zone: "A Short", x: 610, y: 1905, z: 128 },
+  { round: 16, tick: 79140, zone: "A Short", x: 675, y: 2010, z: 128 },
+  { round: 19, tick: 94820, zone: "A Short", x: 760, y: 2110, z: 128 },
+];
+
 export default function Home() {
   const workerRef = useRef<Worker | null>(null);
   const [status, setStatus] = useState<ParseStatus>("idle");
@@ -42,8 +50,10 @@ export default function Home() {
   const [selectedPlayer, setSelectedPlayer] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [ollamaUrl, setOllamaUrl] = useState("http://127.0.0.1:11434");
-  const [ollamaModel, setOllamaModel] = useState("qwen3:8b");
-  const [ollamaState, setOllamaState] = useState<"unknown" | "checking" | "online" | "offline" | "thinking">("unknown");
+  const [ollamaModel, setOllamaModel] = useState("qwen3:1.7b");
+  const [ollamaState, setOllamaState] = useState<"unknown" | "checking" | "online" | "offline" | "thinking" | "released">("unknown");
+  const [ollamaResourceMessage, setOllamaResourceMessage] = useState("Analiz bittiğinde model RAM/VRAM'den hemen çıkarılır.");
+  const [mapLevel, setMapLevel] = useState<"upper" | "lower">("upper");
   const [aiInsight, setAiInsight] = useState<AiInsight | null>(null);
   const [steamId, setSteamId] = useState("");
   const [steamAuthCode, setSteamAuthCode] = useState("");
@@ -65,7 +75,13 @@ export default function Home() {
     text: `${item.zone} · ${item.usedRecentFlash ? "yakın flash var" : "yakın flash yok"}${item.nearestTeammate ? ` · takım ${item.nearestTeammate}u` : ""}`,
     type: item.traded ? "Trade" : "Pozisyon",
   })) : sampleEvidence;
-  const deathsOnMap = report?.deathDetails.slice(0, 8) || [];
+  const deathsOnMap = report?.deathDetails.slice(0, 24) || sampleMapDeaths;
+  const radarMap = radarMapFor(report?.map || "de_dust2");
+  const visibleDeaths = deathsOnMap.filter((death) => {
+    if (!radarMap?.lowerImage || radarMap.lowerMaxZ === undefined) return true;
+    return mapLevel === "lower" ? death.z < radarMap.lowerMaxZ : death.z >= radarMap.lowerMaxZ;
+  });
+  const radarImage = mapLevel === "lower" && radarMap?.lowerImage ? radarMap.lowerImage : radarMap?.image;
 
   function playerKey(item: PlayerReport) {
     return item.player.steamid || item.player.name;
@@ -75,6 +91,7 @@ export default function Home() {
     const file = event.target.files?.[0];
     if (!file) return;
     setAiInsight(null);
+    setMapLevel("upper");
     setError("");
     setFileName(file.name);
     if (!file.name.toLowerCase().endsWith(".dem")) {
@@ -127,8 +144,32 @@ export default function Home() {
       const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/tags`);
       if (!response.ok) throw new Error("Ollama yanıt vermedi");
       setOllamaState("online");
+      setOllamaResourceMessage("Bağlantı hazır; henüz hiçbir model belleğe yüklenmedi.");
     } catch {
       setOllamaState("offline");
+    }
+  }
+
+  async function verifyOllamaReleased() {
+    try {
+      const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/ps`);
+      if (!response.ok) throw new Error("Kaynak durumu okunamadı");
+      const payload = await response.json();
+      const target = ollamaModel.toLowerCase().replace(/:latest$/, "");
+      const stillLoaded = (payload.models || []).some((item: { name?: string; model?: string }) => {
+        const running = String(item.model || item.name || "").toLowerCase().replace(/:latest$/, "");
+        return running === target;
+      });
+      if (stillLoaded) {
+        setOllamaState("online");
+        setOllamaResourceMessage("Model hâlâ bellekte görünüyor; `ollama stop` ile durdurabilirsin.");
+      } else {
+        setOllamaState("released");
+        setOllamaResourceMessage("✓ Doğrulandı: model RAM/VRAM'den çıkarıldı.");
+      }
+    } catch {
+      setOllamaState("online");
+      setOllamaResourceMessage("keep_alive: 0 gönderildi; /api/ps doğrulaması CORS nedeniyle okunamadı.");
     }
   }
 
@@ -145,6 +186,8 @@ export default function Home() {
           model: ollamaModel,
           stream: false,
           format: "json",
+          keep_alive: 0,
+          options: { num_ctx: 4096, temperature: 0.2 },
           messages: [
             { role: "system", content: "Sen profesyonel CS2 performans koçusun. Yalnızca verilen ölçümleri kullan. Nedeni kanıtlanmayan hatalarda kesin konuşma; 'olabilir' de. Türkçe, kısa ve uygulanabilir yaz. JSON döndür: title, diagnosis, action, confidence." },
             { role: "user", content: JSON.stringify(compactReport) },
@@ -155,7 +198,7 @@ export default function Home() {
       const payload = await response.json();
       const content = payload.message?.content || payload.response;
       setAiInsight(typeof content === "string" ? JSON.parse(content) : content);
-      setOllamaState("online");
+      await verifyOllamaReleased();
     } catch (aiError) {
       setOllamaState("offline");
       setError(`Ollama analizi alınamadı. ${aiError instanceof Error ? aiError.message : "Bağlantıyı kontrol et."}`);
@@ -200,7 +243,7 @@ export default function Home() {
         <div className="sidebar-spacer" />
         <button className={`ai-status ${ollamaState}`} onClick={() => setSettingsOpen(true)}>
           <span className="pulse" />
-          <div><b>{ollamaState === "online" ? "OLLAMA BAĞLI" : ollamaState === "thinking" ? "OLLAMA DÜŞÜNÜYOR" : "OLLAMA AYARLA"}</b><small>{ollamaModel} · yerel</small></div>
+          <div><b>{ollamaState === "released" ? "KAYNAKLAR BIRAKILDI" : ollamaState === "online" ? "OLLAMA BAĞLI" : ollamaState === "thinking" ? "OLLAMA DÜŞÜNÜYOR" : "OLLAMA AYARLA"}</b><small>{ollamaModel} · yerel</small></div>
         </button>
         <div className="player-card">
           <div className="avatar">KD</div>
@@ -289,25 +332,19 @@ export default function Home() {
           <article className="map-card">
             <div className="section-head">
               <div><p>KONUMLANDIRMA</p><h3>Ölüm yoğunluğu</h3></div>
-              <div className="segmented"><button className="selected">CT</button><button>T</button></div>
+              {radarMap?.lowerImage && <div className="segmented"><button className={mapLevel === "upper" ? "selected" : ""} onClick={() => setMapLevel("upper")}>ÜST</button><button className={mapLevel === "lower" ? "selected" : ""} onClick={() => setMapLevel("lower")}>ALT</button></div>}
             </div>
             <div className="radar" role="img" aria-label={`${report?.map || "Dust II"} üzerinde ölüm noktaları`}>
-              <div className="site site-a">A</div><div className="site site-b">B</div>
-              <div className="zone short">SHORT</div><div className="zone mid">MID</div><div className="zone long">LONG</div>
-              <span className="path p1"/><span className="path p2"/><span className="path p3"/><span className="path p4"/>
-              {!report && <><span className="heat h1"/><span className="heat h2"/><span className="heat h3"/><span className="heat h4"/><span className="death d1">×</span><span className="death d2">×</span><span className="death d3">×</span><span className="death d4">×</span></>}
-              {deathsOnMap.map((item, index) => {
-                const valid = deathsOnMap.filter((point) => point.x || point.y);
-                const xs = valid.map((point) => point.x); const ys = valid.map((point) => point.y);
-                const minX = Math.min(...xs, item.x - 1); const maxX = Math.max(...xs, item.x + 1);
-                const minY = Math.min(...ys, item.y - 1); const maxY = Math.max(...ys, item.y + 1);
-                const left = item.x || item.y ? 12 + ((item.x-minX)/(maxX-minX))*76 : 48 + (index%3)*5;
-                const top = item.x || item.y ? 12 + (1-(item.y-minY)/(maxY-minY))*76 : 34 + index*4;
-                return <span key={`${item.tick}-${index}`} className="death dynamic-death" style={{ left: `${left}%`, top: `${top}%` }} title={`R${item.round} · ${item.zone}`}>×</span>;
+              {radarImage && <img className="radar-image" src={radarImage} alt="" draggable="false" />}
+              {!radarMap && <div className="radar-unavailable">Bu harita için radar kalibrasyonu henüz yok.</div>}
+              {radarMap && visibleDeaths.map((item, index) => {
+                const point = worldToRadar(item.x, item.y, radarMap);
+                if (point.left < 0 || point.left > 100 || point.top < 0 || point.top > 100) return null;
+                return <span key={`${item.tick}-${index}`} className="death dynamic-death" style={{ left: `${point.left}%`, top: `${point.top}%` }} title={`R${item.round} · ${item.zone} · ${Math.round(item.x)}, ${Math.round(item.y)}`}>×</span>;
               })}
               <div className="map-callout"><b>{report ? `${report.topZoneDeaths} ölüm` : "4 ölüm"}</b><span>{report ? report.topZone : "A Short · 37 m² alan"}</span></div>
             </div>
-            <div className="map-legend"><span><i className="red-dot"/>Ölüm</span><span><i className="green-dot"/>Takım arkadaşı</span><button>Roundları radarda oynat →</button></div>
+            <div className="map-legend"><span><i className="red-dot"/>Ölüm</span><span>{radarMap?.label || report?.map || "Bilinmeyen harita"}</span><button>Valve radar · gerçek dünya koordinatı</button></div>
           </article>
         </div>
 
@@ -349,9 +386,15 @@ export default function Home() {
             <h2 id="settings-title">Ollama bağlantısı</h2>
             <p>Analiz özeti yalnızca cihazındaki Ollama servisine gönderilir. Demo dosyasının kendisi gönderilmez.</p>
             <label>Sunucu adresi<input value={ollamaUrl} onChange={(event) => setOllamaUrl(event.target.value)} /></label>
-            <label>Model<input value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)} /></label>
+            <label>Model<input list="ollama-models" value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)} /></label>
+            <datalist id="ollama-models"><option value="qwen3:1.7b">Önerilen · dengeli</option><option value="qwen3.5:0.8b">En hafif</option><option value="qwen3:4b-instruct">Daha kaliteli</option></datalist>
             <div className="settings-actions"><button className="ghost-button" onClick={testOllama}>{ollamaState === "checking" ? "Kontrol ediliyor…" : "Bağlantıyı test et"}</button><button className="upload-button" onClick={() => setSettingsOpen(false)}>Kaydet</button></div>
-            <div className={`connection-result ${ollamaState}`}>{ollamaState === "online" ? "✓ Ollama erişilebilir" : ollamaState === "offline" ? "Ollama'ya ulaşılamadı. OLLAMA_ORIGINS ayarını kontrol et." : "Varsayılan: http://127.0.0.1:11434"}</div>
+            <div className={`connection-result ${ollamaState}`}>{ollamaState === "released" ? ollamaResourceMessage : ollamaState === "online" ? `✓ Ollama erişilebilir · ${ollamaResourceMessage}` : ollamaState === "offline" ? "Ollama'ya ulaşılamadı. OLLAMA_ORIGINS ayarını kontrol et." : "Varsayılan: http://127.0.0.1:11434 · 4096 context · anında unload"}</div>
+            <details className="demo-help">
+              <summary>Demo dosyasını nerede bulurum?</summary>
+              <ol><li>CS2 içinde İzle → Maçların bölümünü aç.</li><li>Premier/Competitive maçını seçip indirme okuna bas.</li><li><code>…\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo\replays</code> klasöründeki <code>.dem</code> dosyasını yükle.</li></ol>
+              <p>Casual maçlar otomatik GOTV demosu sunmayabilir; tam konum analizi için Premier/Competitive demosu en sağlıklısıdır.</p>
+            </details>
             <hr/>
             <p className="eyebrow">MAÇ KAYNAKLARI</p>
             <details className="source-details">
