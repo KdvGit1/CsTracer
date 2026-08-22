@@ -10,10 +10,12 @@
     "build": "vinext build",
     "start": "vinext start",
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern public/vendor",
+    "db:generate": "drizzle-kit generate",
+    "companion": "node companion/server.mjs"
   },
   "dependencies": {
+    "@laihoe/demoparser2": "^0.42.0",
     "demoparser2": "^0.15.0",
     "drizzle-orm": "0.45.2",
     "react": "19.2.6",

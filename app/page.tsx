@@ -1,7 +1,78 @@
 "use client";
 
-import { ChangeEvent, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { radarMapFor, worldToRadar } from "./map-data";
+
+const COMPANION_URL = "http://127.0.0.1:43119";
+const HANDLE_DATABASE = "tracer-local";
+const HANDLE_STORE = "handles";
+const DEMO_DIRECTORY_KEY = "demo-directory";
+
+type LocalFileHandle = {
+  kind: "file";
+  name: string;
+  getFile(): Promise<File>;
+};
+type LocalDirectoryHandle = {
+  kind: "directory";
+  name: string;
+  entries(): AsyncIterableIterator<[string, LocalFileHandle | LocalDirectoryHandle]>;
+  removeEntry(name: string): Promise<void>;
+  queryPermission?(options: { mode: "readwrite" }): Promise<PermissionState>;
+  requestPermission?(options: { mode: "readwrite" }): Promise<PermissionState>;
+};
+type DemoFileEntry = { name: string; size: number; lastModified: number; handle: LocalFileHandle };
+type CompanionState = "checking" | "online" | "offline";
+
+function openHandleDatabase() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(HANDLE_DATABASE, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(HANDLE_STORE);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function loadSavedDirectory() {
+  const database = await openHandleDatabase();
+  try {
+    return await new Promise<LocalDirectoryHandle | undefined>((resolve, reject) => {
+      const request = database.transaction(HANDLE_STORE).objectStore(HANDLE_STORE).get(DEMO_DIRECTORY_KEY);
+      request.onsuccess = () => resolve(request.result as LocalDirectoryHandle | undefined);
+      request.onerror = () => reject(request.error);
+    });
+  } finally {
+    database.close();
+  }
+}
+
+async function saveDirectory(handle: LocalDirectoryHandle) {
+  const database = await openHandleDatabase();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const request = database.transaction(HANDLE_STORE, "readwrite").objectStore(HANDLE_STORE).put(handle, DEMO_DIRECTORY_KEY);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  } finally {
+    database.close();
+  }
+}
+
+function formatBytes(bytes: number) {
+  if (!bytes) return "0 MB";
+  return `${(bytes / 1024 / 1024).toFixed(bytes >= 100 * 1024 * 1024 ? 0 : 1)} MB`;
+}
+
+async function readDemoFiles(directory: LocalDirectoryHandle) {
+  const files: DemoFileEntry[] = [];
+  for await (const [name, handle] of directory.entries()) {
+    if (handle.kind !== "file" || !name.toLowerCase().endsWith(".dem")) continue;
+    const file = await handle.getFile();
+    files.push({ name, size: file.size, lastModified: file.lastModified, handle });
+  }
+  return files.sort((a, b) => b.lastModified - a.lastModified);
+}
 
 const sampleMetrics = [
   { label: "Rating", value: "1.08", delta: "+0.06", tone: "good" },
@@ -60,6 +131,42 @@ export default function Home() {
   const [steamKnownCode, setSteamKnownCode] = useState("");
   const [faceitNickname, setFaceitNickname] = useState("");
   const [sourceMessage, setSourceMessage] = useState("");
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [demoDirectory, setDemoDirectory] = useState<LocalDirectoryHandle | null>(null);
+  const [demoFiles, setDemoFiles] = useState<DemoFileEntry[]>([]);
+  const [archiveMessage, setArchiveMessage] = useState("");
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [companionState, setCompanionState] = useState<CompanionState>("checking");
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(`${COMPANION_URL}/health`);
+        if (!cancelled) setCompanionState(response.ok ? "online" : "offline");
+      } catch {
+        if (!cancelled) setCompanionState("offline");
+      }
+      try {
+        const saved = await loadSavedDirectory();
+        if (!saved || cancelled) return;
+        setDemoDirectory(saved);
+        const permission = saved.queryPermission ? await saved.queryPermission({ mode: "readwrite" }) : "prompt";
+        if (permission === "granted") {
+          const files = await readDemoFiles(saved);
+          if (!cancelled) setDemoFiles(files);
+        } else if (!cancelled) {
+          setArchiveMessage("Klasör kaydı bulundu; yeniden erişmek için klasörü seç.");
+        }
+      } catch {
+        if (!cancelled) setArchiveMessage("Kayıtlı klasör izni okunamadı; klasörü yeniden seçebilirsin.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+      workerRef.current?.terminate();
+    };
+  }, []);
 
   const report = useMemo(() => reports.find((item) => (item.player.steamid || item.player.name) === selectedPlayer) || reports[0], [reports, selectedPlayer]);
   const insight = report?.recommendations[0];
@@ -87,9 +194,63 @@ export default function Home() {
     return item.player.steamid || item.player.name;
   }
 
-  async function handleDemo(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  function applyReports(nextReports: PlayerReport[]) {
+    setReports(nextReports);
+    setSelectedPlayer(nextReports[0] ? playerKey(nextReports[0]) : "");
+    setProgress(100);
+    setProgressLabel("Analiz tamamlandı · parser 0.42.0");
+    setStatus("ready");
+  }
+
+  async function refreshCompanion() {
+    setCompanionState("checking");
+    try {
+      const response = await fetch(`${COMPANION_URL}/health`);
+      const online = response.ok;
+      setCompanionState(online ? "online" : "offline");
+      return online;
+    } catch {
+      setCompanionState("offline");
+      return false;
+    }
+  }
+
+  async function analyzeInBrowser(file: File) {
+    workerRef.current?.terminate();
+    const worker = new Worker("/demo-worker.js");
+    workerRef.current = worker;
+    setProgressLabel("Uyumlu eski demo için tarayıcı parserı deneniyor");
+    return await new Promise<PlayerReport[]>((resolve, reject) => {
+      worker.onmessage = (message: MessageEvent) => {
+        const data = message.data;
+        if (data.type === "progress") {
+          setStatus("parsing");
+          setProgress(data.progress);
+          setProgressLabel(data.label);
+        } else if (data.type === "warning") {
+          setProgressLabel(data.label);
+        } else if (data.type === "done") {
+          worker.terminate();
+          resolve((data.reports || []) as PlayerReport[]);
+        } else if (data.type === "error") {
+          worker.terminate();
+          reject(new Error(String(data.message || "Demo çözümlenemedi")));
+        }
+      };
+      worker.onerror = (workerError) => {
+        worker.terminate();
+        reject(new Error(`Analiz worker'ı durdu: ${workerError.message}`));
+      };
+      void file.arrayBuffer().then((buffer) => {
+        worker.postMessage({ fileBytes: buffer }, [buffer]);
+      }).catch((readError) => {
+        worker.terminate();
+        reject(readError);
+      });
+    });
+  }
+
+  async function analyzeFile(file: File) {
     setAiInsight(null);
     setMapLevel("upper");
     setError("");
@@ -99,42 +260,108 @@ export default function Home() {
       setError("Sıkıştırılmış .bz2 dosyasını önce çıkartıp içindeki .dem dosyasını yükle.");
       return;
     }
-    if (file.size > 750 * 1024 * 1024) {
+    if (file.size > 800 * 1024 * 1024) {
       setStatus("error");
-      setError("Bu demo 750 MB sınırını aşıyor. Yerel companion analizini kullanmalısın.");
+      setError("Bu demo 800 MB güvenlik sınırını aşıyor.");
       return;
     }
-    workerRef.current?.terminate();
-    const worker = new Worker("/demo-worker.js");
-    workerRef.current = worker;
     setStatus("reading");
-    setProgress(4);
-    setProgressLabel("Demo belleğe alınıyor");
-    worker.onmessage = (message: MessageEvent) => {
-      const data = message.data;
-      if (data.type === "progress") {
-        setStatus("parsing"); setProgress(data.progress); setProgressLabel(data.label);
-      } else if (data.type === "warning") {
-        setProgressLabel(data.label);
-      } else if (data.type === "done") {
-        const nextReports = (data.reports || []) as PlayerReport[];
-        setReports(nextReports);
-        setSelectedPlayer(nextReports[0] ? playerKey(nextReports[0]) : "");
-        setProgress(100); setProgressLabel("Analiz tamamlandı"); setStatus("ready");
-        worker.terminate();
-      } else if (data.type === "error") {
-        setError(`Demo çözümlenemedi: ${data.message}`); setStatus("error"); worker.terminate();
-      }
-    };
-    worker.onerror = (workerError) => {
-      setError(`Analiz worker'ı durdu: ${workerError.message}`); setStatus("error"); worker.terminate();
-    };
+    setProgress(8);
+    setProgressLabel("Demo yerel parsera aktarılıyor");
+    let companionReached = false;
     try {
-      const buffer = await file.arrayBuffer();
-      worker.postMessage({ fileBytes: buffer }, [buffer]);
-    } catch (readError) {
-      setError(readError instanceof Error ? readError.message : "Demo okunamadı");
+      setCompanionState("checking");
+      setStatus("parsing");
+      setProgress(34);
+      setProgressLabel("Güncel Valve olayları ve konumları çözümleniyor");
+      const response = await fetch(`${COMPANION_URL}/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(file.name) },
+        body: file,
+      });
+      companionReached = true;
+      const payload = await response.json() as { reports?: PlayerReport[]; error?: string };
+      if (!response.ok) throw new Error(payload.error || `Yerel parser ${response.status} döndürdü`);
+      setCompanionState("online");
+      applyReports(payload.reports || []);
+      return;
+    } catch (companionError) {
+      if (companionReached) {
+        setCompanionState("online");
+        setError(`Demo çözümlenemedi: ${companionError instanceof Error ? companionError.message : "Bilinmeyen parser hatası"}`);
+        setStatus("error");
+        return;
+      }
+      setCompanionState("offline");
+    }
+    try {
+      const nextReports = await analyzeInBrowser(file);
+      applyReports(nextReports);
+    } catch (browserError) {
+      const rawMessage = browserError instanceof Error ? browserError.message : String(browserError);
+      const requiresCompanion = /EntityNotFound|LOCAL_PARSER_REQUIRED|FailedByteRead/i.test(rawMessage);
+      setError(requiresCompanion
+        ? "Bu güncel Valve demosu parser 0.42.0 gerektiriyor. D:\\CsTracker\\TRACER-Yerel.cmd dosyasını çalıştırıp tekrar dene."
+        : `Demo çözümlenemedi: ${rawMessage}`);
       setStatus("error");
+    }
+  }
+
+  async function handleDemo(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) await analyzeFile(file);
+  }
+
+  async function scanDirectory(directory: LocalDirectoryHandle) {
+    setArchiveBusy(true);
+    setArchiveMessage("Demo dosyaları taranıyor…");
+    try {
+      const files = await readDemoFiles(directory);
+      setDemoFiles(files);
+      setArchiveMessage(files.length ? `${files.length} demo bulundu.` : "Bu klasörde .dem dosyası bulunamadı.");
+    } catch (scanError) {
+      setArchiveMessage(scanError instanceof Error ? scanError.message : "Klasör okunamadı.");
+    } finally {
+      setArchiveBusy(false);
+    }
+  }
+
+  async function pickDemoDirectory() {
+    const picker = (window as unknown as { showDirectoryPicker?: (options: { mode: "readwrite" }) => Promise<LocalDirectoryHandle> }).showDirectoryPicker;
+    if (!picker) {
+      setArchiveMessage("Klasör seçimi için güncel Chrome, Edge veya Chromium tabanlı uygulamayı kullan. Tek dosya yükleme çalışmaya devam eder.");
+      return;
+    }
+    try {
+      const directory = await picker({ mode: "readwrite" });
+      setDemoDirectory(directory);
+      await saveDirectory(directory);
+      await scanDirectory(directory);
+    } catch (pickerError) {
+      if (pickerError instanceof DOMException && pickerError.name === "AbortError") return;
+      setArchiveMessage(pickerError instanceof Error ? pickerError.message : "Klasör izni alınamadı.");
+    }
+  }
+
+  async function analyzeArchiveEntry(entry: DemoFileEntry) {
+    try {
+      const file = await entry.handle.getFile();
+      setArchiveOpen(false);
+      await analyzeFile(file);
+    } catch (entryError) {
+      setArchiveMessage(entryError instanceof Error ? entryError.message : "Demo açılamadı.");
+    }
+  }
+
+  async function deleteArchiveEntry(entry: DemoFileEntry) {
+    if (!demoDirectory || !window.confirm(`${entry.name} kalıcı olarak silinsin mi?`)) return;
+    try {
+      await demoDirectory.removeEntry(entry.name);
+      await scanDirectory(demoDirectory);
+      setArchiveMessage(`${entry.name} silindi.`);
+    } catch (deleteError) {
+      setArchiveMessage(deleteError instanceof Error ? deleteError.message : "Demo silinemedi.");
     }
   }
 
@@ -259,6 +486,7 @@ export default function Home() {
             <h1>{report ? `${report.player.name} için analiz hazır.` : "Tekrar hoş geldin, KDV."}</h1>
           </div>
           <div className="top-actions">
+            <button className="ghost-button archive-trigger" onClick={() => { setArchiveOpen(true); void refreshCompanion(); }}>▤ Yerel maçlar</button>
             <button className="ghost-button" onClick={() => setSettingsOpen(true)}>⚙ Kaynakları bağla</button>
             <label className="upload-button">
               <input type="file" accept=".dem,.bz2" onChange={handleDemo} />
@@ -273,7 +501,7 @@ export default function Home() {
           <span className="win-pill">{report ? `${report.rounds} ROUND` : "GALİBİYET"}</span>
           <b className="score">{report ? report.kills : 13} <i>:</i> {report ? report.deaths : 9}</b>
           <div className="match-meta"><span>{report ? "Tarayıcıda yerel analiz" : "Bugün, 21:42"}</span><span>{report ? `${report.assists} asist · ${report.adr} ADR` : "41 dk · CT 7:5 / T 6:4"}</span></div>
-          <button className="icon-button" aria-label="Başka maç seç">⌄</button>
+          <button className="icon-button" aria-label="Yerel maç arşivini aç" onClick={() => { setArchiveOpen(true); void refreshCompanion(); }}>⌄</button>
         </div>
 
         {(status === "reading" || status === "parsing" || status === "ready" || status === "error") && (
@@ -378,9 +606,45 @@ export default function Home() {
         </section>
       </section>
 
+      {archiveOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setArchiveOpen(false); }}>
+          <section className="settings-modal archive-modal" role="dialog" aria-modal="true" aria-labelledby="archive-title">
+            <button className="modal-close" onClick={() => setArchiveOpen(false)} aria-label="Yerel maçları kapat">×</button>
+            <div className="archive-heading">
+              <div><p className="eyebrow">CİHAZINDAKİ DEMOLAR</p><h2 id="archive-title">Yerel maç arşivi</h2></div>
+              <span className={`companion-chip ${companionState}`}><i />{companionState === "online" ? "Parser 0.42 bağlı" : companionState === "checking" ? "Parser aranıyor" : "Parser kapalı"}</span>
+            </div>
+            <p>Bir klasör seç; maçlarını tarihe göre listele, istediğini analiz et veya onay vererek sil. Seçim yalnızca bu tarayıcıda hatırlanır ve hiçbir yol varsayılan yapılmaz.</p>
+            <div className="archive-toolbar">
+              <div><span>SEÇİLİ KLASÖR</span><b>{demoDirectory?.name || "Henüz klasör seçilmedi"}</b></div>
+              <button className="upload-button" onClick={pickDemoDirectory}>{demoDirectory ? "Klasörü değiştir" : "Klasör seç"}</button>
+              {demoDirectory && <button className="ghost-button archive-refresh" onClick={() => scanDirectory(demoDirectory)} disabled={archiveBusy}>↻ Yenile</button>}
+            </div>
+            {companionState === "offline" && (
+              <div className="companion-warning"><b>Güncel Valve demoları için yerel parser kapalı.</b><span><code>TRACER-Yerel.cmd</code> dosyasını çalıştır, bu pencereyi açık tut ve tekrar dene.</span><button onClick={() => void refreshCompanion()}>Bağlantıyı yenile</button></div>
+            )}
+            {archiveMessage && <div className="archive-message">{archiveMessage}</div>}
+            <div className="demo-library" aria-busy={archiveBusy}>
+              {!archiveBusy && !demoFiles.length && <div className="archive-empty"><span>▤</span><b>Demo listesi boş</b><p>CS2 içinden indirdiğin maçların bulunduğu klasörü seç.</p></div>}
+              {demoFiles.map((entry) => (
+                <article className="demo-row" key={entry.name}>
+                  <div className="demo-file-icon">DEM</div>
+                  <div className="demo-file-copy"><b>{entry.name}</b><span>{new Date(entry.lastModified).toLocaleString("tr-TR")} · {formatBytes(entry.size)}</span></div>
+                  <div className="demo-actions">
+                    <button className="analyze-demo" onClick={() => void analyzeArchiveEntry(entry)}>Analiz et</button>
+                    <button className="delete-demo" onClick={() => void deleteArchiveEntry(entry)} aria-label={`${entry.name} dosyasını sil`}>Sil</button>
+                  </div>
+                </article>
+              ))}
+            </div>
+            <p className="local-privacy">Demo yalnızca tarayıcıdan <code>127.0.0.1</code> üzerindeki yerel parsera gider; buluta yüklenmez. Silme işlemi seçtiğin klasörde ve yalnızca onayından sonra yapılır.</p>
+          </section>
+        </div>
+      )}
+
       {settingsOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setSettingsOpen(false)}>
-          <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setSettingsOpen(false); }}>
+          <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
             <button className="modal-close" onClick={() => setSettingsOpen(false)} aria-label="Ayarları kapat">×</button>
             <p className="eyebrow">YEREL AI</p>
             <h2 id="settings-title">Ollama bağlantısı</h2>
