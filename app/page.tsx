@@ -1,0 +1,376 @@
+"use client";
+
+import { ChangeEvent, useMemo, useRef, useState } from "react";
+
+const sampleMetrics = [
+  { label: "Rating", value: "1.08", delta: "+0.06", tone: "good" },
+  { label: "ADR", value: "78.4", delta: "+4.2", tone: "good" },
+  { label: "KAST", value: "%71", delta: "-%3", tone: "warn" },
+  { label: "Trade", value: "%19", delta: "-%8", tone: "bad" },
+];
+
+const sampleEvidence = [
+  { round: "R04", time: "01:18", text: "Flash desteği olmadan ikinci temas", type: "Pozisyon" },
+  { round: "R09", time: "00:54", text: "İlk mermide 92 u/s hareket", type: "Aim" },
+  { round: "R16", time: "01:22", text: "Yakın takım arkadaşı 14.8 m uzakta", type: "Trade" },
+];
+
+type Recommendation = { id: string; title: string; body: string; confidence: number };
+type DeathDetail = {
+  round: number; tick: number; time: number; zone: string; x: number; y: number;
+  killer: string; weapon: string; nearestTeammate: number | null; usedRecentFlash: boolean; traded: boolean;
+};
+type PlayerReport = {
+  player: { name: string; steamid: string }; map: string; rounds: number; kills: number; deaths: number;
+  assists: number; adr: number; headshotPercent: number; openingKills: number; openingDeaths: number;
+  utilityDamage: number; enemyBlindSeconds: number; flashesThrown: number; shots: number;
+  movingShotPercent: number; tradePercent: number; topZone: string; topZoneDeaths: number;
+  unflashedDeaths: number; untradedDeaths: number; impact: number; deathDetails: DeathDetail[];
+  recommendations: Recommendation[];
+};
+type AiInsight = { title: string; diagnosis: string; action: string; confidence?: number };
+type ParseStatus = "idle" | "reading" | "parsing" | "ready" | "error";
+
+export default function Home() {
+  const workerRef = useRef<Worker | null>(null);
+  const [status, setStatus] = useState<ParseStatus>("idle");
+  const [progress, setProgress] = useState(0);
+  const [progressLabel, setProgressLabel] = useState("");
+  const [error, setError] = useState("");
+  const [fileName, setFileName] = useState("");
+  const [reports, setReports] = useState<PlayerReport[]>([]);
+  const [selectedPlayer, setSelectedPlayer] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [ollamaUrl, setOllamaUrl] = useState("http://127.0.0.1:11434");
+  const [ollamaModel, setOllamaModel] = useState("qwen3:8b");
+  const [ollamaState, setOllamaState] = useState<"unknown" | "checking" | "online" | "offline" | "thinking">("unknown");
+  const [aiInsight, setAiInsight] = useState<AiInsight | null>(null);
+  const [steamId, setSteamId] = useState("");
+  const [steamAuthCode, setSteamAuthCode] = useState("");
+  const [steamKnownCode, setSteamKnownCode] = useState("");
+  const [faceitNickname, setFaceitNickname] = useState("");
+  const [sourceMessage, setSourceMessage] = useState("");
+
+  const report = useMemo(() => reports.find((item) => (item.player.steamid || item.player.name) === selectedPlayer) || reports[0], [reports, selectedPlayer]);
+  const insight = report?.recommendations[0];
+  const metrics = report ? [
+    { label: "K / D", value: `${report.kills} / ${report.deaths}`, delta: `${report.assists} asist`, tone: report.kills >= report.deaths ? "good" : "warn" },
+    { label: "ADR", value: report.adr.toFixed(1), delta: report.adr >= 75 ? "iyi" : "geliştir", tone: report.adr >= 75 ? "good" : "warn" },
+    { label: "HS", value: `%${report.headshotPercent}`, delta: `${report.openingKills}-${report.openingDeaths} opening`, tone: report.headshotPercent >= 45 ? "good" : "warn" },
+    { label: "Trade", value: `%${report.tradePercent}`, delta: `${report.untradedDeaths} çevrilmedi`, tone: report.tradePercent >= 45 ? "good" : "bad" },
+  ] : sampleMetrics;
+  const evidence = report ? report.deathDetails.slice(0, 3).map((item) => ({
+    round: `R${String(item.round || 0).padStart(2, "0")}`,
+    time: `T${item.tick}`,
+    text: `${item.zone} · ${item.usedRecentFlash ? "yakın flash var" : "yakın flash yok"}${item.nearestTeammate ? ` · takım ${item.nearestTeammate}u` : ""}`,
+    type: item.traded ? "Trade" : "Pozisyon",
+  })) : sampleEvidence;
+  const deathsOnMap = report?.deathDetails.slice(0, 8) || [];
+
+  function playerKey(item: PlayerReport) {
+    return item.player.steamid || item.player.name;
+  }
+
+  async function handleDemo(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setAiInsight(null);
+    setError("");
+    setFileName(file.name);
+    if (!file.name.toLowerCase().endsWith(".dem")) {
+      setStatus("error");
+      setError("Sıkıştırılmış .bz2 dosyasını önce çıkartıp içindeki .dem dosyasını yükle.");
+      return;
+    }
+    if (file.size > 750 * 1024 * 1024) {
+      setStatus("error");
+      setError("Bu demo 750 MB sınırını aşıyor. Yerel companion analizini kullanmalısın.");
+      return;
+    }
+    workerRef.current?.terminate();
+    const worker = new Worker("/demo-worker.js");
+    workerRef.current = worker;
+    setStatus("reading");
+    setProgress(4);
+    setProgressLabel("Demo belleğe alınıyor");
+    worker.onmessage = (message: MessageEvent) => {
+      const data = message.data;
+      if (data.type === "progress") {
+        setStatus("parsing"); setProgress(data.progress); setProgressLabel(data.label);
+      } else if (data.type === "warning") {
+        setProgressLabel(data.label);
+      } else if (data.type === "done") {
+        const nextReports = (data.reports || []) as PlayerReport[];
+        setReports(nextReports);
+        setSelectedPlayer(nextReports[0] ? playerKey(nextReports[0]) : "");
+        setProgress(100); setProgressLabel("Analiz tamamlandı"); setStatus("ready");
+        worker.terminate();
+      } else if (data.type === "error") {
+        setError(`Demo çözümlenemedi: ${data.message}`); setStatus("error"); worker.terminate();
+      }
+    };
+    worker.onerror = (workerError) => {
+      setError(`Analiz worker'ı durdu: ${workerError.message}`); setStatus("error"); worker.terminate();
+    };
+    try {
+      const buffer = await file.arrayBuffer();
+      worker.postMessage({ fileBytes: buffer }, [buffer]);
+    } catch (readError) {
+      setError(readError instanceof Error ? readError.message : "Demo okunamadı");
+      setStatus("error");
+    }
+  }
+
+  async function testOllama() {
+    setOllamaState("checking");
+    try {
+      const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/tags`);
+      if (!response.ok) throw new Error("Ollama yanıt vermedi");
+      setOllamaState("online");
+    } catch {
+      setOllamaState("offline");
+    }
+  }
+
+  async function runAiCoach() {
+    if (!report) return;
+    setOllamaState("thinking");
+    setError("");
+    const compactReport = { ...report, deathDetails: report.deathDetails.slice(0, 12) };
+    try {
+      const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: ollamaModel,
+          stream: false,
+          format: "json",
+          messages: [
+            { role: "system", content: "Sen profesyonel CS2 performans koçusun. Yalnızca verilen ölçümleri kullan. Nedeni kanıtlanmayan hatalarda kesin konuşma; 'olabilir' de. Türkçe, kısa ve uygulanabilir yaz. JSON döndür: title, diagnosis, action, confidence." },
+            { role: "user", content: JSON.stringify(compactReport) },
+          ],
+        }),
+      });
+      if (!response.ok) throw new Error(`Ollama ${response.status} döndürdü`);
+      const payload = await response.json();
+      const content = payload.message?.content || payload.response;
+      setAiInsight(typeof content === "string" ? JSON.parse(content) : content);
+      setOllamaState("online");
+    } catch (aiError) {
+      setOllamaState("offline");
+      setError(`Ollama analizi alınamadı. ${aiError instanceof Error ? aiError.message : "Bağlantıyı kontrol et."}`);
+    }
+  }
+
+  async function checkSteamMatch() {
+    setSourceMessage("Valve maç geçmişi kontrol ediliyor…");
+    try {
+      const response = await fetch("/api/steam/next", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ steamid: steamId, authCode: steamAuthCode, knownCode: steamKnownCode }) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Valve sorgusu başarısız");
+      setSourceMessage(payload.nextCode ? `Yeni maç bulundu: ${payload.nextCode}` : "Yeni Valve maçı yok; geçmiş güncel.");
+      if (payload.nextCode) setSteamKnownCode(payload.nextCode);
+    } catch (sourceError) {
+      setSourceMessage(sourceError instanceof Error ? sourceError.message : "Valve bağlantısı kurulamadı.");
+    }
+  }
+
+  async function checkFaceit() {
+    setSourceMessage("FACEIT profili kontrol ediliyor…");
+    try {
+      const response = await fetch(`/api/faceit/player?nickname=${encodeURIComponent(faceitNickname)}`);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "FACEIT sorgusu başarısız");
+      setSourceMessage(`${payload.player.nickname} bulundu · ${payload.matches.length} son maç hazır.`);
+    } catch (sourceError) {
+      setSourceMessage(sourceError instanceof Error ? sourceError.message : "FACEIT bağlantısı kurulamadı.");
+    }
+  }
+
+  return (
+    <main className="app-shell">
+      <aside className="sidebar">
+        <div className="brand"><span>TR</span><strong>TRACER</strong></div>
+        <nav aria-label="Ana menü">
+          <a className="nav-item active" href="#dashboard"><span>⌁</span> Genel bakış</a>
+          <a className="nav-item" href="#matches"><span>▤</span> Maçlar</a>
+          <a className="nav-item" href="#maps"><span>⌖</span> Haritalar</a>
+          <a className="nav-item" href="#training"><span>↗</span> Gelişim planı</a>
+        </nav>
+        <div className="sidebar-spacer" />
+        <button className={`ai-status ${ollamaState}`} onClick={() => setSettingsOpen(true)}>
+          <span className="pulse" />
+          <div><b>{ollamaState === "online" ? "OLLAMA BAĞLI" : ollamaState === "thinking" ? "OLLAMA DÜŞÜNÜYOR" : "OLLAMA AYARLA"}</b><small>{ollamaModel} · yerel</small></div>
+        </button>
+        <div className="player-card">
+          <div className="avatar">KD</div>
+          <div><b>{report?.player.name || "KDV"}</b><small>{report ? `${report.map || "CS2"} · ${report.rounds} round` : "Premier · 18,742"}</small></div>
+          <span>•••</span>
+        </div>
+      </aside>
+
+      <section className="workspace" id="dashboard">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">PERFORMANS MERKEZİ</p>
+            <h1>{report ? `${report.player.name} için analiz hazır.` : "Tekrar hoş geldin, KDV."}</h1>
+          </div>
+          <div className="top-actions">
+            <button className="ghost-button" onClick={() => setSettingsOpen(true)}>⚙ Kaynakları bağla</button>
+            <label className="upload-button">
+              <input type="file" accept=".dem,.bz2" onChange={handleDemo} />
+              <span>＋</span> {status === "parsing" || status === "reading" ? "%" + progress : "Demo yükle"}
+            </label>
+          </div>
+        </header>
+
+        <div className="match-strip">
+          <div className="map-thumb"><span>A</span><span>B</span></div>
+          <div><p>{report ? "YÜKLENEN DEMO" : "SON ANALİZ"}</p><b>{report ? `${report.map || "Bilinmeyen harita"} · ${fileName}` : "Dust II · Premier"}</b></div>
+          <span className="win-pill">{report ? `${report.rounds} ROUND` : "GALİBİYET"}</span>
+          <b className="score">{report ? report.kills : 13} <i>:</i> {report ? report.deaths : 9}</b>
+          <div className="match-meta"><span>{report ? "Tarayıcıda yerel analiz" : "Bugün, 21:42"}</span><span>{report ? `${report.assists} asist · ${report.adr} ADR` : "41 dk · CT 7:5 / T 6:4"}</span></div>
+          <button className="icon-button" aria-label="Başka maç seç">⌄</button>
+        </div>
+
+        {(status === "reading" || status === "parsing" || status === "ready" || status === "error") && (
+          <div className={`analysis-progress ${status}`} role="status">
+            <div><span>{status === "error" ? "!" : status === "ready" ? "✓" : "↻"}</span><b>{status === "error" ? error : progressLabel}</b><small>{status === "ready" ? "Veri cihazından ayrılmadı." : status === "error" ? "Dosyayı kontrol edip yeniden dene." : `${progress}%`}</small></div>
+            <div className="progress-track"><i style={{ width: `${status === "error" ? 100 : progress}%` }} /></div>
+            {status === "ready" && reports.length > 1 && (
+              <label className="player-select">Oyuncu
+                <select value={selectedPlayer} onChange={(event) => { setSelectedPlayer(event.target.value); setAiInsight(null); }}>
+                  {reports.map((item) => <option key={playerKey(item)} value={playerKey(item)}>{item.player.name}</option>)}
+                </select>
+              </label>
+            )}
+          </div>
+        )}
+
+        <div className="metrics-row">
+          {metrics.map((metric) => (
+            <article className="metric-card" key={metric.label}>
+              <span>{metric.label}</span>
+              <div><strong>{metric.value}</strong><em className={metric.tone}>{metric.delta}</em></div>
+            </article>
+          ))}
+          <article className="metric-card focus-score">
+            <span>Maç etkisi</span>
+            <div><strong>{report?.impact ?? 74}</strong><small>/100</small></div>
+            <div className="score-line"><i style={{ width: `${report?.impact ?? 74}%` }} /></div>
+          </article>
+        </div>
+
+        <div className="dashboard-grid">
+          <article className="coach-card">
+            <div className="card-kicker"><span className="spark">✦</span> {aiInsight ? "OLLAMA KOÇ" : "KURAL MOTORU"} · ÖNCELİKLİ BULGU <em>%{aiInsight?.confidence ?? insight?.confidence ?? 87} güven</em></div>
+            <h2>{aiInsight?.title || insight?.title || "A Short savunmanda"}<br/><span>{report ? "ölçümlere dayalı gelişim alanı." : "aynı hata tekrarlanıyor."}</span></h2>
+            <p className="coach-copy">
+              {aiInsight?.diagnosis || insight?.body || <>A site tutarken short temaslarında <b>4 kez öldün.</b> Üçünde rakip görüşüne flash desteği olmadan çıktın; ikisinde ilk mermi anında hâlâ hareket ediyordun.</>}
+            </p>
+            <div className="recommendation">
+              <span>01</span>
+              <div><b>Sonraki maç hedefin</b><p>{aiInsight?.action || (report ? "Öncelikli bulgunun geçtiği roundları aç, aynı pozisyonda flash veya geri düşme planını önceden belirle." : "Short temasından önce pop-flash iste; ikinci peek yerine rampaya geri düş.")}</p></div>
+            </div>
+            {report && <button className="ollama-coach-button" onClick={runAiCoach} disabled={ollamaState === "thinking"}>{ollamaState === "thinking" ? "Ollama analiz ediyor…" : "✦ Ollama ile derinleştir"}</button>}
+            <div className="evidence-list">
+              {evidence.map((item) => (
+                <button className="evidence-item" key={item.round}>
+                  <span className="round-tag">{item.round}</span>
+                  <b>{item.time}</b>
+                  <p>{item.text}</p>
+                  <em>{item.type}</em>
+                  <i>›</i>
+                </button>
+              ))}
+            </div>
+          </article>
+
+          <article className="map-card">
+            <div className="section-head">
+              <div><p>KONUMLANDIRMA</p><h3>Ölüm yoğunluğu</h3></div>
+              <div className="segmented"><button className="selected">CT</button><button>T</button></div>
+            </div>
+            <div className="radar" role="img" aria-label={`${report?.map || "Dust II"} üzerinde ölüm noktaları`}>
+              <div className="site site-a">A</div><div className="site site-b">B</div>
+              <div className="zone short">SHORT</div><div className="zone mid">MID</div><div className="zone long">LONG</div>
+              <span className="path p1"/><span className="path p2"/><span className="path p3"/><span className="path p4"/>
+              {!report && <><span className="heat h1"/><span className="heat h2"/><span className="heat h3"/><span className="heat h4"/><span className="death d1">×</span><span className="death d2">×</span><span className="death d3">×</span><span className="death d4">×</span></>}
+              {deathsOnMap.map((item, index) => {
+                const valid = deathsOnMap.filter((point) => point.x || point.y);
+                const xs = valid.map((point) => point.x); const ys = valid.map((point) => point.y);
+                const minX = Math.min(...xs, item.x - 1); const maxX = Math.max(...xs, item.x + 1);
+                const minY = Math.min(...ys, item.y - 1); const maxY = Math.max(...ys, item.y + 1);
+                const left = item.x || item.y ? 12 + ((item.x-minX)/(maxX-minX))*76 : 48 + (index%3)*5;
+                const top = item.x || item.y ? 12 + (1-(item.y-minY)/(maxY-minY))*76 : 34 + index*4;
+                return <span key={`${item.tick}-${index}`} className="death dynamic-death" style={{ left: `${left}%`, top: `${top}%` }} title={`R${item.round} · ${item.zone}`}>×</span>;
+              })}
+              <div className="map-callout"><b>{report ? `${report.topZoneDeaths} ölüm` : "4 ölüm"}</b><span>{report ? report.topZone : "A Short · 37 m² alan"}</span></div>
+            </div>
+            <div className="map-legend"><span><i className="red-dot"/>Ölüm</span><span><i className="green-dot"/>Takım arkadaşı</span><button>Roundları radarda oynat →</button></div>
+          </article>
+        </div>
+
+        <section className="lower-grid">
+          <article className="breakdown-card">
+            <div className="section-head"><div><p>MEKANİK</p><h3>Çatışma profili</h3></div><span className="versus">Son 10 maç</span></div>
+            <div className="bar-row"><span>Opening düello</span><div><i style={{width:`${report ? Math.min(100, 50+(report.openingKills-report.openingDeaths)*10) : 78}%`}}/></div><b>{report ? `${report.openingKills}-${report.openingDeaths}` : "78"}</b></div>
+            <div className="bar-row"><span>Counter-strafe</span><div><i className="orange" style={{width:`${report ? 100-report.movingShotPercent : 54}%`}}/></div><b>{report ? 100-report.movingShotPercent : 54}</b></div>
+            <div className="bar-row"><span>Utility hasarı</span><div><i style={{width:`${report ? Math.min(100, report.utilityDamage/2) : 69}%`}}/></div><b>{report?.utilityDamage ?? 69}</b></div>
+            <div className="bar-row"><span>Flash süresi</span><div><i className="orange" style={{width:`${report ? Math.min(100, report.enemyBlindSeconds*4) : 61}%`}}/></div><b>{report ? `${report.enemyBlindSeconds}s` : "61"}</b></div>
+          </article>
+          <article className="timeline-card">
+            <div className="section-head"><div><p>ROUND AKIŞI</p><h3>Etki zaman çizgisi</h3></div><span className="versus">13–9</span></div>
+            <div className="round-bars">
+              {[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22].map((round) => (
+                <span key={round} className={[4,9,16,19].includes(round) ? "lost bad-round" : [2,5,7,12,15,18,21].includes(round) ? "impact" : round % 3 === 0 ? "lost" : "neutral"} title={`Round ${round}`} />
+              ))}
+            </div>
+            <div className="timeline-note"><span>✦</span><p><b>{report ? `${report.topZone} tekrar ediyor` : "CT tarafında erken düşüş"}</b> · {report ? `${report.topZoneDeaths} ölüm, ${report.unflashedDeaths} tanesinde yakın flash yok.` : "İlk ölüm olduğun 5 roundun 4'ü kaybedildi."}</p></div>
+          </article>
+        </section>
+
+        <section className="analysis-matrix" id="training">
+          <div className="matrix-title"><div><p className="eyebrow">TAM ANALİZ SETİ</p><h2>Tek maçta dört performans katmanı</h2></div><span>{report ? "Gerçek demo verisi" : "Örnek görünüm"}</span></div>
+          <div className="analysis-cards">
+            <article><header><span>01</span><div><b>Aim & hareket</b><small>Atış anındaki davranış</small></div></header><dl><div><dt>Hareketli atış</dt><dd>%{report?.movingShotPercent ?? 18}</dd></div><div><dt>Headshot</dt><dd>%{report?.headshotPercent ?? 48}</dd></div><div><dt>Toplam atış</dt><dd>{report?.shots ?? 286}</dd></div></dl></article>
+            <article><header><span>02</span><div><b>Pozisyon & trade</b><small>Harita ve takım mesafesi</small></div></header><dl><div><dt>Yoğun ölüm alanı</dt><dd>{report?.topZone ?? "A Short"}</dd></div><div><dt>Trade oranı</dt><dd>%{report?.tradePercent ?? 19}</dd></div><div><dt>Çevrilmeyen ölüm</dt><dd>{report?.untradedDeaths ?? 4}</dd></div></dl></article>
+            <article><header><span>03</span><div><b>Utility etkisi</b><small>Flash ve alan hasarı</small></div></header><dl><div><dt>Utility hasarı</dt><dd>{report?.utilityDamage ?? 78}</dd></div><div><dt>Rakip kör süresi</dt><dd>{report?.enemyBlindSeconds ?? 12.4}s</dd></div><div><dt>Atılan flash</dt><dd>{report?.flashesThrown ?? 7}</dd></div></dl></article>
+            <article><header><span>04</span><div><b>Round etkisi</b><small>Açılış ve sürdürülebilirlik</small></div></header><dl><div><dt>Opening</dt><dd>{report ? `${report.openingKills}-${report.openingDeaths}` : "3-2"}</dd></div><div><dt>ADR</dt><dd>{report?.adr ?? 78.4}</dd></div><div><dt>Etki skoru</dt><dd>{report?.impact ?? 74}/100</dd></div></dl></article>
+          </div>
+        </section>
+      </section>
+
+      {settingsOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={() => setSettingsOpen(false)}>
+          <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" onMouseDown={(event) => event.stopPropagation()}>
+            <button className="modal-close" onClick={() => setSettingsOpen(false)} aria-label="Ayarları kapat">×</button>
+            <p className="eyebrow">YEREL AI</p>
+            <h2 id="settings-title">Ollama bağlantısı</h2>
+            <p>Analiz özeti yalnızca cihazındaki Ollama servisine gönderilir. Demo dosyasının kendisi gönderilmez.</p>
+            <label>Sunucu adresi<input value={ollamaUrl} onChange={(event) => setOllamaUrl(event.target.value)} /></label>
+            <label>Model<input value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)} /></label>
+            <div className="settings-actions"><button className="ghost-button" onClick={testOllama}>{ollamaState === "checking" ? "Kontrol ediliyor…" : "Bağlantıyı test et"}</button><button className="upload-button" onClick={() => setSettingsOpen(false)}>Kaydet</button></div>
+            <div className={`connection-result ${ollamaState}`}>{ollamaState === "online" ? "✓ Ollama erişilebilir" : ollamaState === "offline" ? "Ollama'ya ulaşılamadı. OLLAMA_ORIGINS ayarını kontrol et." : "Varsayılan: http://127.0.0.1:11434"}</div>
+            <hr/>
+            <p className="eyebrow">MAÇ KAYNAKLARI</p>
+            <details className="source-details">
+              <summary className="source-row"><div><b>Valve Premier / Competitive</b><span>Game Authentication Code + son match token</span></div><em>Yapılandır →</em></summary>
+              <div className="source-form">
+                <input aria-label="SteamID64" placeholder="SteamID64 (17 hane)" value={steamId} onChange={(event) => setSteamId(event.target.value)} />
+                <input aria-label="Game Authentication Code" type="password" placeholder="Game Authentication Code" value={steamAuthCode} onChange={(event) => setSteamAuthCode(event.target.value)} />
+                <input aria-label="Son match token" placeholder="CSGO-xxxxx-… son match token" value={steamKnownCode} onChange={(event) => setSteamKnownCode(event.target.value)} />
+                <button className="ghost-button" onClick={checkSteamMatch}>Sonraki maçı kontrol et</button>
+              </div>
+            </details>
+            <details className="source-details">
+              <summary className="source-row"><div><b>FACEIT</b><span>Maç geçmişi ve demo URL senkronizasyonu</span></div><em>Yapılandır →</em></summary>
+              <div className="source-form source-form-faceit"><input aria-label="FACEIT kullanıcı adı" placeholder="FACEIT kullanıcı adı" value={faceitNickname} onChange={(event) => setFaceitNickname(event.target.value)} /><button className="ghost-button" onClick={checkFaceit}>Profili kontrol et</button></div>
+            </details>
+            {sourceMessage && <div className="connection-result">{sourceMessage}</div>}
+          </section>
+        </div>
+      )}
+    </main>
+  );
+}
