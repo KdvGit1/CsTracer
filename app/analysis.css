@@ -16,6 +16,27 @@
 .analysis-empty-state p { max-width: 560px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .analysis-empty-state > span { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 50%; background: #202919; color: var(--acid); font-size: 18px; }
 .analysis-empty-state button { margin-top: 6px; padding: 9px 12px; border: 0; border-radius: 5px; background: var(--acid); color: #0a0d0c; font-size: 11px; font-weight: 900; cursor: pointer; }
+.player-card { width: 100%; background: transparent; color: var(--ink); text-align: left; cursor: pointer; }
+.player-card:hover { color: var(--acid); }
+.profile-memory-note { display: grid; grid-template-columns: 12px 1fr auto; gap: 8px; align-items: center; margin-top: 10px; padding: 9px 11px; border: 1px solid #473a25; border-radius: 7px; background: #211b13; color: #d2c19f; font-size: 10px; }
+.profile-memory-note.saved { border-color: #34471f; background: #151d11; color: #cfe29a; }
+.profile-memory-note > span { color: #ffb761; font-size: 8px; }
+.profile-memory-note.saved > span { color: var(--acid); }
+.profile-memory-note button { border: 0; background: transparent; color: var(--acid); font-size: 10px; font-weight: 900; cursor: pointer; }
+.profile-modal { width: min(650px, 100%); }
+.profile-player-list { display: grid; gap: 7px; margin-top: 16px; max-height: 430px; overflow: auto; }
+.profile-player-list > button { display: grid; grid-template-columns: 38px 1fr auto; gap: 11px; align-items: center; padding: 11px; border: 1px solid var(--line); border-radius: 7px; background: #0d1010; color: var(--ink); text-align: left; cursor: pointer; }
+.profile-player-list > button:hover,
+.profile-player-list > button.selected { border-color: #45602a; background: #151d11; }
+.profile-player-list > button > span { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 6px; background: #202919; color: var(--acid); font-size: 10px; font-weight: 1000; }
+.profile-player-list > button > div { display: grid; gap: 4px; }
+.profile-player-list b { font-size: 12px; }
+.profile-player-list small { color: var(--muted); font: 9px monospace; }
+.profile-player-list em { color: var(--acid); font-size: 9px; font-style: normal; font-weight: 900; }
+.profile-empty { display: grid; place-items: center; gap: 8px; padding: 28px; border: 1px dashed #3b4438; border-radius: 8px; text-align: center; }
+.profile-empty span { color: var(--muted); font-size: 11px; }
+.profile-empty button { margin-top: 5px; padding: 9px 11px; border: 0; border-radius: 5px; background: var(--acid); color: #081009; font-size: 10px; font-weight: 900; cursor: pointer; }
+.profile-message { margin-top: 10px; padding: 9px 10px; border-radius: 5px; background: #151918; color: var(--muted); font-size: 10px; }
 
 .classification-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; }
 .classification-head span { color: var(--acid); font-size: 9px; font-weight: 900; letter-spacing: .11em; }

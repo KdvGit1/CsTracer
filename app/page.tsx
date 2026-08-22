@@ -3,6 +3,7 @@
 import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import { radarMapFor, worldToRadar } from "./map-data";
 import "./analysis.css";
+import { CompactMatchSummary, GrowthView, ProgressMatch } from "./growth";
 
 const COMPANION_URL = "http://127.0.0.1:43119";
 const HANDLE_DATABASE = "tracer-local";
@@ -341,6 +342,49 @@ function buildCoachPacket(report: PlayerReport): CoachPacket {
   };
 }
 
+type PlayerIdentity = { steamid: string; name: string };
+type CurrentDemoMeta = { fileName: string; lastModified: number; size: number };
+
+function clampScore(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function buildCompactSummary(report: PlayerReport): CompactMatchSummary {
+  const rounds = Math.max(1, report.rounds);
+  const kd = report.kills / Math.max(1, report.deaths);
+  const aim = clampScore(
+    Math.min(100, report.headshotPercent / 60 * 100) * .42
+    + Math.min(100, report.adr / 90 * 100) * .36
+    + Math.min(100, kd / 1.25 * 100) * .22,
+  );
+  const movement = clampScore(100 - (report.movementProfile?.severityScore ?? Math.min(100, report.movingShotPercent * 2.2)));
+  const utility = clampScore(
+    Math.min(100, report.utilityDamage / rounds / 6 * 100) * .58
+    + Math.min(100, report.enemyBlindSeconds / rounds / 1.5 * 100) * .42,
+  );
+  const teamwork = clampScore(
+    Math.min(100, report.tradePercent / 55 * 100) * .68
+    + Math.min(100, report.assists / rounds / .28 * 100) * .32,
+  );
+  const zoneShare = report.deaths ? report.topZoneDeaths / report.deaths * 100 : 0;
+  const openingDeathShare = report.rounds ? report.openingDeaths / report.rounds * 100 : 0;
+  const position = clampScore(100 - Math.max(0, zoneShare - 20) * .9 - openingDeathShare * 1.5);
+  const roundImpact = clampScore(report.impact);
+  const dimensions = { aim, movement, utility, teamwork, position, roundImpact };
+  const overall = clampScore(aim * .24 + movement * .16 + utility * .14 + teamwork * .15 + position * .15 + roundImpact * .16);
+  return {
+    overall,
+    dimensions,
+    stats: {
+      kills: report.kills, deaths: report.deaths, assists: report.assists, adr: Math.round(report.adr * 10) / 10,
+      headshotPercent: report.headshotPercent, tradePercent: report.tradePercent,
+    },
+    weapons: (report.weaponStats || []).slice(0, 6).map((weapon) => ({
+      weapon: weapon.weapon, label: weapon.label, score: weapon.score, kills: weapon.kills, shots: weapon.shots,
+    })),
+  };
+}
+
 export default function Home() {
   const workerRef = useRef<Worker | null>(null);
   const [status, setStatus] = useState<ParseStatus>("idle");
@@ -372,6 +416,17 @@ export default function Home() {
   const [companionState, setCompanionState] = useState<CompanionState>("checking");
   const [sideFilter, setSideFilter] = useState<"all" | "CT" | "T">("all");
   const [activeSection, setActiveSection] = useState("dashboard");
+  const [activeView, setActiveView] = useState<"analysis" | "growth">("analysis");
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [preferredPlayer, setPreferredPlayer] = useState<PlayerIdentity | null>(null);
+  const [profileReady, setProfileReady] = useState(false);
+  const [progressMatches, setProgressMatches] = useState<ProgressMatch[]>([]);
+  const [progressLoading, setProgressLoading] = useState(true);
+  const [progressMessage, setProgressMessage] = useState("");
+  const [currentDemoMeta, setCurrentDemoMeta] = useState<CurrentDemoMeta | null>(null);
+  const savedSummaryRef = useRef("");
+  const preferredPlayerRef = useRef<PlayerIdentity | null>(null);
+  const reportsRef = useRef<PlayerReport[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -403,7 +458,34 @@ export default function Home() {
     };
   }, []);
 
-  const report = useMemo(() => reports.find((item) => (item.player.steamid || item.player.name) === selectedPlayer) || reports[0], [reports, selectedPlayer]);
+  useEffect(() => {
+    void (async () => {
+      setProgressLoading(true);
+      try {
+        const response = await fetch("/api/progress", { cache: "no-store" });
+        const payload = await response.json() as { profile?: PlayerIdentity | null; matches?: ProgressMatch[]; error?: string };
+        if (!response.ok) throw new Error(payload.error || "Gelişim hafızası okunamadı.");
+        const profile = payload.profile || null;
+        preferredPlayerRef.current = profile;
+        setPreferredPlayer(profile);
+        setProfileReady(Boolean(profile));
+        setProgressMatches(Array.isArray(payload.matches) ? payload.matches : []);
+        if (profile && reportsRef.current.length) {
+          const matched = reportsRef.current.find((item) => profile.steamid ? item.player.steamid === profile.steamid : item.player.name === profile.name);
+          setSelectedPlayer(matched ? (matched.player.steamid || matched.player.name) : "");
+          setProfileOpen(!matched);
+        }
+        setProgressMessage("");
+      } catch (historyError) {
+        setProfileReady(false);
+        setProgressMessage(historyError instanceof Error ? historyError.message : "Gelişim hafızası okunamadı.");
+      } finally {
+        setProgressLoading(false);
+      }
+    })();
+  }, []);
+
+  const report = useMemo(() => reports.find((item) => (item.player.steamid || item.player.name) === selectedPlayer), [reports, selectedPlayer]);
   const coachPacket = useMemo(() => report ? buildCoachPacket(report) : null, [report]);
   const deathPatterns = useMemo(() => report ? buildDeathPatterns(report) : [], [report]);
   const displayedCoachItems: CoachFinding[] = aiInsight?.priorities?.length ? aiInsight.priorities.slice(0, 3).map((item, index) => ({
@@ -476,20 +558,88 @@ export default function Home() {
     },
   ] : [];
 
+  useEffect(() => {
+    if (!report || !preferredPlayer || !profileReady || !currentDemoMeta || status !== "ready") return;
+    const samePlayer = preferredPlayer.steamid ? report.player.steamid === preferredPlayer.steamid : report.player.name === preferredPlayer.name;
+    if (!samePlayer) return;
+    const reportKey = report.player.steamid || report.player.name;
+    const summaryKey = `${currentDemoMeta.fileName}:${currentDemoMeta.lastModified}:${currentDemoMeta.size}:${reportKey}`;
+    if (savedSummaryRef.current === summaryKey) return;
+    savedSummaryRef.current = summaryKey;
+    const summary = buildCompactSummary(report);
+    const savedMatch: ProgressMatch = {
+      id: summaryKey, date: currentDemoMeta.lastModified || Date.now(), fileName: currentDemoMeta.fileName,
+      map: report.map, playerSteamId: report.player.steamid, playerName: report.player.name, summary,
+    };
+    void (async () => {
+      try {
+        const response = await fetch("/api/progress", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ matchId: summaryKey, matchDate: savedMatch.date, fileName: savedMatch.fileName, map: savedMatch.map, player: report.player, summary }),
+        });
+        const payload = await response.json() as { error?: string };
+        if (!response.ok) throw new Error(payload.error || "Maç özeti kaydedilemedi.");
+        setProgressMatches((current) => [savedMatch, ...current.filter((item) => item.id !== savedMatch.id)].sort((a, b) => b.date - a.date).slice(0, 90));
+        setProgressMessage("Maç özeti gelişim hafızasına kaydedildi.");
+      } catch (saveError) {
+        savedSummaryRef.current = "";
+        setProgressMessage(saveError instanceof Error ? saveError.message : "Maç özeti kaydedilemedi.");
+      }
+    })();
+  }, [report, preferredPlayer, profileReady, currentDemoMeta, status]);
+
   function playerKey(item: PlayerReport) {
     return item.player.steamid || item.player.name;
   }
 
+  function playerMatchesIdentity(item: PlayerReport, identity: PlayerIdentity) {
+    return identity.steamid ? item.player.steamid === identity.steamid : item.player.name === identity.name;
+  }
+
+  async function chooseOwnPlayer(key: string) {
+    const chosen = reports.find((item) => playerKey(item) === key);
+    if (!chosen) return;
+    const identity = { steamid: chosen.player.steamid || "", name: chosen.player.name };
+    preferredPlayerRef.current = identity;
+    setSelectedPlayer(key);
+    setPreferredPlayer(identity);
+    setAiInsight(null);
+    setProfileOpen(false);
+    setProfileReady(false);
+    setProgressMessage("Kişisel oyuncu profili kaydediliyor…");
+    try {
+      const response = await fetch("/api/progress", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(identity) });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Oyuncu profili kaydedilemedi.");
+      const historyResponse = await fetch("/api/progress", { cache: "no-store" });
+      const historyPayload = await historyResponse.json() as { matches?: ProgressMatch[]; error?: string };
+      if (!historyResponse.ok) throw new Error(historyPayload.error || "Bu oyuncunun gelişim geçmişi okunamadı.");
+      setProgressMatches(Array.isArray(historyPayload.matches) ? historyPayload.matches : []);
+      setProfileReady(true);
+      setProgressMessage(`${identity.name} kişisel oyuncun olarak kaydedildi.`);
+    } catch (profileError) {
+      setProgressMessage(profileError instanceof Error ? profileError.message : "Oyuncu profili kaydedilemedi.");
+    }
+  }
+
   function navigateTo(sectionId: string) {
+    setActiveView("analysis");
     setActiveSection(sectionId);
-    document.getElementById(sectionId)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.setTimeout(() => document.getElementById(sectionId)?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   }
 
   function applyReports(nextReports: PlayerReport[]) {
+    reportsRef.current = nextReports;
     setReports(nextReports);
-    setSelectedPlayer(nextReports[0] ? playerKey(nextReports[0]) : "");
+    const savedIdentity = preferredPlayerRef.current;
+    const matched = savedIdentity ? nextReports.find((item) => playerMatchesIdentity(item, savedIdentity)) : undefined;
+    setSelectedPlayer(matched ? playerKey(matched) : "");
+    if (!matched && nextReports.length) {
+      setProfileOpen(true);
+      setProgressMessage(savedIdentity ? `${savedIdentity.name} bu demoda bulunamadı; başka oyuncu otomatik seçilmedi.` : "Bu demoda kendini bir kez seç; sonraki maçlarda otomatik eşleştirilecek.");
+    }
     setProgress(100);
-    setProgressLabel("Analiz tamamlandı · parser 0.42.0");
+    setProgressLabel(matched ? "Analiz tamamlandı · kişisel oyuncu doğrulandı" : "Analiz tamamlandı · kendi oyuncunu seç");
     setStatus("ready");
   }
 
@@ -543,6 +693,8 @@ export default function Home() {
 
   async function analyzeFile(file: File) {
     setAiInsight(null);
+    savedSummaryRef.current = "";
+    setCurrentDemoMeta({ fileName: file.name, lastModified: file.lastModified, size: file.size });
     setMapLevel("upper");
     setSideFilter("all");
     setError("");
@@ -789,7 +941,8 @@ export default function Home() {
       <aside className="sidebar">
         <div className="brand"><span>TR</span><strong>TRACER</strong></div>
         <nav aria-label="Ana menü">
-          <button className={`nav-item ${activeSection === "dashboard" ? "active" : ""}`} onClick={() => navigateTo("dashboard")}><span>⌁</span> Genel bakış</button>
+          <button className={`nav-item ${activeView === "analysis" && activeSection === "dashboard" ? "active" : ""}`} onClick={() => navigateTo("dashboard")}><span>⌁</span> Genel bakış</button>
+          <button className={`nav-item ${activeView === "growth" ? "active" : ""}`} onClick={() => { setActiveView("growth"); setActiveSection("growth"); }}><span>↗</span> Gelişim</button>
           <button className={`nav-item ${activeSection === "side-analysis" ? "active" : ""}`} onClick={() => navigateTo("side-analysis")}><span>CT</span> Taraf analizi</button>
           <button className={`nav-item ${activeSection === "weapon-profile" ? "active" : ""}`} onClick={() => navigateTo("weapon-profile")}><span>⌁</span> Silah profili</button>
           <button className={`nav-item ${activeSection === "map-analysis" ? "active" : ""}`} onClick={() => navigateTo("map-analysis")}><span>⌖</span> Harita olayları</button>
@@ -801,14 +954,14 @@ export default function Home() {
           <span className="pulse" />
           <div><b>{ollamaState === "released" ? "KAYNAKLAR BIRAKILDI" : ollamaState === "online" ? "OLLAMA BAĞLI" : ollamaState === "thinking" ? "OLLAMA DÜŞÜNÜYOR" : "OLLAMA AYARLA"}</b><small>{ollamaModel} · yerel</small></div>
         </button>
-        <div className="player-card">
+        <button className="player-card" onClick={() => setProfileOpen(true)} aria-label="Kişisel oyuncu profilini seç">
           <div className="avatar">KD</div>
-          <div><b>{report?.player.name || "Oyuncu seçilmedi"}</b><small>{report ? `${report.map || "CS2"} · ${report.rounds} round` : "Demo verisi bekleniyor"}</small></div>
+          <div><b>{preferredPlayer?.name || "Kendini seç"}</b><small>{preferredPlayer ? `${progressMatches.length} kayıtlı maç · kişisel profil` : "Başka oyuncu verisi kullanılmaz"}</small></div>
           <span>•••</span>
-        </div>
+        </button>
       </aside>
 
-      <section className="workspace" id="dashboard">
+      {activeView === "growth" ? <GrowthView matches={progressMatches} loading={progressLoading} playerName={preferredPlayer?.name} onBack={() => navigateTo("dashboard")} /> : <section className="workspace" id="dashboard">
         <header className="topbar">
           <div>
             <p className="eyebrow">PERFORMANS MERKEZİ</p>
@@ -836,15 +989,16 @@ export default function Home() {
         {report && (
           <section className="player-switcher" aria-label="Analiz edilecek oyuncu">
             <div className="player-switcher-avatar">{report.player.name.slice(0, 2).toLocaleUpperCase("tr-TR")}</div>
-            <div className="player-switcher-copy"><span>ANALİZ EDİLEN OYUNCU</span><b>{report.player.name}</b><small>{reports.length} oyuncu bulundu · seçim tüm raporu ve koç tavsiyesini değiştirir</small></div>
+            <div className="player-switcher-copy"><span>KİŞİSEL OYUNCU · KALICI</span><b>{report.player.name}</b><small>Bu SteamID/ad sonraki demolarla eşleştirilir; diğer oyuncular gelişim hafızasına girmez.</small></div>
             <label>
-              <span>Oyuncuyu değiştir</span>
-              <select value={selectedPlayer} onChange={(event) => { setSelectedPlayer(event.target.value); setAiInsight(null); }}>
+              <span>Demodaki ben</span>
+              <select value={selectedPlayer} onChange={(event) => void chooseOwnPlayer(event.target.value)}>
                 {reports.map((item) => <option key={playerKey(item)} value={playerKey(item)}>{item.player.name}</option>)}
               </select>
             </label>
           </section>
         )}
+        {progressMessage && <div className={`profile-memory-note ${/kaydedildi|kişisel oyuncun/i.test(progressMessage) ? "saved" : ""}`}><span>●</span>{progressMessage}<button onClick={() => setActiveView("growth")}>Gelişimi aç</button></div>}
 
         {(status === "reading" || status === "parsing" || status === "ready" || status === "error") && (
           <div className={`analysis-progress ${status}`} role="status">
@@ -899,7 +1053,7 @@ export default function Home() {
                 ))}
               </div>
               {report.movementProfile && <section className="movement-spectrum">
-                <header><div><span>ATIŞ HIZI PROFİLİ</span><b>Ortalama {report.movementProfile.averageSpeed} u/s · P90 {report.movementProfile.p90Speed} u/s</b></div><em className={`severity-badge ${coachPacket.findings.find((item) => item.id === "movement")?.severity || "info"}`}>{report.movementProfile.severityScore}/100 hata ağırlığı</em></header>
+                <header><div><span>ATIŞ HIZI PROFİLİ</span><b>Ortalama {report.movementProfile.averageSpeed} u/s · P90 hız eşiği {report.movementProfile.p90Speed} u/s</b></div><em className={`severity-badge ${coachPacket.findings.find((item) => item.id === "movement")?.severity || "info"}`}>{report.movementProfile.severityScore}/100 hata ağırlığı</em></header>
                 <div className="movement-bands">
                   {[
                     { label: "Sabit", range: "≤15", percent: report.movementProfile.stablePercent, className: "stable" },
@@ -908,7 +1062,7 @@ export default function Home() {
                     { label: "Yüksek", range: ">120", percent: report.movementProfile.fastPercent, className: "fast" },
                   ].map((band) => <div key={band.label}><span><b>{band.label}</b>{band.range} u/s</span><i><em className={band.className} style={{ width: `${band.percent}%` }}/></i><strong>%{band.percent}</strong></div>)}
                 </div>
-                <p>Mikro hareketler düşük ağırlıkla değerlendirilir; yüksek hızdaki atışlar hata puanını daha fazla yükseltir.</p>
+                <p><b>P90 bir silah değildir:</b> Atış anındaki hız ölçümlerinin %90’ı bu değerin altında, %10’u üstündedir. Mikro hareketler düşük ağırlıkla; yüksek hızdaki atışlar daha ağır değerlendirilir.</p>
               </section>}
               <section className="death-patterns">
                 <header><div><span>ORTAK ÖLÜM ÖRÜNTÜLERİ</span><b>Ölümlerde tekrar eden koşullar</b></div><small>{deathPatterns.length ? `${deathPatterns.length} örüntü sınıflandırıldı` : "Güçlü tekrar yok"}</small></header>
@@ -991,7 +1145,24 @@ export default function Home() {
           {developmentSteps.length ? <div className="plan-grid">{developmentSteps.map((step) => <article key={step.number}><header><span>{step.number}</span><em>{step.duration}</em></header><h3>{step.title}</h3><p><b>Neden?</b>{step.reason}</p><p><b>Ne yapacaksın?</b>{step.work}</p><footer><span>Başarı ölçütü</span><b>{step.success}</b></footer></article>)}</div> : <div className="plan-empty"><b>Kişisel plan için bir demo analiz et.</b><span>TRACER taraf, pozisyon, silah ve koç bulgularını tek çalışma sırasına dönüştürecek.</span><button onClick={() => { setArchiveOpen(true); void refreshCompanion(); }}>Yerel maç seç</button></div>}
           {report && <div className="plan-protocol"><span>Profesyonel gelişim döngüsü</span><b>Analiz et → tek davranış hedefi seç → 30–40 dk çalış → sonraki demoda aynı metriği yeniden ölç</b><p>Bir maç rastlantı olabilir. “Uzmanlık” veya kalıcı zayıflık etiketi için aynı haritada en az 5 demo karşılaştır.</p></div>}
         </section>
-      </section>
+      </section>}
+
+      {profileOpen && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setProfileOpen(false); }}>
+          <section className="settings-modal profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title">
+            <button className="modal-close" onClick={() => setProfileOpen(false)} aria-label="Oyuncu seçimini kapat">×</button>
+            <p className="eyebrow">KİŞİSEL OYUNCU KİLİDİ</p>
+            <h2 id="profile-title">Demoda hangisi sensin?</h2>
+            <p>Bir kez seçtiğinde SteamID varsa onunla, yoksa tam oyuncu adıyla sonraki maçlarda otomatik eşleştirilirsin. Başka oyuncuların analizi gelişim geçmişine asla yazılmaz.</p>
+            {reports.length ? <div className="profile-player-list">{reports.map((item) => {
+              const key = playerKey(item);
+              const selected = preferredPlayer ? playerMatchesIdentity(item, preferredPlayer) : false;
+              return <button className={selected ? "selected" : ""} onClick={() => void chooseOwnPlayer(key)} key={key}><span>{item.player.name.slice(0, 2).toLocaleUpperCase("tr-TR")}</span><div><b>{item.player.name}</b><small>{item.player.steamid || "SteamID yok · adla eşleştirilir"}</small></div><em>{selected ? "Kişisel profil" : "Bu benim"}</em></button>;
+            })}</div> : <div className="profile-empty"><b>Önce bir demo analiz et</b><span>Demodaki oyuncu listesi çıkarıldığında burada kendini seçebilirsin.</span><button onClick={() => { setProfileOpen(false); setArchiveOpen(true); void refreshCompanion(); }}>Yerel maç seç</button></div>}
+            {progressMessage && <div className="profile-message">{progressMessage}</div>}
+          </section>
+        </div>
+      )}
 
       {archiveOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setArchiveOpen(false); }}>
