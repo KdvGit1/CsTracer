@@ -177,10 +177,34 @@ function isGun(weapon) {
   return Boolean(weapon) && !/knife|bayonet|grenade|flash|smoke|molotov|incendiary|inferno|taser|c4|world|decoy/.test(weapon);
 }
 
-function movingShot(record) {
-  const vx = Number(role(record, "user", "velocity_X") ?? role(record, "player", "velocity_X") ?? 0);
-  const vy = Number(role(record, "user", "velocity_Y") ?? role(record, "player", "velocity_Y") ?? 0);
-  return Math.hypot(vx, vy) > 50;
+function shotSpeed(record, tickRow) {
+  const vx = Number(role(record, "user", "velocity_X") ?? role(record, "player", "velocity_X") ?? value(tickRow, ["velocity_X"], 0));
+  const vy = Number(role(record, "user", "velocity_Y") ?? role(record, "player", "velocity_Y") ?? value(tickRow, ["velocity_Y"], 0));
+  return Math.hypot(vx, vy);
+}
+
+function movingShot(record, tickRow) {
+  return shotSpeed(record, tickRow) > 50;
+}
+
+function buildMovementProfile(speeds) {
+  const sorted = [...speeds].sort((a, b) => a - b);
+  const total = sorted.length;
+  const count = (minimum, maximum = Infinity) => sorted.filter((speed) => speed > minimum && speed <= maximum).length;
+  const stableShots = sorted.filter((speed) => speed <= 15).length;
+  const microMoveShots = count(15, 50);
+  const movingShots = count(50, 120);
+  const fastMoveShots = count(120);
+  const percent = (amount) => total ? Math.round(amount / total * 100) : 0;
+  const severityScore = total ? Math.round((microMoveShots * .15 + movingShots * .6 + fastMoveShots) / total * 100) : 0;
+  const severity = severityScore >= 35 || percent(fastMoveShots) >= 18 ? "severe" : severityScore >= 20 || percent(fastMoveShots) >= 8 ? "moderate" : severityScore >= 8 ? "minor" : "clean";
+  return {
+    averageSpeed: total ? Math.round(sorted.reduce((sum, speed) => sum + speed, 0) / total * 10) / 10 : 0,
+    p90Speed: total ? Math.round(sorted[Math.min(total - 1, Math.floor(total * .9))] * 10) / 10 : 0,
+    stableShots, microMoveShots, movingShots, fastMoveShots,
+    stablePercent: percent(stableShots), microPercent: percent(microMoveShots), movingPercent: percent(movingShots), fastPercent: percent(fastMoveShots),
+    severityScore, severity,
+  };
 }
 
 function buildPlayerReport(player, grouped, ticks, header) {
@@ -191,6 +215,7 @@ function buildPlayerReport(player, grouped, ticks, header) {
   const hurts = grouped.player_hurt.filter((record) => matchesPlayer(record, "attacker", player) && !matchesPlayer(record, "user", player));
   const shots = grouped.weapon_fire.filter((record) => matchesPlayer(record, "user", player) || matchesPlayer(record, "player", player));
   const blinds = grouped.player_blind.filter((record) => matchesPlayer(record, "attacker", player));
+  const blindedEvents = grouped.player_blind.filter((record) => matchesPlayer(record, "user", player));
   const flashes = grouped.flashbang_detonate.filter((record) => matchesPlayer(record, "user", player) || matchesPlayer(record, "player", player));
   const roundEnds = grouped.round_end.filter((record) => !isWarmup(record));
   const rounds = Math.max(roundEnds.length, ...deathsAll.map(roundNumber), 1);
@@ -205,7 +230,9 @@ function buildPlayerReport(player, grouped, ticks, header) {
   const openingKills = Array.from(firstDeaths.values()).filter((record) => matchesPlayer(record, "attacker", player)).length;
   const openingDeaths = Array.from(firstDeaths.values()).filter((record) => matchesPlayer(record, "user", player)).length;
 
-  const movingShots = shots.filter(movingShot).length;
+  const speedForShot = (record) => shotSpeed(record, rowForPlayerAtTick(ticks, number(record, ["tick"]), player));
+  const movementProfile = buildMovementProfile(shots.map(speedForShot));
+  const movingShots = movementProfile.movingShots + movementProfile.fastMoveShots;
 
   const utilityDamage = hurts.filter((record) => /grenade|inferno|molotov|incendiary/i.test(text(record, ["weapon", "weapon_name"])))
     .reduce((sum, record) => sum + number(record, ["dmg_health", "health_damage", "damage"], 0), 0);
@@ -218,6 +245,7 @@ function buildPlayerReport(player, grouped, ticks, header) {
     const x = Number(role(record, "user", "X") ?? value(tickRow, ["X", "x"], 0));
     const y = Number(role(record, "user", "Y") ?? value(tickRow, ["Y", "y"], 0));
     const z = Number(role(record, "user", "Z") ?? value(tickRow, ["Z", "z"], 0));
+    const speed = Math.round(shotSpeed(record, tickRow) * 10) / 10;
     const team = Number(role(record, "user", "team_num") ?? value(tickRow, ["team_num"], 0));
     const sameTick = ticks.filter((candidate) => number(candidate, ["tick"]) === tick && Number(value(candidate, ["team_num"], -1)) === team);
     const teammateDistances = sameTick.filter((candidate) => text(candidate, ["steamid", "steam_id"]) !== player.steamid && text(candidate, ["name"]) !== player.name).map((candidate) => distance({ X:x, Y:y }, candidate));
@@ -226,6 +254,11 @@ function buildPlayerReport(player, grouped, ticks, header) {
     const recentFlash = flashes.some((flash) => roundNumber(flash) === round && number(flash, ["tick"]) <= tick && tick-number(flash, ["tick"]) <= 512);
     const killerName = playerName(record, "attacker");
     const traded = deathsAll.some((later) => number(later, ["tick"]) > tick && number(later, ["tick"])-tick <= 320 && playerName(later, "user") === killerName && !matchesPlayer(later, "attacker", player));
+    const wasBlind = blindedEvents.some((blind) => {
+      const blindTick = number(blind, ["tick"]);
+      const blindDuration = number(blind, ["blind_duration", "duration"], 0);
+      return blindTick <= tick && tick - blindTick <= Math.max(64, Math.round(blindDuration * 64));
+    });
     return {
       round,
       tick,
@@ -240,6 +273,9 @@ function buildPlayerReport(player, grouped, ticks, header) {
       usedRecentFlash: recentFlash,
       traded,
       side: teamSide(team),
+      speed,
+      openingDeath: firstDeaths.get(round) === record,
+      wasBlind,
     };
   });
 
@@ -277,7 +313,7 @@ function buildPlayerReport(player, grouped, ticks, header) {
     return {
       side, rounds: observedRounds.size, kills: sideKills.length, deaths: sideDeaths.length, assists: sideAssists.length,
       damage: sideDamage, adr: observedRounds.size ? Math.round(sideDamage / observedRounds.size * 10) / 10 : 0,
-      shots: sideShots.length, movingShotPercent: sideShots.length ? Math.round(sideShots.filter(movingShot).length / sideShots.length * 100) : 0,
+      shots: sideShots.length, movingShotPercent: sideShots.length ? Math.round(sideShots.filter((record) => movingShot(record, rowForPlayerAtTick(ticks, number(record, ["tick"]), player))).length / sideShots.length * 100) : 0,
       tradePercent: sideDeaths.length ? Math.round((sideDeaths.length - sideUntraded) / sideDeaths.length * 100) : 0,
       topZone: sideTopZone, topZoneDeaths: sideTopZoneDeaths,
     };
@@ -296,7 +332,7 @@ function buildPlayerReport(player, grouped, ticks, header) {
     return {
       weapon, label: weaponLabel(weapon), kills: weaponKills.length, damage: weaponDamage, shots: weaponShots.length,
       headshots: weaponHeadshots, headshotPercent: weaponKills.length ? Math.round(weaponHeadshots / weaponKills.length * 100) : 0,
-      movingShotPercent: weaponShots.length ? Math.round(weaponShots.filter(movingShot).length / weaponShots.length * 100) : 0,
+      movingShotPercent: weaponShots.length ? Math.round(weaponShots.filter((record) => movingShot(record, rowForPlayerAtTick(ticks, number(record, ["tick"]), player))).length / weaponShots.length * 100) : 0,
       efficiency, score, status,
     };
   }).sort((a, b) => b.kills - a.kills || b.damage - a.damage || b.shots - a.shots).slice(0, 10);
@@ -316,11 +352,11 @@ function buildPlayerReport(player, grouped, ticks, header) {
     body: `${topZoneDeaths} ölümün ${unflashedDeaths} tanesinde yakın zamanda kendi flashını kullanmadın. Aynı açıyı ikinci kez zorlamak yerine geri düşme veya takım flashı planla.`,
     confidence: Math.min(94, 60 + topZoneDeaths * 7),
   });
-  if (shots.length >= 8 && movingShots/shots.length > .18) recommendations.push({
+  if (shots.length >= 8 && movementProfile.severity !== "clean") recommendations.push({
     id: "movement",
-    title: "İlk mermi öncesi tam duruş eksik",
-    body: `Atışlarının yaklaşık %${Math.round(movingShots/shots.length*100)} kadarında hızın 50 u/s üzerindeydi. Counter-strafe zamanlamasını kısa burstlerle çalış.`,
-    confidence: 84,
+    title: movementProfile.severity === "severe" ? "Yüksek hızda atış öncelikli sorun" : movementProfile.severity === "moderate" ? "Duruş zamanlaması geliştirilebilir" : "Küçük hareket sapmaları var",
+    body: `Ortalama atış hızın ${movementProfile.averageSpeed} u/s, P90 hızın ${movementProfile.p90Speed} u/s. Mikro hareketler düşük ağırlıkla, 120 u/s üzeri atışlar ağır değerlendirilerek hata skoru ${movementProfile.severityScore}/100 hesaplandı.`,
+    confidence: shots.length >= 80 ? 88 : 74,
   });
   if (deaths.length >= 3 && untradedDeaths/deaths.length > .45) recommendations.push({
     id: "trade",
@@ -361,6 +397,7 @@ function buildPlayerReport(player, grouped, ticks, header) {
     killDetails,
     sideStats,
     weaponStats,
+    movementProfile,
     recommendations,
   };
 }
