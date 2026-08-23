@@ -46,6 +46,48 @@ let cudaProbeCache = null;
 let cudaDisabledReason = "";
 let progressWriteQueue = Promise.resolve();
 
+// --- Live In-Memory Log Buffer for Terminal / Diagnostics ---
+const LOG_HISTORY_MAX = 350;
+const logHistory = [];
+
+export function recordLog(level, message, meta = null) {
+  const entry = {
+    id: randomUUID(),
+    timestamp: new Date().toISOString(),
+    level, // 'info' | 'warn' | 'error' | 'gsi' | 'updater'
+    message: typeof message === "string" ? message : JSON.stringify(message),
+    meta,
+  };
+  logHistory.push(entry);
+  if (logHistory.length > LOG_HISTORY_MAX) {
+    logHistory.shift();
+  }
+  return entry;
+}
+
+const origLog = console.log;
+const origWarn = console.warn;
+const origError = console.error;
+
+console.log = (...args) => {
+  origLog(...args);
+  const msg = args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
+  const level = msg.includes("[UPDATER]") ? "updater" : msg.includes("[GSI]") ? "gsi" : "info";
+  recordLog(level, msg);
+};
+
+console.warn = (...args) => {
+  origWarn(...args);
+  const msg = args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
+  recordLog("warn", msg);
+};
+
+console.error = (...args) => {
+  origError(...args);
+  const msg = args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
+  recordLog("error", msg);
+};
+
 const COACH_RESPONSE_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -567,6 +609,41 @@ const server = createServer(async (request, response) => {
       const body = await readJsonBody(request, 64 * 1024);
       const res = await downloadAndApplyPatch(body?.patchUrl);
       sendJson(response, 200, res, origin);
+    } catch (err) {
+      sendJson(response, 500, { error: err instanceof Error ? err.message : String(err) }, origin);
+    }
+    return;
+  }
+
+  // --- Live Terminal & System Diagnostics Endpoints ---
+  if (request.method === "GET" && request.url === "/logs") {
+    sendJson(response, 200, {
+      ok: true,
+      logs: logHistory,
+      system: {
+        uptimeSec: Math.round(process.uptime()),
+        memoryMb: Math.round(process.memoryUsage().heapUsed / (1024 * 1024) * 10) / 10,
+        version: getLocalVersionInfo().version,
+        dataDir: DATA_DIR,
+        platform: process.platform,
+        nodeVersion: process.version,
+      }
+    }, origin);
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/logs/clear") {
+    logHistory.length = 0;
+    recordLog("info", "Terminal log geçmişi temizlendi.");
+    sendJson(response, 200, { ok: true }, origin);
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/system/open-log-dir") {
+    const logDir = join(process.env.LOCALAPPDATA || ROOT, "TRACER", "logs");
+    try {
+      spawn("explorer.exe", [logDir], { detached: true, stdio: "ignore" }).unref();
+      sendJson(response, 200, { ok: true, logDir }, origin);
     } catch (err) {
       sendJson(response, 500, { error: err instanceof Error ? err.message : String(err) }, origin);
     }

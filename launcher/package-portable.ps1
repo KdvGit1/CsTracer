@@ -46,9 +46,19 @@ foreach ($module in $essentialModules) {
 
 Copy-Item -LiteralPath (Join-Path $tracerRoot "companion") -Destination $releaseRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $tracerRoot "launcher") -Destination $releaseRoot -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $tracerRoot "TRACER-Yerel.cmd") -Destination $releaseRoot -Force
-Copy-Item -LiteralPath (Join-Path $tracerRoot "TRACER-Kapat.cmd") -Destination $releaseRoot -Force
-Copy-Item -LiteralPath (Join-Path $tracerRoot "PORTABLE.md") -Destination $releaseRoot -Force
+
+# Dynamically copy ALL root files (*.cmd, *.bat, *.ps1, *.json, *.md, *.png, *.ico, etc.) into portable release
+$excludedRootPatterns = @('^\.env', '\.tsbuildinfo$', 'package-lock\.json$', '^\.git', 'tsconfig\.json$', 'drizzle\.config\.ts$', 'next\.config\.ts$', 'vite\.config\.ts$', 'eslint\.config\.mjs$', 'postcss\.config\.mjs$')
+Get-ChildItem -LiteralPath $tracerRoot -File | ForEach-Object {
+  $fileName = $_.Name
+  $shouldExclude = $false
+  foreach ($pattern in $excludedRootPatterns) {
+    if ($fileName -match $pattern) { $shouldExclude = $true; break }
+  }
+  if (-not $shouldExclude) {
+    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $releaseRoot $fileName) -Force
+  }
+}
 try {
   Copy-Item -LiteralPath $nodePath -Destination (Join-Path $releaseRoot "runtime\node.exe") -Force -ErrorAction Stop
 } catch {

@@ -2,7 +2,8 @@ param(
   [switch]$NoWindow,
   [int]$TestDurationSeconds = 0,
   [string]$DataRoot = "",
-  [switch]$NoDialogs
+  [switch]$NoDialogs,
+  [switch]$DebugMode
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,6 +16,16 @@ $logRoot = Join-Path $dataRoot "logs"
 $profilePath = Join-Path $dataRoot "window-profile"
 $startedProcesses = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 
+if ($DebugMode) {
+  $host.UI.RawUI.WindowTitle = "TRACER - Canlı Hata Ayıklama & Terminal Konsolu"
+  Write-Host "=================================================================" -ForegroundColor Cyan
+  Write-Host "  TRACER v0.43.0 - CANLI GELİŞTİRİCİ & LOG TERMİNALİ" -ForegroundColor Cyan
+  Write-Host "=================================================================" -ForegroundColor Cyan
+  Write-Host "Kök Dizin: $tracerRoot" -ForegroundColor Gray
+  Write-Host "Log Dizini: $logRoot" -ForegroundColor Gray
+  Write-Host "-----------------------------------------------------------------" -ForegroundColor DarkGray
+}
+
 # Single-instance lock: prevent duplicate background launcher scripts from piling up
 $mutexName = "Global\TRACER_PORTABLE_LAUNCHER"
 $createdNew = $false
@@ -26,11 +37,19 @@ try {
 }
 
 if (-not $createdNew) {
-  # An instance of TRACER is already running. Exit cleanly without duplicating processes.
+  if ($DebugMode) {
+    Write-Host "[BİLGİ] TRACER zaten arka planda çalışıyor." -ForegroundColor Yellow
+    Write-Host "Mevcut oturumu sonlandırmak için TRACER-Kapat.cmd çalıştırabilirsiniz." -ForegroundColor White
+    Start-Sleep -Seconds 3
+  }
   exit 0
 }
 
 function Show-TracerError([string]$message) {
+  if ($DebugMode) {
+    Write-Host "`n[HATA] $message" -ForegroundColor Red
+    return
+  }
   if ($NoDialogs) { Write-Error $message; return }
   try {
     Add-Type -AssemblyName PresentationFramework
@@ -93,23 +112,25 @@ function Get-AppBrowserProcesses([string]$browserPath, [string]$profilePath) {
 }
 
 function Wait-ForAppBrowser([string]$browserPath, [string]$profilePath, [System.Diagnostics.Process]$starterProcess) {
-  Start-Sleep -Seconds 2
+  Start-Sleep -Seconds 3
 
   while ($true) {
-    # 1. Did the starter process exit?
-    if ($starterProcess -and $starterProcess.HasExited) {
+    # 1. Check if any browser window using our profile directory is still open
+    $runningBrowsers = Get-AppBrowserProcesses $browserPath $profilePath
+    if ($runningBrowsers.Count -eq 0) {
+      if ($DebugMode) { Write-Host "[BİLGİ] TRACER penceresi kapatıldı, servisler durduruluyor..." -ForegroundColor Yellow }
       return
     }
 
     # 2. Check if companion server has stopped or been told to shutdown
     try {
-      $healthCheck = Invoke-WebRequest -UseBasicParsing -Uri $companionHeartbeatUrl -TimeoutSec 1 -ErrorAction Stop
+      $healthCheck = Invoke-WebRequest -UseBasicParsing -Uri $companionHeartbeatUrl -TimeoutSec 2 -ErrorAction Stop
       if ($healthCheck.StatusCode -ne 200) { return }
     } catch {
       return
     }
 
-    Start-Sleep -Milliseconds 800
+    Start-Sleep -Milliseconds 1000
   }
 }
 
@@ -135,8 +156,10 @@ try {
 
   Start-Sleep -Milliseconds 200
 
+  if ($DebugMode) { Write-Host "[1/3] Companion & Demo Parser servisi başlatılıyor (Port 43119)..." -ForegroundColor Yellow }
   Start-HiddenNode @((Join-Path $tracerRoot "companion\server.mjs")) "companion" | Out-Null
 
+  if ($DebugMode) { Write-Host "[2/3] Web Arayüz servisi başlatılıyor (Port 43118)..." -ForegroundColor Yellow }
   $standaloneServer = Join-Path $tracerRoot "app-runtime\server.js"
   if (-not (Test-Path -LiteralPath $standaloneServer)) {
     $standaloneServer = Join-Path $tracerRoot "dist\standalone\server.js"
@@ -153,6 +176,16 @@ try {
 
   if (-not (Wait-ForUrl $companionUrl 35)) { throw "Demo parser 35 saniye içinde hazır olmadı. Log: $logRoot" }
   if (-not (Wait-ForUrl $appUrl 45)) { throw "Arayüz 45 saniye içinde hazır olmadı. Log: $logRoot" }
+
+  if ($DebugMode) {
+    Write-Host "[3/3] Servisler hazır! TRACER açılıyor..." -ForegroundColor Green
+    Write-Host "-----------------------------------------------------------------" -ForegroundColor DarkGray
+    Write-Host ">> Arayüz:    $appUrl" -ForegroundColor Cyan
+    Write-Host ">> Companion: http://127.0.0.1:43119" -ForegroundColor Cyan
+    Write-Host ">> GSI Port:  http://127.0.0.1:43119/gsi" -ForegroundColor Cyan
+    Write-Host "-----------------------------------------------------------------" -ForegroundColor DarkGray
+    Write-Host "Konsol açık kaldığı sürece tüm işlemler ve loglar canlı izlenir.`n" -ForegroundColor White
+  }
 
   if ($TestDurationSeconds -gt 0) {
     Start-Sleep -Seconds $TestDurationSeconds
@@ -179,7 +212,9 @@ try {
       Wait-ForAppBrowser $browser $profilePath $windowProcess
     } else {
       Start-Process $appUrl
-      Show-TracerError "TRACER normal tarayıcıda açıldı. Yerel servisleri kapatmak için TRACER-Kapat.cmd kullanabilirsin."
+      if (-not $DebugMode) {
+        Show-TracerError "TRACER normal tarayıcıda açıldı. Yerel servisleri kapatmak için TRACER-Kapat.cmd kullanabilirsin."
+      }
       while ($true) {
         try {
           $healthCheck = Invoke-WebRequest -UseBasicParsing -Uri $companionHeartbeatUrl -TimeoutSec 1 -ErrorAction Stop
@@ -191,6 +226,10 @@ try {
   }
 } catch {
   Show-TracerError $_.Exception.Message
+  if ($DebugMode) {
+    Write-Host "`nKapatmak için Enter tuşuna basın..." -ForegroundColor Yellow
+    [void][System.Console]::ReadLine()
+  }
   exit 1
 } finally {
   # 1. Stop all node processes started by this session

@@ -23,13 +23,31 @@ if (Test-Path -LiteralPath $versionJsonPath) {
   if ($vData.version) { $version = $vData.version }
 }
 
-# 4. Copy ONLY changed lightweight application files (No model, no runtime)
+# 4. Copy lightweight application files & directories dynamically
+# 4a. Standalone Next.js app bundle
 Copy-Item -LiteralPath (Join-Path $root "dist\standalone") -Destination (Join-Path $tempPatchDir "app-runtime") -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $root "companion") -Destination (Join-Path $tempPatchDir "companion") -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $root "launcher") -Destination (Join-Path $tempPatchDir "launcher") -Recurse -Force
-Copy-Item -LiteralPath (Join-Path $root "version.json") -Destination (Join-Path $tempPatchDir "version.json") -Force
-if (Test-Path -LiteralPath (Join-Path $root "TRACER-Yerel.cmd")) {
-  Copy-Item -LiteralPath (Join-Path $root "TRACER-Yerel.cmd") -Destination (Join-Path $tempPatchDir "TRACER-Yerel.cmd") -Force
+
+# 4b. Essential support folders (companion, launcher, etc.)
+$includedFolders = @("companion", "launcher", "public")
+foreach ($folder in $includedFolders) {
+  $folderPath = Join-Path $root $folder
+  if (Test-Path -LiteralPath $folderPath) {
+    Copy-Item -LiteralPath $folderPath -Destination (Join-Path $tempPatchDir $folder) -Recurse -Force
+  }
+}
+
+# 4c. Dynamically copy ALL root files (*.cmd, *.bat, *.ps1, *.json, *.md, *.png, *.ico, etc.)
+# Exclude hidden files, temp caches, env secrets and source lockfiles
+$excludedRootPatterns = @('^\.env', '\.tsbuildinfo$', 'package-lock\.json$', '^\.git', 'tsconfig\.json$', 'drizzle\.config\.ts$', 'next\.config\.ts$', 'vite\.config\.ts$', 'eslint\.config\.mjs$', 'postcss\.config\.mjs$')
+Get-ChildItem -LiteralPath $root -File | ForEach-Object {
+  $fileName = $_.Name
+  $shouldExclude = $false
+  foreach ($pattern in $excludedRootPatterns) {
+    if ($fileName -match $pattern) { $shouldExclude = $true; break }
+  }
+  if (-not $shouldExclude) {
+    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $tempPatchDir $fileName) -Force
+  }
 }
 
 # 5. Create Patch ZIP Archive
@@ -40,6 +58,6 @@ Compress-Archive -Path "$tempPatchDir\*" -DestinationPath $patchZipPath -Compres
 Remove-Item -LiteralPath $tempPatchDir -Recurse -Force
 
 $sizeMb = [Math]::Round(((Get-Item $patchZipPath).Length / 1MB), 2)
-Write-Host ">>> BAŞARILI! TRACER Patch ZIP Oluşturuldu:" -ForegroundColor Green
+Write-Host ">>> BAŞARILI! TRACER Dinamik Patch ZIP Oluşturuldu:" -ForegroundColor Green
 Write-Host "Dosya: $patchZipPath ($sizeMb MB)" -ForegroundColor Yellow
-Write-Host "Bu 3 MB'lık zip dosyasını GitHub Releases'e veya web sunucunuza yükleyebilirsiniz." -ForegroundColor White
+Write-Host "Tüm güncel betikler, arayüz ve versiyon dosyaları otomatik pakete dahil edildi." -ForegroundColor White

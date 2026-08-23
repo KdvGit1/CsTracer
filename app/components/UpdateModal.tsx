@@ -126,13 +126,13 @@ export default function UpdateModal({
             <div className="version-compare-card">
               <div>
                 <span>Şu Anki Sürüm</span>
-                <b>v{updateInfo?.currentVersion || "0.42.0"}</b>
+                <b>v{updateInfo?.currentVersion || "0.43.0"}</b>
               </div>
               <div className="version-arrow">➔</div>
               <div>
                 <span>En Son Sürüm</span>
                 <b className={hasNew ? "latest-badge-new" : "latest-badge-current"}>
-                  v{updateInfo?.latestVersion || updateInfo?.currentVersion || "0.42.0"}
+                  v{updateInfo?.latestVersion || updateInfo?.currentVersion || "0.43.0"}
                 </b>
               </div>
             </div>

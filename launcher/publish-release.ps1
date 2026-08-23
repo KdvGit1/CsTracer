@@ -30,11 +30,35 @@ if (-not $targetVersion) {
   else { $targetVersion = $currentVersion }
 }
 
+# Helper: Write UTF-8 WITHOUT BOM (Node.js JSON.parse compatibility)
+function Write-Utf8NoBom([string]$filePath, [string]$fileContent) {
+  $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+  [System.IO.File]::WriteAllText($filePath, $fileContent, $utf8NoBom)
+}
+
 # 3. version.json dosyasını güncelle
 $vData.version = $targetVersion
 $vData.releaseDate = (Get-Date -Format "yyyy-MM-dd")
-$vData | ConvertTo-Json -Depth 5 | Set-Content -Path $versionFile -Encoding utf8
-Write-Host "`n[1/4] version.json güncellendi: v$targetVersion" -ForegroundColor Green
+$versionJsonStr = $vData | ConvertTo-Json -Depth 5
+Write-Utf8NoBom $versionFile $versionJsonStr
+
+# 3b. companion/updater.mjs ve package.json içindeki sürümü de senkronize et
+$updaterMjsPath = Join-Path $root "companion\updater.mjs"
+if (Test-Path -LiteralPath $updaterMjsPath) {
+  $content = Get-Content -Raw -LiteralPath $updaterMjsPath
+  $content = $content -replace 'export const CURRENT_VERSION = ".*?";', "export const CURRENT_VERSION = `"$targetVersion`";"
+  Write-Utf8NoBom $updaterMjsPath $content
+}
+
+$pkgJsonPath = Join-Path $root "package.json"
+if (Test-Path -LiteralPath $pkgJsonPath) {
+  $pkgData = Get-Content -Raw -LiteralPath $pkgJsonPath | ConvertFrom-Json
+  $pkgData.version = $targetVersion
+  $pkgJsonStr = $pkgData | ConvertTo-Json -Depth 5
+  Write-Utf8NoBom $pkgJsonPath $pkgJsonStr
+}
+
+Write-Host "`n[1/4] version.json ve kod tabanı güncellendi: v$targetVersion" -ForegroundColor Green
 
 # 4. Patch ZIP Paketini Oluştur
 Write-Host "[2/4] Hafif Yama Paketi (TRACER-Patch-v$targetVersion.zip) oluşturuluyor..." -ForegroundColor Yellow

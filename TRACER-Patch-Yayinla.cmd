@@ -1,6 +1,9 @@
 @echo off
-chcp 65001 >nul
-title TRACER - Sürüm & Yama Yayınlayıcı
+title TRACER Surum ve Yama Yayimlayici
 cd /d "%~dp0"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0launcher\publish-release.ps1"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0launcher\publish-release.ps1"
+if %errorlevel% neq 0 (
+  echo.
+  echo [HATA] Surum yayinlama sirasinda bir hata olustu.
+)
 pause

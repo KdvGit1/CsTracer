@@ -1,12 +1,12 @@
-﻿{
-    "version":  "0.43.0",
+{
+    "version":  "0.44",
     "githubRepo":  "KdvGit1/CsTracer",
-    "releaseDate":  "2026-08-23",
-    "title":  "TRACER v0.42.0 - Canlı Maç Koçluğu \u0026 Silah Duyarlılığı",
+    "releaseDate":  "2026-08-24",
+    "title":  "TRACER v0.44.0 - Canlı Terminal, Otomatik Yama \u0026 Onarımlar",
     "changelog":  [
-                      "Valve CS2 Realtime GSI ile Canlı Maç Koçluğu eklendi.",
-                      "Freezetime 15s Altın Odaklanma Tavsiyesi kartı eklendi.",
-                      "Silah türlerine (Tüfek vs SMG vs AWP) duyarlı hareket tolerans sistemi eklendi.",
-                      "Tek tıkla CS2 otomatik entegrasyonu sağlandı."
+                      "Dinamik ve sıfır bakımlı otomatik yama paketleme sistemi eklendi.",
+                      "Canlı Terminal \u0026 Hata Ayıklama konsolu (TRACER-Terminal.cmd) eklendi.",
+                      "Arayüze canlı log izleme, arama ve teşhis paneli entegre edildi.",
+                      "Tarayıcı başlatma ve versiyon senkronizasyon hataları giderildi."
                   ]
 }

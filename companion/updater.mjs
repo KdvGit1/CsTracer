@@ -10,19 +10,20 @@ import { createWriteStream } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
-export const CURRENT_VERSION = "0.42.0";
+export const CURRENT_VERSION = "0.44";
 
 export function getLocalVersionInfo() {
   const versionFile = join(ROOT, "version.json");
   if (existsSync(versionFile)) {
     try {
-      return JSON.parse(readFileSync(versionFile, "utf8"));
+      const data = JSON.parse(readFileSync(versionFile, "utf8"));
+      if (data && data.version) return data;
     } catch { /* ignore */ }
   }
   return {
     version: CURRENT_VERSION,
     releaseDate: "2026-08-23",
-    title: "TRACER v0.42.0",
+    title: `TRACER v${CURRENT_VERSION}`,
     githubRepo: "KdvGit1/CsTracer",
   };
 }
@@ -142,6 +143,8 @@ export async function downloadAndApplyPatch(patchUrl) {
   const tempZipPath = join(workDir, `tracer-patch-${randomUUID()}.zip`);
   const extractDir = join(workDir, `extracted-${randomUUID()}`);
 
+  console.log(`[UPDATER] Yeni yama indiriliyor: ${patchUrl}`);
+
   try {
     await mkdir(workDir, { recursive: true });
 
@@ -157,6 +160,7 @@ export async function downloadAndApplyPatch(patchUrl) {
     }
 
     await pipeline(res.body, createWriteStream(tempZipPath));
+    console.log("[UPDATER] Yama zip dosyası başarıyla indirildi.");
 
     // 2. Extract Patch ZIP using PowerShell built-in Expand-Archive (zero dependencies)
     await mkdir(extractDir, { recursive: true });
@@ -168,8 +172,11 @@ export async function downloadAndApplyPatch(patchUrl) {
     ], { windowsHide: true, timeout: 35000 });
 
     if (extractResult.status !== 0) {
-      throw new Error("Yama arşivi açılamadı: " + (extractResult.stderr?.toString("utf8") || "Arşiv hatası"));
+      const err = extractResult.stderr?.toString("utf8") || "Arşiv açılamadı.";
+      console.error("[UPDATER] Expand-Archive hatası:", err);
+      throw new Error("Yama arşivi açılamadı: " + err);
     }
+    console.log("[UPDATER] Yama dosyaları geçici dizine açıldı.");
 
     // 3. Copy extracted files into ROOT
     const copyResult = spawnSync("powershell.exe", [
@@ -180,16 +187,26 @@ export async function downloadAndApplyPatch(patchUrl) {
     ], { windowsHide: true, timeout: 35000 });
 
     if (copyResult.status !== 0) {
-      throw new Error("Yama dosyaları uygulanamadı: " + (copyResult.stderr?.toString("utf8") || "Kopyalama hatası"));
+      const err = copyResult.stderr?.toString("utf8") || "Kopyalama hatası";
+      console.error("[UPDATER] Copy-Item hatası:", err);
+      throw new Error("Yama dosyaları uygulanamadı: " + err);
     }
+
+    const updatedLocal = getLocalVersionInfo();
+    console.log(`[UPDATER] Yama başarıyla uygulandı! Yeni aktif sürüm: v${updatedLocal.version}`);
 
     return {
       ok: true,
-      message: "Yama başarıyla uygulandı! Uygulama yenileniyor...",
+      newVersion: updatedLocal.version,
+      message: `Yama başarıyla uygulandı (v${updatedLocal.version})! Uygulama yenileniyor...`,
     };
+  } catch (err) {
+    console.error("[UPDATER] Yama uygulama hatası:", err);
+    throw err;
   } finally {
     // Cleanup temporary files
     await rm(tempZipPath, { force: true }).catch(() => {});
     await rm(extractDir, { recursive: true, force: true }).catch(() => {});
   }
 }
+

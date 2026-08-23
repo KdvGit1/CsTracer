@@ -27,6 +27,7 @@ import {
 import { AimCoachCard, evaluateAimMechanics } from "./components/AimCoachCard";
 import LiveCoachView from "./components/LiveCoachView";
 import UpdateModal, { UpdateInfo } from "./components/UpdateModal";
+import LogsModal from "./components/LogsModal";
 
 const COMPANION_URL = "http://127.0.0.1:43119";
 const PROGRESS_URL = `${COMPANION_URL}/progress`;
@@ -1103,6 +1104,7 @@ export default function Home() {
   const [progressMessage, setProgressMessage] = useState("");
   const [currentDemoMeta, setCurrentDemoMeta] = useState<CurrentDemoMeta | null>(null);
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
+  const [logsModalOpen, setLogsModalOpen] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [updateChecking, setUpdateChecking] = useState(false);
   const savedSummaryRef = useRef("");
@@ -1965,11 +1967,18 @@ export default function Home() {
             <button className="ghost-button archive-trigger" onClick={() => { setArchiveOpen(true); void refreshCompanion(); }}><IconFolder size={14} /> Yerel maçlar</button>
             <button className="ghost-button" onClick={() => setSettingsOpen(true)}><IconSettings size={14} /> Kaynakları bağla</button>
             <button
+              className="ghost-button nav-terminal-btn"
+              onClick={() => setLogsModalOpen(true)}
+              title="Canlı terminal ve hata ayıklama konsolunu aç"
+            >
+              <span>⚡ Terminal</span>
+            </button>
+            <button
               className={`ghost-button update-nav-btn ${updateInfo?.hasUpdate ? "has-new-update" : ""}`}
               onClick={() => setUpdateModalOpen(true)}
               title={updateInfo?.hasUpdate ? `Yeni v${updateInfo.latestVersion} güncellemesi mevcut!` : "TRACER sürüm & yama merkezi"}
             >
-              <span>{updateInfo?.hasUpdate ? "🚀 Güncelleme" : `v${updateInfo?.currentVersion || "0.42"}`}</span>
+              <span>{updateInfo?.hasUpdate ? "🚀 Güncelleme" : `v${updateInfo?.currentVersion || "0.43.0"}`}</span>
             </button>
             <button
               className="ghost-button shutdown-nav-btn"
@@ -2852,6 +2861,11 @@ export default function Home() {
         updateInfo={updateInfo}
         onRefreshCheck={checkUpdates}
         checking={updateChecking}
+      />
+
+      <LogsModal
+        isOpen={logsModalOpen}
+        onClose={() => setLogsModalOpen(false)}
       />
     </main>
   );
