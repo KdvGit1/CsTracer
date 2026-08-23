@@ -40,3 +40,8 @@ yarn-error.log*
 /.wrangler/
 /outputs/
 /work/
+/release/
+/runtime/
+/model/*.gguf
+/TEMP/
+*.tsbuildinfo

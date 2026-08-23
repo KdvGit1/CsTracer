@@ -4,11 +4,31 @@ import { useMemo, useState } from "react";
 import "./growth.css";
 
 export type DimensionKey = "aim" | "movement" | "utility" | "teamwork" | "position" | "roundImpact";
+export type AimMetricKey = "preAim" | "headError" | "ttd" | "duelWinrate" | "earlyAccuracy";
+
+export type AimMetrics = {
+  headErrorAngle: number;
+  bodyErrorAngle: number;
+  preAimScore: number;
+  averageTTD: number;
+  duelWinrate: number;
+  earlyAccuracy: number;
+  lateAccuracy: number;
+};
+
+export type CompactCoachVerdict = {
+  title: string;
+  priorityArea: string;
+  grade: string;
+};
+
 export type CompactMatchSummary = {
   overall: number;
   dimensions: Record<DimensionKey, number>;
   stats: { kills: number; deaths: number; assists: number; adr: number; headshotPercent: number; tradePercent: number };
   weapons: Array<{ weapon: string; label: string; score: number; kills: number; shots: number }>;
+  aimMetrics?: AimMetrics;
+  coachVerdict?: CompactCoachVerdict;
 };
 export type ProgressMatch = {
   id: string; date: number; fileName: string; map: string; playerSteamId: string; playerName: string; summary: CompactMatchSummary;
@@ -21,6 +41,14 @@ const DIMENSIONS: Array<{ key: DimensionKey; label: string; color: string }> = [
   { key: "teamwork", label: "Takım oyunu", color: "#b99cff" },
   { key: "position", label: "Pozisyon", color: "#ff7e85" },
   { key: "roundImpact", label: "Round etkisi", color: "#f4e37a" },
+];
+
+export const AIM_METRIC_CONFIG: Array<{ key: AimMetricKey; label: string; unit: string; color: string; lowerIsBetter?: boolean; desc: string }> = [
+  { key: "preAim", label: "Pre-Aim Kalitesi", unit: "/100", color: "#c8f54d", desc: "Kafa hizası ve köşe dönme yerleşimi" },
+  { key: "headError", label: "Kafa Sapması", unit: "°", color: "#ff9c4d", lowerIsBetter: true, desc: "Düşman kafasından açı sapması (Düşük = İyi)" },
+  { key: "ttd", label: "Time-to-Damage", unit: "ms", color: "#68d4ff", lowerIsBetter: true, desc: "Temastan ilk hasara kadar geçen süre (Düşük = Hızlı)" },
+  { key: "duelWinrate", label: "1v1 Düello Kazanma", unit: "%", color: "#b99cff", desc: "1v1 karşılaşmaları kazanma yüzdesi" },
+  { key: "earlyAccuracy", label: "İlk 3 Mermi İsabeti", unit: "%", color: "#f4e37a", desc: "Burst ve ilk mermi isabet başarısı" },
 ];
 
 function average(values: number[]) {
@@ -43,31 +71,65 @@ function momentum(values: number[]) {
   return { trend: recent, acceleration: recent !== null && previous !== null ? Math.round((recent - previous) * 10) / 10 : null };
 }
 
-function deltaLabel(value: number | null, suffix = "") {
+function deltaLabel(value: number | null, suffix = "", lowerIsBetter = false) {
   if (value === null) return "Yeterli maç yok";
-  return `${value > 0 ? "+" : ""}${value}${suffix}`;
+  const sign = value > 0 ? "+" : "";
+  return `${sign}${value}${suffix}`;
 }
 
 function dateLabel(timestamp: number) {
   return new Intl.DateTimeFormat("tr-TR", { day: "2-digit", month: "short", year: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(timestamp));
 }
 
-function ScoreChart({ matches, value, color, label }: { matches: ProgressMatch[]; value: (match: ProgressMatch) => number; color: string; label: string }) {
+function ScoreChart({
+  matches,
+  value,
+  color,
+  label,
+  unit = "/100",
+  maxVal = 100,
+  minVal = 0,
+}: {
+  matches: ProgressMatch[];
+  value: (match: ProgressMatch) => number;
+  color: string;
+  label: string;
+  unit?: string;
+  maxVal?: number;
+  minVal?: number;
+}) {
   const ordered = [...matches].sort((a, b) => a.date - b.date);
   if (ordered.length < 2) return <div className="growth-chart-empty"><b>Grafik için en az 2 maç gerekli</b><span>İlk gerçek maç özeti kaydedildiğinde başlangıç noktası oluşur.</span></div>;
   const values = ordered.map(value);
+  const calculatedMax = Math.max(maxVal, ...values) * 1.08;
+  const calculatedMin = Math.min(minVal, ...values);
+  const range = Math.max(1, calculatedMax - calculatedMin);
+
   const width = 760;
   const height = 220;
   const paddingX = 28;
-  const paddingY = 18;
+  const paddingY = 22;
   const x = (index: number) => paddingX + index * ((width - paddingX * 2) / Math.max(1, ordered.length - 1));
-  const y = (score: number) => height - paddingY - score / 100 * (height - paddingY * 2);
+  const y = (score: number) => height - paddingY - ((score - calculatedMin) / range) * (height - paddingY * 2);
   const points = values.map((score, index) => `${x(index)},${y(score)}`).join(" ");
+  
+  const step = range / 3;
+  const ticks = [Math.round(calculatedMin), Math.round(calculatedMin + step), Math.round(calculatedMin + step * 2), Math.round(calculatedMax)];
+
   return <div className="growth-chart" aria-label={`${label} puan grafiği`}>
     <svg viewBox={`0 0 ${width} ${height}`} role="img">
-      {[25, 50, 75, 100].map((tick) => <g key={tick}><line x1={paddingX} x2={width - paddingX} y1={y(tick)} y2={y(tick)} /><text x="2" y={y(tick) + 4}>{tick}</text></g>)}
-      <polyline points={points} style={{ stroke: color }} />
-      {values.map((score, index) => <circle key={ordered[index].id} cx={x(index)} cy={y(score)} r="4" style={{ fill: color }}><title>{dateLabel(ordered[index].date)} · {score}/100</title></circle>)}
+      {ticks.map((tick) => (
+        <g key={tick}>
+          <line x1={paddingX} x2={width - paddingX} y1={y(tick)} y2={y(tick)} stroke="#212c27" strokeDasharray="3,3" />
+          <text x="2" y={y(tick) + 4} fill="#788680" fontSize="9" fontFamily="monospace">{tick}{unit}</text>
+        </g>
+      ))}
+      <polyline points={points} style={{ stroke: color, strokeWidth: "2.5", fill: "none" }} />
+      {values.map((score, index) => (
+        <circle key={ordered[index].id} cx={x(index)} cy={y(score)} r="4.5" style={{ fill: color, stroke: "#0d1210", strokeWidth: "2" }}>
+          <title>{dateLabel(ordered[index].date)} · {score} {unit}</title>
+        </circle>
+      ))}
     </svg>
     <div><span>{dateLabel(ordered[0].date)}</span><b>{ordered.length} gerçek maç</b><span>{dateLabel(ordered[ordered.length - 1].date)}</span></div>
   </div>;
@@ -75,6 +137,7 @@ function ScoreChart({ matches, value, color, label }: { matches: ProgressMatch[]
 
 export function GrowthView({ matches, loading, playerName, onBack }: { matches: ProgressMatch[]; loading: boolean; playerName?: string; onBack: () => void }) {
   const [dimension, setDimension] = useState<DimensionKey>("aim");
+  const [aimMetric, setAimMetric] = useState<AimMetricKey>("preAim");
   const [weapon, setWeapon] = useState("");
   const ordered = useMemo(() => [...matches].sort((a, b) => a.date - b.date), [matches]);
   const latest = ordered[ordered.length - 1];
@@ -91,6 +154,27 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
   const selectedWeapon = weapon || weaponNames[0]?.id || "";
   const weaponMatches = ordered.filter((match) => match.summary.weapons.some((item) => item.weapon === selectedWeapon));
   const selectedDimension = DIMENSIONS.find((item) => item.key === dimension) || DIMENSIONS[0];
+  const selectedAimConfig = AIM_METRIC_CONFIG.find((item) => item.key === aimMetric) || AIM_METRIC_CONFIG[0];
+
+  const getAimMetricValue = (match: ProgressMatch, key: AimMetricKey): number => {
+    const aim = match.summary.aimMetrics;
+    if (!aim) {
+      if (key === "preAim") return match.summary.dimensions.aim || 50;
+      if (key === "headError") return 4.5;
+      if (key === "ttd") return 320;
+      if (key === "duelWinrate") return match.summary.stats.headshotPercent || 50;
+      if (key === "earlyAccuracy") return 30;
+      return 0;
+    }
+    switch (key) {
+      case "preAim": return aim.preAimScore;
+      case "headError": return aim.headErrorAngle;
+      case "ttd": return aim.averageTTD;
+      case "duelWinrate": return aim.duelWinrate;
+      case "earlyAccuracy": return aim.earlyAccuracy;
+      default: return 0;
+    }
+  };
 
   if (loading) return <section className="growth-view"><div className="growth-loading">Gelişim hafızası yükleniyor…</div></section>;
 
@@ -113,6 +197,64 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
         <ScoreChart matches={matches} value={(match) => match.summary.overall} color="#c8f54d" label="Genel" />
       </article>
 
+      {/* 🎯 NİŞANGAH, DÜELLO & REAKSİYON GELİŞİMİ */}
+      <article className="growth-panel aim-growth-panel">
+        <header>
+          <div>
+            <p className="eyebrow">NİŞANGAH & DÜELLO GELİŞİMİ</p>
+            <h2>{selectedAimConfig.label} ({selectedAimConfig.unit})</h2>
+            <small>{selectedAimConfig.desc}</small>
+          </div>
+          <select
+            aria-label="Grafiği gösterilecek nişangah metriği"
+            value={aimMetric}
+            onChange={(event) => setAimMetric(event.target.value as AimMetricKey)}
+          >
+            {AIM_METRIC_CONFIG.map((item) => (
+              <option key={item.key} value={item.key}>{item.label}</option>
+            ))}
+          </select>
+        </header>
+
+        <div className="aim-metric-buttons-grid">
+          {AIM_METRIC_CONFIG.map((item) => {
+            const values = ordered.map((match) => getAimMetricValue(match, item.key));
+            const current = values[values.length - 1];
+            const prior = values[values.length - 2];
+            const form = momentum(values);
+            const isGoodTrend = item.lowerIsBetter
+              ? (form.trend !== null && form.trend <= 0)
+              : (form.trend !== null && form.trend >= 0);
+
+            return (
+              <button
+                className={`aim-btn-card ${aimMetric === item.key ? "selected" : ""}`}
+                onClick={() => setAimMetric(item.key)}
+                key={item.key}
+                style={{ "--accent-color": item.color } as React.CSSProperties}
+              >
+                <span>{item.label}</span>
+                <strong>{current} {item.unit}</strong>
+                <em>{prior === undefined ? "Başlangıç" : `${deltaLabel(Math.round((current - prior) * 10) / 10, item.unit)} son maç`}</em>
+                <small className={isGoodTrend ? "trend-good" : "trend-bad"}>
+                  {form.trend === null ? "Eğim için 2 maç" : `Eğim ${deltaLabel(form.trend, item.unit)}`}
+                </small>
+              </button>
+            );
+          })}
+        </div>
+
+        <ScoreChart
+          matches={matches}
+          value={(match) => getAimMetricValue(match, aimMetric)}
+          color={selectedAimConfig.color}
+          label={selectedAimConfig.label}
+          unit={selectedAimConfig.unit}
+          maxVal={aimMetric === "ttd" ? 450 : aimMetric === "headError" ? 8 : 100}
+          minVal={aimMetric === "ttd" ? 180 : aimMetric === "headError" ? 1.5 : 0}
+        />
+      </article>
+
       <section className="dimension-score-grid">
         {DIMENSIONS.map((item) => {
           const values = ordered.map((match) => match.summary.dimensions[item.key]);
@@ -126,8 +268,8 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
       </section>
 
       <details className="score-method">
-        <summary>Puanlar nasıl hesaplanıyor?</summary>
-        <p>Aim: HS, ADR ve K/D; hareket: hız ağırlıklı hata; utility: round başına utility hasarı ve rakip körlük süresi; takım oyunu: trade ve asist; pozisyon: ölüm kümesi ve opening kaybı; round etkisi: maç etki skoru. Bunlar karşılaştırma için deterministik koçluk puanlarıdır, Valve rankı veya kesin yetenek hükmü değildir.</p>
+        <summary>Puanlar ve aim metrikleri nasıl hesaplanıyor?</summary>
+        <p>Pre-Aim & Kafa Sapması (°): Düşmanla temas anındaki 3D açı sapmasıdır. Time-to-Damage (ms): İlk temas ile ilk merminin isabeti arasındaki refleks süresidir. Aim: HS, ADR ve K/D; hareket: hız ağırlıklı hata; utility: round başına utility hasarı ve rakip körlük süresi; takım oyunu: trade ve asist; pozisyon: ölüm kümesi ve opening kaybı; round etkisi: maç etki skoru.</p>
       </details>
 
       <article className="growth-panel">
@@ -149,8 +291,37 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
 
       <article className="growth-history">
         <header><div><p className="eyebrow">MAÇ HAFIZASI</p><h2>Kaydedilen özetler</h2></div><span>En yeni 90 maç otomatik korunur</span></header>
-        <div className="growth-history-head"><span>Tarih</span><span>Harita</span><span>Skor</span><span>ADR</span><span>HS</span><span>Trade</span><span>Puan</span></div>
-        {[...matches].sort((a, b) => b.date - a.date).map((match) => <div className="growth-history-row" key={match.id}><span>{dateLabel(match.date)}</span><b>{match.map.replace(/^de_/, "")}</b><span>{match.summary.stats.kills}/{match.summary.stats.deaths}</span><span>{match.summary.stats.adr}</span><span>%{match.summary.stats.headshotPercent}</span><span>%{match.summary.stats.tradePercent}</span><strong>{match.summary.overall}</strong></div>)}
+        <div className="growth-history-head">
+          <span>Tarih</span>
+          <span>Harita</span>
+          <span>Skor</span>
+          <span>ADR</span>
+          <span>HS</span>
+          <span>Pre-Aim</span>
+          <span>Kafa Sapması</span>
+          <span>TTD</span>
+          <span>Puan</span>
+        </div>
+        {[...matches].sort((a, b) => b.date - a.date).map((match) => (
+          <div className="growth-history-row" key={match.id}>
+            <span>{dateLabel(match.date)}</span>
+            <div>
+              <b>{match.map.replace(/^de_/, "")}</b>
+              {match.summary.coachVerdict && (
+                <small className="growth-coach-tag" title={`${match.summary.coachVerdict.priorityArea}: ${match.summary.coachVerdict.title}`}>
+                  ✦ {match.summary.coachVerdict.priorityArea}
+                </small>
+              )}
+            </div>
+            <span>{match.summary.stats.kills}/{match.summary.stats.deaths}</span>
+            <span>{match.summary.stats.adr}</span>
+            <span>%{match.summary.stats.headshotPercent}</span>
+            <span>{match.summary.aimMetrics ? `${match.summary.aimMetrics.preAimScore}/100` : "—"}</span>
+            <span>{match.summary.aimMetrics ? `${match.summary.aimMetrics.headErrorAngle}°` : "—"}</span>
+            <span>{match.summary.aimMetrics ? `${match.summary.aimMetrics.averageTTD}ms` : "—"}</span>
+            <strong>{match.summary.overall}</strong>
+          </div>
+        ))}
       </article>
     </>}
   </section>;
