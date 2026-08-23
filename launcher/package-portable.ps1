@@ -47,6 +47,7 @@ foreach ($module in $essentialModules) {
 Copy-Item -LiteralPath (Join-Path $tracerRoot "companion") -Destination $releaseRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $tracerRoot "launcher") -Destination $releaseRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $tracerRoot "TRACER-Yerel.cmd") -Destination $releaseRoot -Force
+Copy-Item -LiteralPath (Join-Path $tracerRoot "TRACER-Kapat.cmd") -Destination $releaseRoot -Force
 Copy-Item -LiteralPath (Join-Path $tracerRoot "PORTABLE.md") -Destination $releaseRoot -Force
 try {
   Copy-Item -LiteralPath $nodePath -Destination (Join-Path $releaseRoot "runtime\node.exe") -Force -ErrorAction Stop

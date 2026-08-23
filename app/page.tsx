@@ -1157,11 +1157,53 @@ export default function Home() {
         if (!cancelled) setArchiveMessage("Kayıtlı klasör izni okunamadı; klasörü yeniden seçebilirsin.");
       }
     })();
+
+    const handleUnload = () => {
+      try {
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(`${COMPANION_URL}/shutdown`);
+        } else {
+          fetch(`${COMPANION_URL}/shutdown`, { method: "POST", keepalive: true }).catch(() => {});
+        }
+      } catch { }
+    };
+
+    window.addEventListener("beforeunload", handleUnload);
+    window.addEventListener("pagehide", handleUnload);
+
+    const heartbeatTimer = setInterval(() => {
+      fetch(`${COMPANION_URL}/heartbeat`, { method: "GET" }).catch(() => {});
+    }, 3000);
+
     return () => {
       cancelled = true;
       workerRef.current?.terminate();
+      window.removeEventListener("beforeunload", handleUnload);
+      window.removeEventListener("pagehide", handleUnload);
+      clearInterval(heartbeatTimer);
     };
   }, []);
+
+  async function shutdownTracer() {
+    if (!window.confirm("TRACER ve tüm arka plan servisleri tamamen kapatılsın mı?")) return;
+    try {
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(`${COMPANION_URL}/shutdown`);
+      } else {
+        await fetch(`${COMPANION_URL}/shutdown`, { method: "POST" });
+      }
+    } catch { }
+    try {
+      window.close();
+    } catch { }
+    document.body.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;background:#0d0e12;color:#fff;font-family:system-ui;text-align:center;padding:20px;">
+        <div style="font-size:48px;margin-bottom:16px;">🛑</div>
+        <h1 style="font-size:24px;font-weight:700;margin-bottom:8px;color:#e3f64d;">TRACER Tamamen Kapatıldı</h1>
+        <p style="color:#8f96a3;font-size:14px;max-width:420px;line-height:1.5;">Tüm yerel arka plan servisleri sonlandırıldı ve CS2 için sistem kaynakları serbest bırakıldı. Bu pencereyi kapatabilirsiniz.</p>
+      </div>
+    `;
+  }
 
   useEffect(() => {
     void (async () => {
@@ -1858,6 +1900,7 @@ export default function Home() {
           <button className={`nav-item ${activeSection === "map-analysis" ? "active" : ""}`} onClick={() => navigateTo("map-analysis")}><IconMap size={15} /> Harita olayları</button>
           <button className={`nav-item ${activeSection === "development" ? "active" : ""}`} onClick={() => navigateTo("development")}><IconPlan size={15} /> Gelişim planı</button>
           <button className="nav-item" onClick={() => { setArchiveOpen(true); void refreshCompanion(); }}><IconFolder size={15} /> Yerel maçlar</button>
+          <button className="nav-item" onClick={shutdownTracer} style={{ color: "#ff6b6b", marginTop: "4px" }} title="TRACER ve tüm arka plan servislerini tamamen kapat"><span style={{ fontSize: "13px" }}>⏻</span> TRACER'ı Kapat</button>
         </nav>
         <div className="sidebar-spacer" />
         <button className={`ai-status ${coachState}`} onClick={() => setSettingsOpen(true)}>
@@ -1927,6 +1970,14 @@ export default function Home() {
               title={updateInfo?.hasUpdate ? `Yeni v${updateInfo.latestVersion} güncellemesi mevcut!` : "TRACER sürüm & yama merkezi"}
             >
               <span>{updateInfo?.hasUpdate ? "🚀 Güncelleme" : `v${updateInfo?.currentVersion || "0.42"}`}</span>
+            </button>
+            <button
+              className="ghost-button shutdown-nav-btn"
+              onClick={shutdownTracer}
+              title="TRACER'ı ve tüm arka plan servislerini tamamen kapat"
+              style={{ color: "#ff6b6b", borderColor: "rgba(255, 107, 107, 0.35)", fontWeight: 700 }}
+            >
+              <span>⏻ Kapat</span>
             </button>
             <label className="upload-button">
               <input type="file" accept=".dem,.bz2" onChange={handleDemo} />
@@ -2766,6 +2817,21 @@ export default function Home() {
               </section>
             </div>
             {sourceMessage && <div className="connection-result">{sourceMessage}</div>}
+            <hr style={{ margin: "20px 0 14px", borderColor: "rgba(255, 255, 255, 0.08)" }} />
+            <p className="eyebrow" style={{ color: "#ff6b6b" }}>UYGULAMAYI KAPAT</p>
+            <div style={{ background: "rgba(255, 107, 107, 0.08)", border: "1px solid rgba(255, 107, 107, 0.25)", borderRadius: "10px", padding: "14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+              <div>
+                <b style={{ display: "block", color: "#fff", fontSize: "13px" }}>Tamamen Kapat & CS2 Kaynaklarını Bırak</b>
+                <small style={{ color: "#8f96a3", fontSize: "11px" }}>Tüm yerel parser, arka plan Node.js ve tarayıcı işlemlerini sonlandırır.</small>
+              </div>
+              <button
+                className="upload-button"
+                onClick={shutdownTracer}
+                style={{ background: "#ff5252", borderColor: "#ff5252", color: "#fff", fontWeight: 700 }}
+              >
+                ⏻ TRACER'ı Kapat
+              </button>
+            </div>
           </section>
         </div>
       )}

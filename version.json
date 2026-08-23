@@ -1,12 +1,12 @@
-{
-  "version": "0.42.0",
-  "githubRepo": "KdvGit1/CsTracer",
-  "releaseDate": "2026-08-23",
-  "title": "TRACER v0.42.0 - Canlı Maç Koçluğu & Silah Duyarlılığı",
-  "changelog": [
-    "Valve CS2 Realtime GSI ile Canlı Maç Koçluğu eklendi.",
-    "Freezetime 15s Altın Odaklanma Tavsiyesi kartı eklendi.",
-    "Silah türlerine (Tüfek vs SMG vs AWP) duyarlı hareket tolerans sistemi eklendi.",
-    "Tek tıkla CS2 otomatik entegrasyonu sağlandı."
-  ]
+﻿{
+    "version":  "0.43.0",
+    "githubRepo":  "KdvGit1/CsTracer",
+    "releaseDate":  "2026-08-23",
+    "title":  "TRACER v0.42.0 - Canlı Maç Koçluğu \u0026 Silah Duyarlılığı",
+    "changelog":  [
+                      "Valve CS2 Realtime GSI ile Canlı Maç Koçluğu eklendi.",
+                      "Freezetime 15s Altın Odaklanma Tavsiyesi kartı eklendi.",
+                      "Silah türlerine (Tüfek vs SMG vs AWP) duyarlı hareket tolerans sistemi eklendi.",
+                      "Tek tıkla CS2 otomatik entegrasyonu sağlandı."
+                  ]
 }

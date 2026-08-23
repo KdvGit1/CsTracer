@@ -466,6 +466,21 @@ const server = createServer(async (request, response) => {
     sendJson(response, 200, { ok: true, parserVersion: "0.42.0", mode: "local-native", coach: coachStatus() }, origin);
     return;
   }
+  if ((request.method === "GET" || request.method === "POST") && request.url === "/heartbeat") {
+    sendJson(response, 200, { ok: true, time: Date.now() }, origin);
+    return;
+  }
+  if (request.method === "POST" && request.url === "/shutdown") {
+    sendJson(response, 200, { ok: true, message: "TRACER kapatılıyor..." }, origin);
+    setTimeout(async () => {
+      try {
+        await stopCoachProcess();
+      } catch { }
+      server.close(() => process.exit(0));
+      setTimeout(() => process.exit(0), 1000);
+    }, 100);
+    return;
+  }
   if (request.method === "GET" && request.url === "/coach/status") {
     sendJson(response, 200, coachStatus(), origin);
     return;

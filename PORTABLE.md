@@ -1,6 +1,8 @@
 # TRACER taşınabilir Windows paketi
 
-Son kullanıcı yalnızca `TRACER-Yerel.cmd` dosyasına çift tıklar. Başlatıcı demo parserını ve arayüzü gizli olarak açar; Microsoft Edge veya Chrome'u adres çubuğu olmayan ayrı bir TRACER penceresi olarak kullanır. Pencere kapandığında başlatıcının açtığı yerel servisler de kapanır.
+Son kullanıcı yalnızca `TRACER-Yerel.cmd` dosyasına çift tıklar. Başlatıcı demo parserını ve arayüzü gizli olarak açar; Microsoft Edge veya Chrome'u adres çubuğu olmayan ayrı bir TRACER penceresi olarak kullanır. Pencere kapandığında başlatıcının açtığı yerel servisler de otomatik olarak tamamen kapanır.
+
+Acil veya manuel durdurma gerektiğinde klasördeki `TRACER-Kapat.cmd` dosyasına çift tıklanarak tüm arka plan servisleri ve tarayıcı profili tek tıkla sonlandırılabilir; CS2 için tüm sistem kaynakları serbest kalır.
 
 ## Gömülü koç
 
