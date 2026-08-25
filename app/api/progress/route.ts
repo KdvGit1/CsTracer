@@ -42,14 +42,25 @@ async function ownerId() {
   return user?.userId || "local-device";
 }
 
-async function readyDb() {
-  if (!env.DB) throw new Error("DB_UNAVAILABLE");
-  await env.DB.batch([
-    env.DB.prepare(PROFILE_TABLE),
-    env.DB.prepare(MATCH_TABLE),
-    env.DB.prepare(MATCH_INDEX),
-  ]);
-  return env.DB;
+type Db = NonNullable<typeof env.DB>;
+let dbReadyPromise: Promise<Db> | null = null;
+
+function readyDb(): Promise<Db> {
+  const db = env.DB;
+  if (!db) throw new Error("DB_UNAVAILABLE");
+  if (!dbReadyPromise) {
+    const promise = db.batch([
+      db.prepare(PROFILE_TABLE),
+      db.prepare(MATCH_TABLE),
+      db.prepare(MATCH_INDEX),
+    ]).then(() => db).catch((error: unknown) => {
+      dbReadyPromise = null;
+      throw error;
+    });
+    dbReadyPromise = promise;
+    return promise;
+  }
+  return dbReadyPromise;
 }
 
 function safeJson(value: string) {
@@ -77,7 +88,7 @@ export async function GET() {
       : profile.steamid
         ? await db.prepare(`${baseQuery} AND player_steam_id = ? ORDER BY match_date DESC LIMIT 90`).bind(owner, profile.steamid).all()
         : await db.prepare(`${baseQuery} AND player_name = ? ORDER BY match_date DESC LIMIT 90`).bind(owner, profile.name).all();
-    const matches = (result.results || []).map((row) => ({ ...row, summary: safeJson(String(row.summary || "")) })).filter((row) => row.summary);
+    const matches = (result.results || []).map((row: Record<string, unknown>) => ({ ...row, summary: safeJson(String(row.summary || "")) })).filter((row: { summary?: unknown }) => row.summary);
     return Response.json({ profile, matches, limit: 90 });
   } catch (error) {
     return Response.json({ error: error instanceof Error && error.message === "DB_UNAVAILABLE" ? "Gelişim hafızası bu ortamda bağlı değil." : "Gelişim geçmişi okunamadı." }, { status: 503 });

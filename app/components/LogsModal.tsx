@@ -1,14 +1,15 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
-import { IconCheck, IconWarning } from "./NavIcons";
+import { useState, useEffect, useRef } from "react";
+import { IconCheck, IconTerminal, IconFolder, IconCopy, IconClose } from "./NavIcons";
+import { APP_VERSION, COMPANION_URL } from "../lib/config";
 
 export interface LogEntry {
   id: string;
   timestamp: string;
   level: "info" | "warn" | "error" | "gsi" | "updater";
   message: string;
-  meta?: any;
+  meta?: unknown;
 }
 
 interface SystemInfo {
@@ -25,12 +26,9 @@ interface LogsModalProps {
   onClose: () => void;
 }
 
-const COMPANION_URL = "http://127.0.0.1:43119";
-
 export default function LogsModal({ isOpen, onClose }: LogsModalProps) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
-  const [loading, setLoading] = useState(false);
   const [filterLevel, setFilterLevel] = useState<string>("all");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [autoScroll, setAutoScroll] = useState(true);
@@ -42,7 +40,7 @@ export default function LogsModal({ isOpen, onClose }: LogsModalProps) {
     try {
       const res = await fetch(`${COMPANION_URL}/logs`);
       if (res.ok) {
-        const data = await res.json();
+        const data = (await res.json()) as { logs?: LogEntry[]; system?: SystemInfo };
         setLogs(Array.isArray(data.logs) ? data.logs : []);
         if (data.system) setSystemInfo(data.system);
       }
@@ -53,15 +51,27 @@ export default function LogsModal({ isOpen, onClose }: LogsModalProps) {
 
   useEffect(() => {
     if (!isOpen) return;
-    setLoading(true);
-    void fetchLogs().finally(() => setLoading(false));
+    const initialFetch = window.setTimeout(() => void fetchLogs(), 0);
 
     const timer = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       void fetchLogs();
     }, 1500);
 
-    return () => clearInterval(timer);
+    return () => {
+      window.clearTimeout(initialFetch);
+      clearInterval(timer);
+    };
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
 
   useEffect(() => {
     if (autoScroll && terminalEndRef.current) {
@@ -127,13 +137,15 @@ export default function LogsModal({ isOpen, onClose }: LogsModalProps) {
         style={{ maxWidth: "880px", width: "95vw" }}
       >
         <button className="modal-close" onClick={onClose} aria-label="Terminal penceresini kapat">
-          ×
+          <IconClose size={16} />
         </button>
 
         {/* Modal Header */}
         <div className="logs-modal-header">
           <div className="logs-header-title">
-            <span className="terminal-badge-glow">⚡</span>
+            <span className="terminal-badge-glow">
+              <IconTerminal size={18} />
+            </span>
             <div>
               <p className="eyebrow">TRACER GELİŞTİRİCİ & SİSTEM TEŞHİSİ</p>
               <h2 id="logs-modal-title">Canlı Terminal & Log Konsolu</h2>
@@ -142,7 +154,7 @@ export default function LogsModal({ isOpen, onClose }: LogsModalProps) {
 
           {systemInfo && (
             <div className="system-diag-pill">
-              <span>Sürüm: <b>v{systemInfo.version || "0.43.0"}</b></span>
+              <span>Sürüm: <b>v{systemInfo.version || APP_VERSION}</b></span>
               <span>RAM: <b>{systemInfo.memoryMb} MB</b></span>
               <span>Çalışma: <b>{systemInfo.uptimeSec}s</b></span>
             </div>
@@ -272,14 +284,25 @@ export default function LogsModal({ isOpen, onClose }: LogsModalProps) {
               onClick={handleOpenLogFolder}
               title="Windows Gezgini'nde log dosyalarını açar"
             >
-              📁 Log Klasörünü Aç
+              <IconFolder size={14} style={{ marginRight: "6px" }} />
+              Log Klasörünü Aç
             </button>
             <button
               type="button"
               className="primary-action-btn mini-btn"
               onClick={handleCopyLogs}
             >
-              {copied ? "✓ Kopyalandı" : "📋 Logları Kopyala"}
+              {copied ? (
+                <>
+                  <IconCheck size={14} style={{ marginRight: "6px" }} />
+                  Kopyalandı
+                </>
+              ) : (
+                <>
+                  <IconCopy size={14} style={{ marginRight: "6px" }} />
+                  Logları Kopyala
+                </>
+              )}
             </button>
           </div>
         </div>

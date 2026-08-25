@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "target": "ES2017",
+    "target": "ES2022",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,
@@ -13,6 +13,7 @@
     "isolatedModules": true,
     "jsx": "react-jsx",
     "incremental": true,
+    "types": ["node", "@cloudflare/workers-types"],
     "paths": {
       "@/*": ["./*"]
     }
@@ -25,5 +26,5 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "worker", "db", "dist", "app/api", "**/db/**", "**/worker/**", "**/app/api/**"]
+  "exclude": ["node_modules", "dist"]
 }

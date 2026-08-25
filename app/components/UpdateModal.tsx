@@ -1,7 +1,17 @@
 "use client";
 
-import React, { useState } from "react";
-import { IconSparkle, IconWarning, IconCheck, IconSettings } from "./NavIcons";
+import { useEffect, useState } from "react";
+import {
+  IconSparkles,
+  IconWarning,
+  IconCheck,
+  IconSettings,
+  IconClose,
+  IconRocket,
+  IconArrowRight,
+  IconRefresh,
+} from "./NavIcons";
+import { APP_VERSION, COMPANION_URL } from "../lib/config";
 
 export interface UpdateInfo {
   hasUpdate: boolean;
@@ -9,14 +19,14 @@ export interface UpdateInfo {
   latestVersion: string;
   title?: string;
   releaseDate?: string;
-  changelog?: string[];
-  patchUrl?: string;
   sizeMb?: string;
-  error?: string;
-  githubRepo?: string;
+  changelog?: string[];
+  repoUrl?: string;
   configured?: boolean;
-  message?: string;
+  patchUrl?: string;
+  expectedSha256?: string;
   htmlUrl?: string;
+  message?: string;
 }
 
 interface UpdateModalProps {
@@ -27,8 +37,6 @@ interface UpdateModalProps {
   checking: boolean;
 }
 
-const COMPANION_URL = "http://127.0.0.1:43119";
-
 export default function UpdateModal({
   isOpen,
   onClose,
@@ -37,69 +45,89 @@ export default function UpdateModal({
   checking,
 }: UpdateModalProps) {
   const [updating, setUpdating] = useState(false);
+  const [updateError, setUpdateError] = useState("");
   const [updateSuccess, setUpdateSuccess] = useState(false);
-  const [errorMessage, setErrorMessage] = useState("");
-  const [showRepoConfig, setShowRepoConfig] = useState(false);
-  const [repoInput, setRepoInput] = useState(updateInfo?.githubRepo || "");
+  const [customRepo, setCustomRepo] = useState("");
+  const [showConfig, setShowConfig] = useState(false);
   const [savingRepo, setSavingRepo] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !updating) onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, updating, onClose]);
 
   if (!isOpen) return null;
 
-  async function handleApplyUpdate() {
-    if (!updateInfo?.patchUrl) return;
+  const handleApplyUpdate = async () => {
     setUpdating(true);
-    setErrorMessage("");
+    setUpdateError("");
     try {
       const res = await fetch(`${COMPANION_URL}/update/apply`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ patchUrl: updateInfo.patchUrl }),
+        body: JSON.stringify({
+          patchUrl: updateInfo?.patchUrl || "",
+          expectedSha256: updateInfo?.expectedSha256 || undefined,
+        }),
       });
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
-        throw new Error(data.error || "Güncelleme uygulanamadı.");
+      const data = (await res.json()) as { ok?: boolean; error?: string; needsRestart?: boolean; message?: string };
+      if (res.ok && data.ok) {
+        setUpdateSuccess(true);
+        // Companion yamayı uygulayıp kendini yeniden başlatıyor; sunucunun
+        // tekrar ayağa kalkması birkaç saniye sürebilir.
+        setTimeout(() => {
+          window.location.reload();
+        }, 8000);
+      } else {
+        setUpdateError(data.error || "Güncelleme uygulanamadı.");
       }
-      setUpdateSuccess(true);
-      setTimeout(() => {
-        window.location.reload();
-      }, 2000);
-    } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : String(err));
+    } catch (err: unknown) {
+      setUpdateError(`Hata: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
       setUpdating(false);
     }
-  }
+  };
 
-  async function handleSaveRepo() {
+  const handleSaveRepo = async () => {
+    if (!customRepo.trim()) return;
     setSavingRepo(true);
-    setErrorMessage("");
     try {
-      const cleanRepo = repoInput.trim().replace(/^https?:\/\/github\.com\//, "");
       const res = await fetch(`${COMPANION_URL}/update/config`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ githubRepo: cleanRepo }),
+        body: JSON.stringify({ repoUrl: customRepo.trim() }),
       });
-      if (!res.ok) throw new Error("Ayar kaydedilemedi.");
-      setShowRepoConfig(false);
-      await onRefreshCheck();
+      if (res.ok) {
+        setShowConfig(false);
+        await onRefreshCheck();
+      }
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : String(err));
+      console.error("Repo kaydedilemedi:", err);
     } finally {
       setSavingRepo(false);
     }
-  }
+  };
 
   const hasNew = Boolean(updateInfo?.hasUpdate);
+  const canApplyUpdate = hasNew && Boolean(updateInfo?.patchUrl);
   const repoConfigured = Boolean(updateInfo?.configured);
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget && !updating) onClose(); }}>
       <section className="settings-modal update-modal" role="dialog" aria-modal="true" aria-labelledby="update-modal-title">
-        {!updating && <button className="modal-close" onClick={onClose} aria-label="Güncelleme penceresini kapat">×</button>}
+        {!updating && (
+          <button className="modal-close" onClick={onClose} aria-label="Güncelleme penceresini kapat">
+            <IconClose size={16} />
+          </button>
+        )}
 
         <div className="update-modal-header">
           <div className="update-icon-glow">
-            {hasNew ? "🚀" : "✓"}
+            {hasNew ? <IconRocket size={24} color="#60a5fa" /> : <IconCheck size={24} color="#52e389" />}
           </div>
           <div>
             <p className="eyebrow">TRACER SÜRÜM & YAMA MERKEZİ</p>
@@ -126,13 +154,15 @@ export default function UpdateModal({
             <div className="version-compare-card">
               <div>
                 <span>Şu Anki Sürüm</span>
-                <b>v{updateInfo?.currentVersion || "0.43.0"}</b>
+                <b>v{updateInfo?.currentVersion || APP_VERSION}</b>
               </div>
-              <div className="version-arrow">➔</div>
+              <div className="version-arrow">
+                <IconArrowRight size={16} />
+              </div>
               <div>
                 <span>En Son Sürüm</span>
                 <b className={hasNew ? "latest-badge-new" : "latest-badge-current"}>
-                  v{updateInfo?.latestVersion || updateInfo?.currentVersion || "0.43.0"}
+                  v{updateInfo?.latestVersion || updateInfo?.currentVersion || APP_VERSION}
                 </b>
               </div>
             </div>
@@ -146,7 +176,7 @@ export default function UpdateModal({
                 {updateInfo?.changelog && updateInfo.changelog.length > 0 ? (
                   <ul className="changelog-list">
                     {updateInfo.changelog.map((item, i) => (
-                      <li key={i}><span>✦</span> {item}</li>
+                      <li key={i}><IconSparkles size={12} style={{ display: "inline-block", verticalAlign: "middle", marginRight: "6px" }} /> {item}</li>
                     ))}
                   </ul>
                 ) : (
@@ -161,42 +191,43 @@ export default function UpdateModal({
               </div>
             )}
 
-            {updateInfo?.message && (
-              <div className="update-info-note">
-                <p>{updateInfo.message}</p>
-              </div>
-            )}
-
-            {errorMessage && (
+            {updateError && (
               <div className="update-error-box">
                 <IconWarning size={16} />
-                <span>{errorMessage}</span>
+                <span>{updateError}</span>
               </div>
             )}
 
-            {/* GitHub Repo Ayar Kartı */}
-            <div className="update-repo-config-card">
-              <div className="repo-config-head" onClick={() => setShowRepoConfig(!showRepoConfig)}>
-                <span className="repo-config-title">
-                  <IconSettings size={13} />
-                  <span>Güncelleme Kaynağı: <b>{updateInfo?.githubRepo || "Henüz Belirtilmedi"}</b></span>
-                </span>
-                <button type="button" className="repo-config-toggle">{showRepoConfig ? "Kapat" : "Değiştir"}</button>
+            {hasNew && !canApplyUpdate && updateInfo?.message && (
+              <div className="update-error-box">
+                <IconWarning size={16} />
+                <span>{updateInfo.message}</span>
               </div>
+            )}
 
-              {showRepoConfig && (
-                <div className="repo-config-body">
-                  <label>
-                    <span>GitHub Repository (kullanici/repo formatında):</span>
-                    <input
-                      type="text"
-                      placeholder="örn: vuraldogan/CsTracker veya kullanici/TRACER"
-                      value={repoInput}
-                      onChange={(e) => setRepoInput(e.target.value)}
-                    />
-                  </label>
+            <div className="update-config-section">
+              {!showConfig ? (
+                <button
+                  className="ghost-btn config-toggle-btn"
+                  onClick={() => {
+                    setCustomRepo(updateInfo?.repoUrl || "");
+                    setShowConfig(true);
+                  }}
+                >
+                  <IconSettings size={14} style={{ marginRight: "6px" }} />
+                  GitHub Güncelleme Kaynağını Düzenle
+                </button>
+              ) : (
+                <div className="repo-config-form">
+                  <label htmlFor="update-repository">GitHub Güncelleme Deposu (owner/repo):</label>
+                  <input
+                    id="update-repository"
+                    type="text"
+                    placeholder="Örn: KdvGit1/CsTracer"
+                    value={customRepo}
+                    onChange={(e) => setCustomRepo(e.target.value)}
+                  />
                   <button
-                    type="button"
                     className="upload-button repo-save-btn"
                     onClick={() => void handleSaveRepo()}
                     disabled={savingRepo}
@@ -212,10 +243,16 @@ export default function UpdateModal({
                 <button
                   className="primary-action-btn update-apply-btn"
                   onClick={() => void handleApplyUpdate()}
-                  disabled={updating}
+                  disabled={updating || !canApplyUpdate}
                 >
-                  <span className="btn-spark">✦</span>
-                  <span>{updating ? "Yama İndiriliyor & Uygulanıyor..." : "1-Tıkla Şimdi Güncelle"}</span>
+                  <IconSparkles size={14} style={{ marginRight: "6px" }} />
+                  <span>
+                    {updating
+                      ? "Yama İndiriliyor & Uygulanıyor..."
+                      : canApplyUpdate
+                        ? "1-Tıkla Şimdi Güncelle"
+                        : "Yama Dosyası Bekleniyor"}
+                  </span>
                 </button>
               ) : (
                 <button
@@ -223,7 +260,8 @@ export default function UpdateModal({
                   onClick={() => void onRefreshCheck()}
                   disabled={checking}
                 >
-                  <span>↻</span> {checking ? "Denetleniyor..." : "Yeniden Denetle"}
+                  <IconRefresh size={14} className={checking ? "spin-icon" : ""} style={{ marginRight: "6px" }} />
+                  <span>{checking ? "Denetleniyor..." : "Yeniden Denetle"}</span>
                 </button>
               )}
             </div>

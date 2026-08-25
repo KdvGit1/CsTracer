@@ -507,13 +507,19 @@ function buildPlayerReport(player, grouped, ticks, header) {
     startMoneyList.push(startMoney);
     spentMoneyList.push(spentMoney);
 
+    // Hero Buy: takım eko/force yaparken oyuncunun tek başına büyük alım yapması.
+    // Takım ortalaması demodan round bazında okunamadığı için yaklaşık tespit:
+    // kasa tam alıma zor yetiyorken (≤5200) büyük harcama (≥3000) yapılması.
+    // (Önceki sürümdeki `r % 3 === 0` koşulu anlamsızdı: sadece round numarasına bakıyordu.)
+    const heroBuy = spentMoney >= 3000 && startMoney <= 5200 && startMoney - spentMoney < 1000;
+
     roundEconomy.push({
       round: r,
       startMoney,
       spentMoney,
       endMoney,
       buyType,
-      heroBuy: spentMoney > 3500 && startMoney > 4000 && r % 3 === 0,
+      heroBuy,
     });
   }
 
@@ -895,9 +901,11 @@ export function quickDemoMeta(pathOrBuffer) {
       serverName: header.server_name || "",
       durationSeconds: Math.round(Number(header.playback_time) || 0),
     };
-  } catch (err) {
+  } catch {
+    // Hata durumunda yanıltıcı varsayılan (de_dust2) DÖNDÜRME: boş map, istemcinin
+    // dosya adından tahmine düşmesini veya "bilinmiyor" göstermesini sağlar.
     return {
-      map: "de_dust2",
+      map: "",
       ctScore: 0,
       tScore: 0,
       score: "—",
@@ -950,4 +958,3 @@ export function analyzeDemo(pathOrBuffer) {
   const reports = players.map((player) => buildPlayerReport(player, grouped, tickIndex, header));
   return { header, players, reports, parserVersion: "0.42.0" };
 }
-

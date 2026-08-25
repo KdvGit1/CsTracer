@@ -1,4 +1,5 @@
 import React from "react";
+import { normalizeMapKey as normalizeMapKeyBase } from "../lib/maps";
 
 export interface MapEmblemProps {
   mapName?: string;
@@ -8,22 +9,7 @@ export interface MapEmblemProps {
 }
 
 export function normalizeMapKey(mapName?: string): string {
-  if (!mapName) return "unknown";
-  const clean = mapName.toLowerCase().replace(/^.*\//, "").replace(/\.vpk$/, "").trim();
-  if (clean.includes("dust2") || clean.includes("dust_2") || clean.includes("dust 2") || clean.includes("dustii")) return "dust2";
-  if (clean.includes("mirage")) return "mirage";
-  if (clean.includes("inferno")) return "inferno";
-  if (clean.includes("nuke")) return "nuke";
-  if (clean.includes("ancient")) return "ancient";
-  if (clean.includes("anubis")) return "anubis";
-  if (clean.includes("vertigo")) return "vertigo";
-  if (clean.includes("overpass")) return "overpass";
-  if (clean.includes("train")) return "train";
-  if (clean.includes("office")) return "office";
-  if (clean.includes("italy")) return "italy";
-  if (clean.includes("cache")) return "cache";
-  if (clean.includes("cbble") || clean.includes("cobble")) return "cobblestone";
-  return clean;
+  return normalizeMapKeyBase(mapName);
 }
 
 export function formatMapTitle(mapName?: string): string {
@@ -42,13 +28,20 @@ export function formatMapTitle(mapName?: string): string {
     case "italy": return "Italy";
     case "cache": return "Cache";
     case "cobblestone": return "Cobblestone";
+    case "thera": return "Thera";
+    case "mills": return "Mills";
+    case "assembly": return "Assembly";
+    case "memento": return "Memento";
+    case "poolday": return "Pool Day";
+    case "baggage": return "Baggage";
+    case "shoots": return "Shoots";
     default:
       if (!mapName) return "Bilinmeyen Harita";
       return mapName.replace(/^de_|^cs_/, "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   }
 }
 
-export const MapEmblem: React.FC<MapEmblemProps> = ({ mapName, size = 44, className = "", showBorder = true }) => {
+export const MapEmblem: React.FC<MapEmblemProps> = React.memo(function MapEmblem({ mapName, size = 44, className = "", showBorder = true }) {
   const key = normalizeMapKey(mapName);
 
   const getEmblemContent = () => {
@@ -117,7 +110,7 @@ export const MapEmblem: React.FC<MapEmblemProps> = ({ mapName, size = 44, classN
           svg: (
             <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="emblem-svg">
               <circle cx="50" cy="50" r="42" fill="#221d06" stroke="#ffea47" strokeWidth="3" />
-              {/* Radyasyon Simgesi (☢ Trefoil) */}
+              {/* Radyasyon Simgesi (Trefoil) */}
               <circle cx="50" cy="50" r="10" fill="#ffea47" />
               <path d="M50 35 L40 18 A34 34 0 0 1 60 18 Z" fill="#ffea47" />
               <path d="M37 57 L21 68 A34 34 0 0 1 11 50 Z" fill="#ffea47" />
@@ -251,6 +244,108 @@ export const MapEmblem: React.FC<MapEmblemProps> = ({ mapName, size = 44, classN
           ),
         };
 
+      case "thera":
+        return {
+          bg: "linear-gradient(135deg, #0e334a, #061622)",
+          border: "#38bdf8",
+          accent: "#7dd3fc",
+          svg: (
+            <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="emblem-svg">
+              <path d="M50 8 L90 32 V68 L50 92 L10 68 V32 Z" fill="#082030" stroke="#38bdf8" strokeWidth="3" />
+              <circle cx="50" cy="50" r="22" stroke="#7dd3fc" strokeWidth="2" strokeDasharray="4 4" />
+              <path d="M36 50 C36 42 64 42 64 50 C64 58 36 58 36 66 H64" stroke="#7dd3fc" strokeWidth="3" strokeLinecap="round" />
+            </svg>
+          ),
+        };
+
+      case "mills":
+        return {
+          bg: "linear-gradient(135deg, #3d2f19, #1c150b)",
+          border: "#eab308",
+          accent: "#fde047",
+          svg: (
+            <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="emblem-svg">
+              <circle cx="50" cy="50" r="42" fill="#241a0e" stroke="#eab308" strokeWidth="3" />
+              {/* Değirmen Çarkı */}
+              <line x1="50" y1="16" x2="50" y2="84" stroke="#fde047" strokeWidth="3" strokeLinecap="round" />
+              <line x1="16" y1="50" x2="84" y2="50" stroke="#fde047" strokeWidth="3" strokeLinecap="round" />
+              <line x1="26" y1="26" x2="74" y2="74" stroke="#fde047" strokeWidth="2.5" strokeLinecap="round" />
+              <line x1="26" y1="74" x2="74" y2="26" stroke="#fde047" strokeWidth="2.5" strokeLinecap="round" />
+              <circle cx="50" cy="50" r="8" fill="#eab308" />
+            </svg>
+          ),
+        };
+
+      case "assembly":
+        return {
+          bg: "linear-gradient(135deg, #2a2d34, #121417)",
+          border: "#94a3b8",
+          accent: "#cbd5e1",
+          svg: (
+            <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="emblem-svg">
+              <rect x="16" y="16" width="68" height="68" rx="8" fill="#181a1f" stroke="#94a3b8" strokeWidth="3" />
+              <path d="M30 70 V30 L50 48 L70 30 V70" stroke="#cbd5e1" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          ),
+        };
+
+      case "memento":
+        return {
+          bg: "linear-gradient(135deg, #3d1c28, #17070e)",
+          border: "#f43f5e",
+          accent: "#fb7185",
+          svg: (
+            <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="emblem-svg">
+              <path d="M50 12 C72 12 88 28 88 50 C88 72 72 88 50 88 C28 88 12 72 12 50 C12 28 28 12 50 12 Z" fill="#240c16" stroke="#f43f5e" strokeWidth="3" />
+              <path d="M50 26 L56 42 H72 L59 52 L64 68 L50 58 L36 68 L41 52 L28 42 H44 Z" fill="#fb7185" opacity="0.4" stroke="#fb7185" strokeWidth="2.5" />
+            </svg>
+          ),
+        };
+
+      case "poolday":
+        return {
+          bg: "linear-gradient(135deg, #0d3b42, #041619)",
+          border: "#06b6d4",
+          accent: "#67e8f9",
+          svg: (
+            <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="emblem-svg">
+              <rect x="14" y="14" width="72" height="72" rx="12" fill="#082226" stroke="#06b6d4" strokeWidth="3" />
+              <path d="M24 50 Q37 40 50 50 T76 50" stroke="#67e8f9" strokeWidth="3.5" strokeLinecap="round" />
+              <path d="M24 64 Q37 54 50 64 T76 64" stroke="#67e8f9" strokeWidth="3.5" strokeLinecap="round" />
+              <circle cx="50" cy="32" r="8" fill="#67e8f9" />
+            </svg>
+          ),
+        };
+
+      case "baggage":
+        return {
+          bg: "linear-gradient(135deg, #3d2f19, #1c150b)",
+          border: "#d97706",
+          accent: "#fbbf24",
+          svg: (
+            <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="emblem-svg">
+              <rect x="18" y="28" width="64" height="50" rx="8" fill="#241a0e" stroke="#d97706" strokeWidth="3" />
+              <path d="M36 28 V18 C36 14 64 14 64 18 V28" stroke="#fbbf24" strokeWidth="3" strokeLinecap="round" />
+              <line x1="18" y1="53" x2="82" y2="53" stroke="#fbbf24" strokeWidth="2.5" />
+            </svg>
+          ),
+        };
+
+      case "shoots":
+        return {
+          bg: "linear-gradient(135deg, #1f3d1e, #0c1c0b)",
+          border: "#22c55e",
+          accent: "#4ade80",
+          svg: (
+            <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="emblem-svg">
+              <path d="M50 10 L88 32 L78 86 L22 86 L12 32 Z" fill="#112410" stroke="#22c55e" strokeWidth="3" />
+              <circle cx="50" cy="50" r="18" stroke="#4ade80" strokeWidth="2.5" />
+              <line x1="50" y1="24" x2="50" y2="76" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" />
+              <line x1="24" y1="50" x2="76" y2="50" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" />
+            </svg>
+          ),
+        };
+
       default:
         return {
           bg: "linear-gradient(135deg, #202b18, #0e140b)",
@@ -293,4 +388,4 @@ export const MapEmblem: React.FC<MapEmblemProps> = ({ mapName, size = 44, classN
       </div>
     </div>
   );
-};
+});

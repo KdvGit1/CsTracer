@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import "./growth.css";
+import { IconSparkles, IconExternalLink } from "./components/NavIcons";
 
 export type DimensionKey = "aim" | "movement" | "utility" | "teamwork" | "position" | "roundImpact";
 export type AimMetricKey = "preAim" | "headError" | "ttd" | "duelWinrate" | "earlyAccuracy";
@@ -71,7 +72,7 @@ function momentum(values: number[]) {
   return { trend: recent, acceleration: recent !== null && previous !== null ? Math.round((recent - previous) * 10) / 10 : null };
 }
 
-function deltaLabel(value: number | null, suffix = "", lowerIsBetter = false) {
+function deltaLabel(value: number | null, suffix = "") {
   if (value === null) return "Yeterli maç yok";
   const sign = value > 0 ? "+" : "";
   return `${sign}${value}${suffix}`;
@@ -184,7 +185,7 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
       <div className="memory-state"><span>KALICI HAFIZA</span><b>{matches.length} / 90 maç</b><small>Yaklaşık {storageKb} KB özet</small></div>
     </header>
 
-    {!matches.length ? <div className="growth-empty"><span>↗</span><b>Henüz kaydedilmiş maç yok</b><p>Bir demo analiz et ve demodaki kendi oyuncunu seç. Gerçek maç özeti otomatik olarak burada saklanacak; örnek veri gösterilmiyor.</p><button onClick={onBack}>İlk demoyu analiz et</button></div> : <>
+    {!matches.length ? <div className="growth-empty"><span><IconExternalLink size={20} /></span><b>Henüz kaydedilmiş maç yok</b><p>Bir demo analiz et ve demodaki kendi oyuncunu seç. Gerçek maç özeti otomatik olarak burada saklanacak; örnek veri gösterilmiyor.</p><button onClick={onBack}>İlk demoyu analiz et</button></div> : <>
       <div className="growth-score-grid">
         <article className="overall-score"><span>KARİYER ORTALAMA PUANI</span><strong>{careerAverage}</strong><small>/100 · {matches.length} maç ortalaması</small><div><b>Son maç {latest.summary.overall}</b><em className={(latest.summary.overall - (previous?.summary.overall || latest.summary.overall)) >= 0 ? "up" : "down"}>{previous ? deltaLabel(latest.summary.overall - previous.summary.overall) : "Başlangıç"}</em></div></article>
         <article><span>SON 5 MAÇ EĞİMİ</span><strong>{deltaLabel(overallMomentum.trend, " puan/maç")}</strong><small>Doğrusal form yönü</small></article>
@@ -197,7 +198,7 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
         <ScoreChart matches={matches} value={(match) => match.summary.overall} color="#c8f54d" label="Genel" />
       </article>
 
-      {/* 🎯 NİŞANGAH, DÜELLO & REAKSİYON GELİŞİMİ */}
+      {/* NİŞANGAH, DÜELLO & REAKSİYON GELİŞİMİ */}
       <article className="growth-panel aim-growth-panel">
         <header>
           <div>
@@ -309,7 +310,8 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
               <b>{match.map.replace(/^de_/, "")}</b>
               {match.summary.coachVerdict && (
                 <small className="growth-coach-tag" title={`${match.summary.coachVerdict.priorityArea}: ${match.summary.coachVerdict.title}`}>
-                  ✦ {match.summary.coachVerdict.priorityArea}
+                  <IconSparkles size={11} style={{ marginRight: "4px", display: "inline-block", verticalAlign: "middle" }} />
+                  {match.summary.coachVerdict.priorityArea}
                 </small>
               )}
             </div>

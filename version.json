@@ -1,12 +1,13 @@
 {
-    "version":  "0.44",
-    "githubRepo":  "KdvGit1/CsTracer",
-    "releaseDate":  "2026-08-24",
-    "title":  "TRACER v0.44.0 - Canlı Terminal, Otomatik Yama \u0026 Onarımlar",
-    "changelog":  [
-                      "Dinamik ve sıfır bakımlı otomatik yama paketleme sistemi eklendi.",
-                      "Canlı Terminal \u0026 Hata Ayıklama konsolu (TRACER-Terminal.cmd) eklendi.",
-                      "Arayüze canlı log izleme, arama ve teşhis paneli entegre edildi.",
-                      "Tarayıcı başlatma ve versiyon senkronizasyon hataları giderildi."
-                  ]
+  "version": "0.48.0",
+  "githubRepo": "KdvGit1/CsTracer",
+  "releaseDate": "2026-08-26",
+  "title": "TRACER v0.48.0 - Dinamik Takım Koçu",
+  "changelog": [
+    "Takım Koçu artık seçilen 1-5 oyuncu için çalışıyor ve yalnızca seçilen oyuncular kadar rol, rota, silah ve canlı round görevi gösteriyor.",
+    "Her oyuncunun uygulama sahibiyle aynı takımda oynadığı en az üç aynı harita maçı bağımsız bulunuyor; oyuncuların aynı maçlarda bulunması gerekmiyor.",
+    "Eksik maçlar Steam geçmişinden kişi başına ihtiyacı tamamlayacak en küçük demo grubuyla otomatik keşfediliyor ve kullanıcı onayıyla analiz ediliyor.",
+    "Kayıtlı raporlar bütün seçili oyuncuların isimlerini gösteriyor; eski klasör tabanlı Yerel Maçlar akışı kaldırıldı.",
+    "CS2 lobi heartbeat'i artık canlı maç sayılmıyor; Steam taraması yalnız gerçek maç sırasında performans için erteleniyor."
+  ]
 }

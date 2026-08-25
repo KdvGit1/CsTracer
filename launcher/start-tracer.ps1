@@ -7,6 +7,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# TRACER ikinci ekran yardımcısıdır; oyunla aynı anda çalışırken scheduler önceliğini
+# CS2'nin altında tut. Çocuk Node/Chromium süreçleri de bu sınıfı devralır.
+try {
+  [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal
+} catch { }
 $tracerRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $appUrl = "http://127.0.0.1:43118"
 $companionUrl = "http://127.0.0.1:43119/health"
@@ -18,8 +23,16 @@ $startedProcesses = [System.Collections.Generic.List[System.Diagnostics.Process]
 
 if ($DebugMode) {
   $host.UI.RawUI.WindowTitle = "TRACER - Canlı Hata Ayıklama & Terminal Konsolu"
+  $tracerVersion = "bilinmiyor"
+  $versionFilePath = Join-Path $tracerRoot "version.json"
+  if (Test-Path -LiteralPath $versionFilePath) {
+    try {
+      $parsedVersion = Get-Content -Raw -LiteralPath $versionFilePath | ConvertFrom-Json
+      if ($parsedVersion.version) { $tracerVersion = $parsedVersion.version }
+    } catch { }
+  }
   Write-Host "=================================================================" -ForegroundColor Cyan
-  Write-Host "  TRACER v0.43.0 - CANLI GELİŞTİRİCİ & LOG TERMİNALİ" -ForegroundColor Cyan
+  Write-Host "  TRACER v$tracerVersion - CANLI GELİŞTİRİCİ & LOG TERMİNALİ" -ForegroundColor Cyan
   Write-Host "=================================================================" -ForegroundColor Cyan
   Write-Host "Kök Dizin: $tracerRoot" -ForegroundColor Gray
   Write-Host "Log Dizini: $logRoot" -ForegroundColor Gray
@@ -38,9 +51,10 @@ try {
 
 if (-not $createdNew) {
   if ($DebugMode) {
-    Write-Host "[BİLGİ] TRACER zaten arka planda çalışıyor." -ForegroundColor Yellow
-    Write-Host "Mevcut oturumu sonlandırmak için TRACER-Kapat.cmd çalıştırabilirsiniz." -ForegroundColor White
-    Start-Sleep -Seconds 3
+    Write-Host "[BİLGİ] TRACER zaten arka planda çalışıyor. Arayüz açılıyor..." -ForegroundColor Yellow
+  }
+  if (-not $NoWindow) {
+    Start-Process $appUrl
   }
   exit 0
 }
@@ -83,6 +97,7 @@ function Start-HiddenNode([string[]]$arguments, [string]$logName) {
   $stderrPath = Join-Path $logRoot "$logName.err.log"
   $argumentLine = ($arguments | ForEach-Object { '"' + ($_.Replace('"', '\"')) + '"' }) -join " "
   $process = Start-Process -FilePath $nodePath -ArgumentList $argumentLine -WorkingDirectory $tracerRoot -WindowStyle Hidden -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -PassThru
+  try { $process.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
   $startedProcesses.Add($process)
   return $process
 }
@@ -111,8 +126,9 @@ function Get-AppBrowserProcesses([string]$browserPath, [string]$profilePath) {
   }
 }
 
-function Wait-ForAppBrowser([string]$browserPath, [string]$profilePath, [System.Diagnostics.Process]$starterProcess) {
+function Wait-ForAppBrowser([string]$browserPath, [string]$profilePath, [System.Diagnostics.Process]$companionProc) {
   Start-Sleep -Seconds 3
+  $prioritizedBrowserIds = [System.Collections.Generic.HashSet[int]]::new()
 
   while ($true) {
     # 1. Check if any browser window using our profile directory is still open
@@ -122,11 +138,20 @@ function Wait-ForAppBrowser([string]$browserPath, [string]$profilePath, [System.
       return
     }
 
-    # 2. Check if companion server has stopped or been told to shutdown
-    try {
-      $healthCheck = Invoke-WebRequest -UseBasicParsing -Uri $companionHeartbeatUrl -TimeoutSec 2 -ErrorAction Stop
-      if ($healthCheck.StatusCode -ne 200) { return }
-    } catch {
+    # Chromium yeni renderer/GPU süreçlerini sonradan açabilir. Her TRACER profil
+    # süreci yalnızca bir kez BelowNormal yapılır; diğer Edge/Chrome pencerelerine dokunulmaz.
+    foreach ($browserProcess in $runningBrowsers) {
+      $browserPid = [int]$browserProcess.ProcessId
+      if ($prioritizedBrowserIds.Add($browserPid)) {
+        try {
+          (Get-Process -Id $browserPid -ErrorAction Stop).PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal
+        } catch { }
+      }
+    }
+
+    # 2. Check if companion process itself has crashed / exited (never rely on HTTP network timeout under heavy demo parsing load)
+    if ($companionProc -and $companionProc.HasExited) {
+      if ($DebugMode) { Write-Host "[BİLGİ] Companion servisi durduruldu." -ForegroundColor Yellow }
       return
     }
 
@@ -157,7 +182,7 @@ try {
   Start-Sleep -Milliseconds 200
 
   if ($DebugMode) { Write-Host "[1/3] Companion & Demo Parser servisi başlatılıyor (Port 43119)..." -ForegroundColor Yellow }
-  Start-HiddenNode @((Join-Path $tracerRoot "companion\server.mjs")) "companion" | Out-Null
+  $companionProc = Start-HiddenNode @((Join-Path $tracerRoot "companion\server.mjs")) "companion"
 
   if ($DebugMode) { Write-Host "[2/3] Web Arayüz servisi başlatılıyor (Port 43118)..." -ForegroundColor Yellow }
   $standaloneServer = Join-Path $tracerRoot "app-runtime\server.js"
@@ -208,18 +233,15 @@ try {
         "--no-service-autorun"
       )
       $browserArgumentLine = ($browserArgs | ForEach-Object { '"' + ($_.Replace('"', '\"')) + '"' }) -join " "
-      $windowProcess = Start-Process -FilePath $browser -ArgumentList $browserArgumentLine -PassThru
-      Wait-ForAppBrowser $browser $profilePath $windowProcess
+      $appBrowserProcess = Start-Process -FilePath $browser -ArgumentList $browserArgumentLine -PassThru
+      try { $appBrowserProcess.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
+      Wait-ForAppBrowser $browser $profilePath $companionProc
     } else {
       Start-Process $appUrl
       if (-not $DebugMode) {
         Show-TracerError "TRACER normal tarayıcıda açıldı. Yerel servisleri kapatmak için TRACER-Kapat.cmd kullanabilirsin."
       }
-      while ($true) {
-        try {
-          $healthCheck = Invoke-WebRequest -UseBasicParsing -Uri $companionHeartbeatUrl -TimeoutSec 1 -ErrorAction Stop
-          if ($healthCheck.StatusCode -ne 200) { break }
-        } catch { break }
+      while ($companionProc -and -not $companionProc.HasExited) {
         Start-Sleep -Seconds 2
       }
     }

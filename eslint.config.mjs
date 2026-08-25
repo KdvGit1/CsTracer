@@ -40,6 +40,15 @@ const eslintConfig = defineConfig([
       },
     },
   },
+  {
+    // TypeScript bileşenleri çalışma zamanı PropTypes yerine derleme zamanı
+    // arayüzleriyle doğrulanır. İkisini birlikte zorlamak aynı sözleşmeyi iki
+    // kez tanımlatıyor ve gerçek tip hatalarını gürültü içinde bırakıyordu.
+    files: ["**/*.ts", "**/*.tsx"],
+    rules: {
+      "react/prop-types": "off",
+    },
+  },
 ]);
 
 export default eslintConfig;

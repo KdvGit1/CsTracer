@@ -8,20 +8,59 @@ import { randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { analyzeDemo, quickDemoMeta } from "./analyze.mjs";
-import { processGsiPacket, getLiveState } from "./gsi.mjs";
-import { checkGsiStatus, installGsiConfig, findCs2CfgDirectories } from "./integrator.mjs";
-import { checkForUpdates, downloadAndApplyPatch, getLocalVersionInfo, saveLocalVersionInfo } from "./updater.mjs";
+import { Worker } from "node:worker_threads";
+import { quickDemoMeta } from "./analyze.mjs";
+import { processGsiPacket, getLiveState, getGamePerformanceStatus } from "./gsi.mjs";
+import {
+  MatchAutomationStore,
+  buildCompactSummaryFromReport,
+  latestUnanalyzedScannedMatch,
+  performanceComparison,
+} from "./match_automation.mjs";
+import { SquadStore } from "./squad/store.mjs";
+import { buildSquadEvidence } from "./squad/analytics.mjs";
+import { buildSquadReport } from "./squad/planner.mjs";
+import { applyLiveFeedback, reconcileActiveSquadSessions, reconcileLiveSession, startLiveSession } from "./squad/live.mjs";
+import {
+  findPartyDiscoveries,
+  normalizeSteamId,
+  partyPlayerCoverage,
+  selectPartyDiscoveryMatches,
+  selectionSteamIds,
+} from "./squad/identity.mjs";
+import { checkGsiStatus, installGsiConfig, optimizeInstalledGsiConfig } from "./integrator.mjs";
+import { checkForUpdates, downloadAndApplyPatch, getLocalVersionInfo, saveLocalVersionInfo, restartApplication } from "./updater.mjs";
+import {
+  getSteamSession,
+  saveSteamSession,
+  getRecentMatches,
+  getScannedMatches,
+  syncSteamGcpdMatches,
+  scanSteamGcpdMatches,
+  downloadSingleMatch,
+  deleteSteamMatch,
+  repairExistingMatchDates,
+  applyConfiguredDemoRetention,
+  getDemoStorageState,
+  setGamePerformanceGuard,
+  startAutoScanScheduler,
+  steamEvents,
+} from "./steam_downloader.mjs";
 
 const HOST = "127.0.0.1";
-const PORT = 43119;
-const COACH_PORT = 43121;
+const configuredPort = Number.parseInt(process.env.TRACER_COMPANION_PORT || "43119", 10);
+const PORT = Number.isFinite(configuredPort) && configuredPort >= 0 && configuredPort <= 65535 ? configuredPort : 43119;
+const configuredCoachPort = Number.parseInt(process.env.TRACER_COACH_PORT || String(PORT ? PORT + 2 : 43121), 10);
+const COACH_PORT = Number.isFinite(configuredCoachPort) && configuredCoachPort > 0 && configuredCoachPort <= 65535 ? configuredCoachPort : 43121;
 const MAX_DEMO_BYTES = 800 * 1024 * 1024;
 const MAX_COACH_BODY_BYTES = 2 * 1024 * 1024;
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DATA_DIR = process.env.TRACER_DATA_DIR || join(process.env.LOCALAPPDATA || ROOT, "TRACER", "data");
 const PROGRESS_PATH = join(DATA_DIR, "progress.json");
+const squadStore = new SquadStore(DATA_DIR);
+const matchAutomationStore = new MatchAutomationStore(DATA_DIR);
 const MODEL_PATH = process.env.TRACER_MODEL_PATH || join(ROOT, "model", "coach.gguf");
+const SQUAD_MINIMUM_MATCHES = 3;
 const CPU_LLAMA_SERVER_PATH = process.env.TRACER_LLAMA_SERVER || [
   join(ROOT, "runtime", "llama", "llama-server.exe"),
   join(ROOT, "runtime", "llama", "llama-server"),
@@ -45,6 +84,14 @@ let activeCoachBackend = null;
 let cudaProbeCache = null;
 let cudaDisabledReason = "";
 let progressWriteQueue = Promise.resolve();
+const activeDemoWorkers = new Set();
+const autoDownloadQueue = [];
+let autoDownloadWorkerRunning = false;
+let autoDownloadActiveMatchId = null;
+let autoDownloadRetryTimer = null;
+let previousGamePerformanceActive = false;
+
+setGamePerformanceGuard(() => getGamePerformanceStatus().active);
 
 // --- Live In-Memory Log Buffer for Terminal / Diagnostics ---
 const LOG_HISTORY_MAX = 350;
@@ -69,23 +116,36 @@ const origLog = console.log;
 const origWarn = console.warn;
 const origError = console.error;
 
+function safeLogArg(value) {
+  if (typeof value !== "object" || value === null) return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "[serialize edilemeyen nesne]";
+  }
+}
+
 console.log = (...args) => {
   origLog(...args);
-  const msg = args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
-  const level = msg.includes("[UPDATER]") ? "updater" : msg.includes("[GSI]") ? "gsi" : "info";
-  recordLog(level, msg);
+  try {
+    const msg = args.map(safeLogArg).join(" ");
+    const level = msg.includes("[UPDATER]") ? "updater" : msg.includes("[GSI]") ? "gsi" : "info";
+    recordLog(level, msg);
+  } catch { /* log kaydı asla çökmeye yol açmamalı */ }
 };
 
 console.warn = (...args) => {
   origWarn(...args);
-  const msg = args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
-  recordLog("warn", msg);
+  try {
+    recordLog("warn", args.map(safeLogArg).join(" "));
+  } catch { /* ignore */ }
 };
 
 console.error = (...args) => {
   origError(...args);
-  const msg = args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
-  recordLog("error", msg);
+  try {
+    recordLog("error", args.map(safeLogArg).join(" "));
+  } catch { /* ignore */ }
 };
 
 const COACH_RESPONSE_SCHEMA = {
@@ -116,6 +176,32 @@ const COACH_RESPONSE_SCHEMA = {
   required: ["title", "summary", "priorities", "strengths", "sessionPlan", "confidence"],
 };
 
+function normalizeCoachContent(value) {
+  const schema = COACH_RESPONSE_SCHEMA.properties;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { title: "", summary: "", priorities: [], strengths: [], sessionPlan: "", confidence: 70 };
+  }
+  const priorityProperties = schema.priorities.items.properties;
+  const priorities = Array.isArray(value.priorities)
+    ? value.priorities.slice(0, schema.priorities.maxItems).map((item) => ({
+      area: String(item?.area || "").slice(0, priorityProperties.area.maxLength),
+      evidence: String(item?.evidence || "").slice(0, priorityProperties.evidence.maxLength),
+      interpretation: String(item?.interpretation || "").slice(0, priorityProperties.interpretation.maxLength),
+      action: String(item?.action || "").slice(0, priorityProperties.action.maxLength),
+    }))
+    : [];
+  return {
+    title: String(value.title || "").slice(0, schema.title.maxLength),
+    summary: String(value.summary || "").slice(0, schema.summary.maxLength),
+    priorities,
+    strengths: Array.isArray(value.strengths)
+      ? value.strengths.slice(0, schema.strengths.maxItems).map((item) => String(item).slice(0, schema.strengths.items.maxLength))
+      : [],
+    sessionPlan: String(value.sessionPlan || "").slice(0, schema.sessionPlan.maxLength),
+    confidence: Math.max(schema.confidence.minimum, Math.min(schema.confidence.maximum, Number(value.confidence) || 70)),
+  };
+}
+
 function cleanCoachFallback(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const priorities = Array.isArray(value.priorities) ? value.priorities.slice(0, 3).map((item) => ({
@@ -135,9 +221,9 @@ function cleanCoachFallback(value) {
   return fallback.priorities.length ? fallback : null;
 }
 
-function validateCoachContent(content, finishReason = "unknown") {
-  if (!content) return { title: "", summary: "", priorities: [], strengths: [], sessionPlan: "", confidence: 70 };
-  if (typeof content !== "string") return content;
+function validateCoachContent(content) {
+  if (!content) return normalizeCoachContent(null);
+  if (typeof content !== "string") return normalizeCoachContent(content);
   const clean = content
     .replace(/<think>[\s\S]*?<\/think>/gi, "")
     .replace(/^```(?:json)?\s*|\s*```$/g, "")
@@ -156,18 +242,7 @@ function validateCoachContent(content, finishReason = "unknown") {
     }
   }
 
-  if (!parsed || typeof parsed !== "object") {
-    return {
-      title: "",
-      summary: "",
-      priorities: [],
-      strengths: [],
-      sessionPlan: "",
-      confidence: 70,
-    };
-  }
-
-  return parsed;
+  return normalizeCoachContent(parsed);
 }
 
 function usefulGeneratedText(value, fallback, requireSentence = true) {
@@ -202,7 +277,7 @@ function corsHeaders(origin) {
   const allowedOrigin = ALLOWED_ORIGINS.has(origin) ? origin : "";
   return {
     ...(allowedOrigin ? { "Access-Control-Allow-Origin": allowedOrigin } : {}),
-    "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, X-File-Name",
     "Access-Control-Allow-Private-Network": "true",
     "Access-Control-Max-Age": "600",
@@ -214,6 +289,70 @@ function corsHeaders(origin) {
 function sendJson(response, status, payload, origin = "") {
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", ...corsHeaders(origin) });
   response.end(JSON.stringify(payload));
+}
+
+function resolveSquadOwnerSteamId(body = {}) {
+  return normalizeSteamId(body?.ownerSteamId) || normalizeSteamId(getSteamSession().steamId);
+}
+
+function validSquadSelection(roster) {
+  return Array.isArray(roster)
+    && roster.length >= 1
+    && roster.length <= 5
+    && selectionSteamIds(roster).length === roster.length;
+}
+
+function squadPlayerCoverage(candidates, availableMatches, roster, ownerSteamId) {
+  const availableByPlayer = new Map();
+  for (const match of Array.isArray(availableMatches) ? availableMatches : []) {
+    for (const steamid of Array.isArray(match?.matchedPlayerIds) ? match.matchedPlayerIds : []) {
+      const normalized = normalizeSteamId(steamid);
+      if (!normalized) continue;
+      if (!availableByPlayer.has(normalized)) availableByPlayer.set(normalized, new Set());
+      availableByPlayer.get(normalized).add(String(match?.id || match?.matchId || ""));
+    }
+  }
+  return partyPlayerCoverage(candidates, roster, ownerSteamId).map((item) => {
+    const analyzedMatches = item.matchIds.length;
+    const availableMatchesCount = availableByPlayer.get(item.player.steamid)?.size || 0;
+    return {
+      player: item.player,
+      analyzedMatches,
+      analyzedMatchIds: item.matchIds,
+      availableMatches: availableMatchesCount,
+      requiredDownloads: Math.max(0, SQUAD_MINIMUM_MATCHES - analyzedMatches),
+      eligible: analyzedMatches >= SQUAD_MINIMUM_MATCHES,
+    };
+  });
+}
+
+function defaultSquadName(roster) {
+  return (Array.isArray(roster) ? roster : [])
+    .map((player) => String(player?.name || "").trim())
+    .filter(Boolean)
+    .join(", ") || "Takımım";
+}
+
+function pauseHeavyOperation(response, origin, operation) {
+  const performance = getGamePerformanceStatus();
+  if (!performance.active) return false;
+  sendJson(response, 423, {
+    ok: false,
+    paused: true,
+    performanceMode: true,
+    error: `CS2 canlı maçta: ${operation} maç sonrasına ertelendi.`,
+    performance,
+  }, origin);
+  return true;
+}
+
+function stopActiveDemoWorkers() {
+  if (activeDemoWorkers.size === 0) return;
+  console.log(`[PERF] CS2 maçı başladı; ${activeDemoWorkers.size} demo analiz worker'ı durduruluyor.`);
+  for (const worker of [...activeDemoWorkers]) {
+    activeDemoWorkers.delete(worker);
+    void worker.terminate();
+  }
 }
 
 function probeCudaRuntime() {
@@ -282,6 +421,36 @@ function coachStatus() {
   };
 }
 
+function lightweightCoachStatus() {
+  const cpuBinaryFound = existsSync(CPU_LLAMA_SERVER_PATH);
+  const cudaBinaryFound = existsSync(CUDA_LLAMA_SERVER_PATH);
+  const modelFound = existsSync(MODEL_PATH);
+  const backend = activeCoachBackend || "deferred";
+  return {
+    available: (cpuBinaryFound || cudaBinaryFound) && modelFound,
+    binaryFound: cpuBinaryFound || cudaBinaryFound,
+    cpuBinaryFound,
+    cudaBinaryFound,
+    cudaAvailable: null,
+    cudaDevice: "",
+    cudaReason: "CS2 canlıyken CUDA aygıt taraması ertelendi.",
+    backend,
+    backendLabel: "Oyun Performans Modu · ertelendi",
+    modelFound,
+    running: Boolean(coachProcess && coachProcess.exitCode === null),
+    busy: coachBusy,
+    engine: "llama.cpp",
+    model: "Qwen3 1.7B Q4_K_M",
+    modelBytes: modelFound ? statSync(MODEL_PATH).size : 0,
+    loadPolicy: "on-demand",
+    releasePolicy: "process-exit-after-response",
+  };
+}
+
+function coachStatusForCurrentLoad() {
+  return getGamePerformanceStatus().active ? lightweightCoachStatus() : coachStatus();
+}
+
 async function readJsonBody(request, limit = MAX_COACH_BODY_BYTES) {
   const chunks = [];
   let received = 0;
@@ -319,7 +488,11 @@ async function readProgressStore() {
 }
 
 async function writeProgressStore(store) {
-  progressWriteQueue = progressWriteQueue.then(async () => {
+  // Zincire catch eklenmezse tek bir yazma hatası kuyruğu kalıcı olarak reddedilmiş
+  // durumda bırakır ve sonraki tüm yazmalar sessizce başarısız olur.
+  progressWriteQueue = progressWriteQueue.catch((err) => {
+    console.warn("[PROGRESS] Önceki yazma hatası yutuldu:", err instanceof Error ? err.message : err);
+  }).then(async () => {
     await mkdir(DATA_DIR, { recursive: true });
     const tempPath = `${PROGRESS_PATH}.${process.pid}.tmp`;
     await writeFile(tempPath, JSON.stringify(store), "utf8");
@@ -377,9 +550,251 @@ async function handleProgress(request, response, origin) {
   sendJson(response, 405, { error: "Desteklenmeyen yöntem." }, origin);
 }
 
+function findPersonalReport(match, profile = null) {
+  const reports = Array.isArray(match?.fullAnalysis?.reports) ? match.fullAnalysis.reports : [];
+  const preferredSteamId = String(profile?.steamid || match?.userStats?.steamid || "");
+  const preferredName = String(profile?.name || match?.userStats?.name || "");
+  return reports.find((report) => preferredSteamId && String(report?.player?.steamid || "") === preferredSteamId)
+    || reports.find((report) => preferredName && String(report?.player?.name || "") === preferredName)
+    || reports[0]
+    || null;
+}
+
+function comparisonMessage(comparison) {
+  if (!comparison) return "Tam analiz hazır. Geçmiş karşılaştırması için yeterli canlı veri yoktu.";
+  if (!comparison.sufficient) return `Tam analiz hazır: ${comparison.value}/100. Gelişim kıyası için en az 3 eski maç gerekli.`;
+  const sign = comparison.delta > 0 ? "+" : "";
+  if (comparison.kind === "kd") return `Canlı ön ölçüm: ${comparison.value} K/D · geçmiş ortalamana göre ${sign}${comparison.delta}.`;
+  return `Tam analiz: ${comparison.value}/100 · gelişim ortalamana göre ${sign}${comparison.delta} puan.`;
+}
+
+async function progressContext() {
+  try {
+    return await readProgressStore();
+  } catch (error) {
+    console.warn("[BİLDİRİM] Gelişim hafızası okunamadı:", error instanceof Error ? error.message : String(error));
+    return { profile: null, matches: [] };
+  }
+}
+
+async function handleDiscoveredMatches(matches) {
+  const progress = await progressContext();
+  const created = matchAutomationStore.discover(matches, {
+    liveState: getLiveState(),
+    progressMatches: progress.matches,
+    identity: progress.profile,
+  });
+  if (created.length === 0) return;
+  console.log(`[BİLDİRİM] ${created.length} yeni maç bildirimi oluşturuldu.`);
+  const automatic = created
+    .filter((item) => item.auto)
+    .sort((left, right) => Number(right.match?.timestamp) - Number(left.match?.timestamp))[0];
+  if (automatic) {
+    for (const older of created.filter((item) => item.auto && item.matchId !== automatic.matchId)) {
+      matchAutomationStore.update(older.matchId, {
+        auto: false,
+        status: "detected",
+        message: "Daha yeni maç otomatik sıraya alındı. Bu maçı istersen tıklayarak analiz edebilirsin.",
+      });
+    }
+    const source = matches.find((match) => match.id === automatic.matchId) || automatic.match;
+    queueMatchDownload(source, { automatic: true });
+  }
+}
+
+async function handleMatchDownloadStatus(event) {
+  if (!event?.matchId) return;
+  if (event.status !== "ready" || !event.match) {
+    const patch = {
+      status: event.status,
+      message: event.message || "Maç işleniyor.",
+    };
+    if (event.status === "failed") patch.read = false;
+    matchAutomationStore.update(event.matchId, patch);
+    return;
+  }
+
+  const progress = await progressContext();
+  const report = findPersonalReport(event.match, progress.profile);
+  const summary = buildCompactSummaryFromReport(report);
+  const comparison = summary ? performanceComparison({
+    summary,
+    progressMatches: progress.matches,
+    identity: progress.profile || event.match?.userStats || null,
+    currentMatchId: event.matchId,
+  }) : null;
+  matchAutomationStore.update(event.matchId, {
+    status: "ready",
+    message: comparisonMessage(comparison),
+    comparison,
+    stats: summary?.stats || event.match?.userStats || null,
+    summary: summary ? { overall: summary.overall, dimensions: summary.dimensions } : null,
+    read: false,
+    error: "",
+  });
+}
+
+function scheduleQueueRetry(delayMs = 30_000) {
+  if (autoDownloadRetryTimer) return;
+  autoDownloadRetryTimer = setTimeout(() => {
+    autoDownloadRetryTimer = null;
+    void drainMatchDownloadQueue();
+  }, delayMs);
+}
+
+function queueMatchDownload(match, { automatic = false } = {}) {
+  if (!match?.id) return false;
+  const alreadyQueued = autoDownloadActiveMatchId === match.id || autoDownloadQueue.some((item) => item.match.id === match.id);
+  if (alreadyQueued) return false;
+  autoDownloadQueue.push({ match, automatic, attempts: 0 });
+  matchAutomationStore.ensure(match, {
+    status: "queued",
+    auto: automatic,
+    message: automatic
+      ? "Otomatik indirme açık: maç sıraya alındı."
+      : "İndirme ve analiz sırasına alındı.",
+  });
+  void drainMatchDownloadQueue();
+  return true;
+}
+
+async function drainMatchDownloadQueue() {
+  if (autoDownloadWorkerRunning || autoDownloadQueue.length === 0) return;
+  if (getGamePerformanceStatus().active) {
+    const pending = autoDownloadQueue[0];
+    matchAutomationStore.update(pending.match.id, {
+      status: "waiting",
+      message: "CS2 canlı: performansı korumak için indirme maç sonrasına ertelendi.",
+    });
+    scheduleQueueRetry();
+    return;
+  }
+
+  autoDownloadWorkerRunning = true;
+  const queued = autoDownloadQueue.shift();
+  autoDownloadActiveMatchId = queued.match.id;
+  try {
+    const alreadyDownloaded = getRecentMatches().find((match) => match.id === queued.match.id);
+    if (alreadyDownloaded?.fullAnalysis) {
+      await handleMatchDownloadStatus({ matchId: queued.match.id, status: "ready", match: alreadyDownloaded });
+      return;
+    }
+    const result = await downloadSingleMatch(queued.match.id, queued.match.replayUrl || "", queued.match);
+    if (result.paused) {
+      autoDownloadQueue.unshift(queued);
+      scheduleQueueRetry();
+      return;
+    }
+    if (!result.ok) {
+      queued.attempts += 1;
+      if (queued.attempts < 3) {
+        matchAutomationStore.update(queued.match.id, {
+          status: "waiting",
+          message: `İndirme başarısız; ${queued.attempts + 1}. deneme bir dakika içinde yapılacak.`,
+          error: result.message || "İndirme başarısız.",
+        });
+        autoDownloadQueue.unshift(queued);
+        scheduleQueueRetry(60_000);
+      } else {
+        matchAutomationStore.update(queued.match.id, {
+          status: "failed",
+          message: "Üç deneme başarısız oldu. Yeniden denemek için bildirime tıkla.",
+          error: result.message || "İndirme başarısız.",
+          read: false,
+        });
+      }
+    }
+  } catch (error) {
+    matchAutomationStore.update(queued.match.id, {
+      status: "failed",
+      message: "Beklenmeyen indirme hatası. Yeniden denemek için bildirime tıkla.",
+      error: error instanceof Error ? error.message : String(error),
+      read: false,
+    });
+  } finally {
+    autoDownloadActiveMatchId = null;
+    autoDownloadWorkerRunning = false;
+    if (autoDownloadQueue.length > 0 && !autoDownloadRetryTimer) void drainMatchDownloadQueue();
+  }
+}
+
+async function reconcileLatestAutomaticMatch(scannedMatches = getScannedMatches()) {
+  if (!matchAutomationStore.getSettings().autoDownloadLatestMatch) return false;
+  const latest = latestUnanalyzedScannedMatch(scannedMatches, getRecentMatches());
+  if (!latest) return false;
+  const progress = await progressContext();
+  matchAutomationStore.discover([latest], {
+    liveState: getLiveState(),
+    progressMatches: progress.matches,
+    identity: progress.profile,
+  });
+  const queued = queueMatchDownload(latest, { automatic: true });
+  if (queued) console.log(`[BİLDİRİM] Önbellekteki en yeni analiz edilmemiş maç otomatik sıraya alındı: ${latest.id}`);
+  return queued;
+}
+
+function resumePendingMatchDownloads() {
+  const settings = matchAutomationStore.getSettings();
+  if (!settings.autoDownloadLatestMatch) return;
+  const scanned = getScannedMatches();
+  const pending = matchAutomationStore.listNotifications()
+    .filter((item) => item.auto && ["queued", "waiting", "downloading", "analyzing"].includes(item.status))
+    .sort((left, right) => Number(right.match?.timestamp) - Number(left.match?.timestamp));
+  for (const item of pending.slice(0, 1)) {
+    const match = scanned.find((candidate) => candidate.id === item.matchId) || item.match;
+    queueMatchDownload(match, { automatic: true });
+  }
+}
+
+steamEvents.on("matches-discovered", (matches) => {
+  void handleDiscoveredMatches(matches).catch((error) => console.warn("[BİLDİRİM] Yeni maç işlenemedi:", error.message));
+});
+steamEvents.on("scan-complete", (matches) => {
+  void reconcileLatestAutomaticMatch(matches).catch((error) => console.warn("[BİLDİRİM] Otomatik son maç telafisi başarısız:", error.message));
+});
+steamEvents.on("download-status", (event) => {
+  void handleMatchDownloadStatus(event).catch((error) => console.warn("[BİLDİRİM] Durum güncellenemedi:", error.message));
+});
+
+// Ağır demo analizini ayrı worker thread'de çalıştır: büyük demolarda ana sunucu
+// (GSI, koç, /health) bloklanmaz, uygulama "donmuş" gibi görünmez.
+const ANALYZE_WORKER_TIMEOUT_MS = 5 * 60 * 1000;
+
+function analyzeDemoInWorker(filePath) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const workerPath = join(dirname(fileURLToPath(import.meta.url)), "analyze-worker.mjs");
+    const worker = new Worker(workerPath, { workerData: { filePath } });
+    activeDemoWorkers.add(worker);
+    const cleanupWorker = () => activeDemoWorkers.delete(worker);
+    const timer = setTimeout(() => {
+      worker.terminate();
+      rejectPromise(new Error("Demo analizi zaman aşımına uğradı (5 dk)."));
+    }, ANALYZE_WORKER_TIMEOUT_MS);
+    worker.once("message", (msg) => {
+      clearTimeout(timer);
+      cleanupWorker();
+      if (msg?.ok) resolvePromise(msg.result);
+      else rejectPromise(new Error(msg?.error || "Demo analizi başarısız oldu."));
+    });
+    worker.once("error", (err) => {
+      clearTimeout(timer);
+      cleanupWorker();
+      rejectPromise(err);
+    });
+    worker.once("exit", (code) => {
+      clearTimeout(timer);
+      cleanupWorker();
+      if (code !== 0) rejectPromise(new Error(`Analiz iş parçacığı beklenmedik şekilde kapandı (${code}).`));
+    });
+  });
+}
+
 async function waitForCoachServer(child, backend, timeoutMs = 90000) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
+    if (child.spawnError) {
+      throw new Error(`${backend === "cuda" ? "CUDA" : "CPU"} koç motoru başlatılamadı: ${child.spawnError.message}`);
+    }
     if (child.exitCode !== null) {
       throw new Error(`${backend === "cuda" ? "CUDA" : "CPU"} modeli başlatılamadı.${coachLogTail ? ` ${coachLogTail.slice(-500)}` : ""}`);
     }
@@ -424,6 +839,12 @@ async function runCoachAttempt(runtime, messages, deterministicFallback) {
     stdio: ["ignore", "pipe", "pipe"],
   });
   coachProcess = child;
+  // spawn hatası (ENOENT vb.) unhandled 'error' event'i olarak process'i çökertmesin
+  child.spawnError = null;
+  child.on("error", (err) => {
+    child.spawnError = err;
+    console.error("[COACH] llama-server başlatma hatası:", err.message);
+  });
   const rememberLog = (chunk) => { coachLogTail = `${coachLogTail}${chunk.toString("utf8")}`.slice(-4000); };
   child.stdout.on("data", rememberLog);
   child.stderr.on("data", rememberLog);
@@ -451,7 +872,7 @@ async function runCoachAttempt(runtime, messages, deterministicFallback) {
     if (!content) throw new Error("Yerel model boş yanıt döndürdü.");
     return {
       content: JSON.stringify(mergeCoachWithEvidence(
-        validateCoachContent(content, payload.choices?.[0]?.finish_reason),
+        validateCoachContent(content),
         deterministicFallback,
       )),
       model: "Qwen3 1.7B Q4_K_M",
@@ -504,8 +925,23 @@ const server = createServer(async (request, response) => {
     response.end();
     return;
   }
+  // Tarayıcı dışı istemciler Origin göndermez; yalnızca CS2 oyun istemcisinin GSI
+  // POST'u Originsiz kabul edilir. Diğer tüm değiştirici istekler (shutdown, update,
+  // steam oturumu, maç silme...) yalnızca yetkili tarayıcı origin'inden gelebilir.
+  const isGsiPost = request.method === "POST" && request.url === "/gsi";
+  if (!isGsiPost && ["POST", "PUT", "DELETE"].includes(request.method || "") && !ALLOWED_ORIGINS.has(origin)) {
+    sendJson(response, 403, { error: "Bu istek yalnızca TRACER arayüzünden gönderilebilir." });
+    return;
+  }
   if (request.method === "GET" && request.url === "/health") {
-    sendJson(response, 200, { ok: true, parserVersion: "0.42.0", mode: "local-native", coach: coachStatus() }, origin);
+    const performance = getGamePerformanceStatus();
+    sendJson(response, 200, {
+      ok: true,
+      parserVersion: "0.42.0",
+      mode: "local-native",
+      performance,
+      coach: performance.active ? lightweightCoachStatus() : coachStatus(),
+    }, origin);
     return;
   }
   if ((request.method === "GET" || request.method === "POST") && request.url === "/heartbeat") {
@@ -517,14 +953,29 @@ const server = createServer(async (request, response) => {
     setTimeout(async () => {
       try {
         await stopCoachProcess();
-      } catch { }
+      } catch {
+        // Sunucu zaten kapanıyor; koç sürecinin daha önce sonlanmış olması güvenlidir.
+      }
       server.close(() => process.exit(0));
       setTimeout(() => process.exit(0), 1000);
     }, 100);
     return;
   }
   if (request.method === "GET" && request.url === "/coach/status") {
-    sendJson(response, 200, coachStatus(), origin);
+    sendJson(response, 200, coachStatusForCurrentLoad(), origin);
+    return;
+  }
+  if (request.method === "GET" && request.url === "/performance/status") {
+    sendJson(response, 200, {
+      ok: true,
+      performance: getGamePerformanceStatus(),
+      gsi: checkGsiStatus(),
+      heavyJobs: {
+        coachRunning: Boolean(coachProcess && coachProcess.exitCode === null),
+        coachBusy,
+        demoWorkers: activeDemoWorkers.size,
+      },
+    }, origin);
     return;
   }
   if (request.url === "/progress" && ["GET", "PUT", "POST"].includes(request.method || "")) {
@@ -549,6 +1000,20 @@ const server = createServer(async (request, response) => {
         sendJson(response, 400, { error: "Kanıta dayalı yedek koç raporu eksik." }, origin);
         return;
       }
+      if (getGamePerformanceStatus().active) {
+        const fallbackStatus = lightweightCoachStatus();
+        sendJson(response, 200, {
+          content: JSON.stringify(deterministicFallback),
+          model: fallbackStatus.model,
+          backend: "paused",
+          backendLabel: "Oyun Performans Modu",
+          generated: false,
+          warning: "CS2 canlı maçta olduğu için yerel AI çalıştırılmadı; kanıta dayalı hazır rapor kullanıldı.",
+          released: true,
+          performanceMode: true,
+        }, origin);
+        return;
+      }
       const result = await runEmbeddedCoach(body.messages, deterministicFallback);
       sendJson(response, 200, { ...result, released: true }, origin);
     } catch (error) {
@@ -558,7 +1023,7 @@ const server = createServer(async (request, response) => {
       if (message.includes("başka bir yanıt")) {
         sendJson(response, 409, { error: message, released: true }, origin);
       } else if (deterministicFallback) {
-        const fallbackStatus = coachStatus();
+        const fallbackStatus = coachStatusForCurrentLoad();
         sendJson(response, 200, {
           content: JSON.stringify(deterministicFallback),
           model: fallbackStatus.model,
@@ -605,10 +1070,27 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === "POST" && request.url === "/update/apply") {
+    if (pauseHeavyOperation(response, origin, "güncelleme indirme ve kurma işlemi")) return;
     try {
       const body = await readJsonBody(request, 64 * 1024);
-      const res = await downloadAndApplyPatch(body?.patchUrl);
+      const res = await downloadAndApplyPatch(body?.patchUrl, { expectedSha256: body?.expectedSha256 });
       sendJson(response, 200, res, origin);
+      if (res?.needsRestart) {
+        // Yanıtı önce gönder, sonra yeni sürümü başlat ve bu process'i kapat.
+        setTimeout(() => {
+          const spawned = restartApplication();
+          console.log(spawned ? "[UPDATER] Yeni sürüm başlatıldı, eski process kapanıyor." : "[UPDATER] Başlatıcı bulunamadı; lütfen TRACER'ı elle yeniden başlatın.");
+          setTimeout(async () => {
+            try {
+              await stopCoachProcess();
+            } catch {
+              // Yeniden başlatma sırasında süreç daha önce kapanmış olabilir.
+            }
+            server.close(() => process.exit(0));
+            setTimeout(() => process.exit(0), 1500);
+          }, 750);
+        }, 400);
+      }
     } catch (err) {
       sendJson(response, 500, { error: err instanceof Error ? err.message : String(err) }, origin);
     }
@@ -667,19 +1149,52 @@ const server = createServer(async (request, response) => {
     return;
   }
 
-  if (request.method === "GET" && request.url === "/gsi/state") {
+  if (request.method === "GET" && (request.url === "/gsi/state" || request.url === "/gsi/live")) {
     sendJson(response, 200, getLiveState(), origin);
     return;
   }
 
   if (request.method === "POST" && request.url === "/gsi") {
     let body = "";
+    let gsiBytes = 0;
+    const GSI_LIMIT = 256 * 1024; // GSI paketleri birkaç KB'tır; 256 KB fazlasıyla yeterli
+    let gsiTooLarge = false;
     request.setEncoding("utf8");
-    request.on("data", (chunk) => { body += chunk; });
+    request.on("data", (chunk) => {
+      gsiBytes += Buffer.byteLength(chunk);
+      if (gsiBytes > GSI_LIMIT) {
+        gsiTooLarge = true;
+        request.destroy();
+        return;
+      }
+      body += chunk;
+    });
+    request.on("error", () => { /* soket hatası: yanıt zaten gidemedi, sadece yut */ });
     request.on("end", () => {
+      if (gsiTooLarge) {
+        sendJson(response, 413, { error: "GSI paketi çok büyük." }, origin);
+        return;
+      }
       try {
         const json = JSON.parse(body);
         processGsiPacket(json);
+        const gamePerformance = getGamePerformanceStatus();
+        if (gamePerformance.active) {
+          stopActiveDemoWorkers();
+          if (coachProcess && coachProcess.exitCode === null) {
+            console.log("[PERF] CS2 maçı başladı; yerel AI süreci kapatılıyor.");
+            void stopCoachProcess();
+          }
+        }
+        if (previousGamePerformanceActive && !gamePerformance.active) {
+          console.log("[BİLDİRİM] Maç sonu algılandı; Steam replay kaydı kısa süre sonra kontrol edilecek.");
+          void drainMatchDownloadQueue();
+          setTimeout(() => {
+            void scanSteamGcpdMatches().catch((error) => console.warn("[BİLDİRİM] Maç sonu taraması başarısız:", error.message));
+          }, 20_000);
+        }
+        previousGamePerformanceActive = gamePerformance.active;
+        reconcileActiveSquadSessions(squadStore, getLiveState());
         sendJson(response, 200, { ok: true }, origin);
       } catch {
         sendJson(response, 400, { error: "Geçersiz GSI JSON paketi." }, origin);
@@ -688,7 +1203,473 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  // --- Maç Sonu Bildirim, Depolama ve Otomasyon Uç Noktaları ---
+  if (request.method === "GET" && request.url === "/automation/state") {
+    sendJson(response, 200, { ok: true, ...matchAutomationStore.state(join(DATA_DIR, "recent_demos"), getRecentMatches()) }, origin);
+    return;
+  }
+
+  if (request.method === "PUT" && request.url === "/automation/settings") {
+    try {
+      const body = await readJsonBody(request, 16 * 1024);
+      const settings = matchAutomationStore.saveSettings(body);
+      applyConfiguredDemoRetention();
+      if (settings.autoDownloadLatestMatch) {
+        void reconcileLatestAutomaticMatch().catch((error) => console.warn("[BİLDİRİM] Ayar sonrası otomatik son maç başlatılamadı:", error.message));
+      }
+      sendJson(response, 200, {
+        ok: true,
+        settings,
+        storage: getDemoStorageState(),
+      }, origin);
+    } catch (error) {
+      sendJson(response, 422, { error: error instanceof Error ? error.message : String(error) }, origin);
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/notifications/read-all") {
+    const notifications = matchAutomationStore.markAllRead();
+    sendJson(response, 200, { ok: true, notifications, unreadCount: 0 }, origin);
+    return;
+  }
+
+  if (request.method === "DELETE" && request.url === "/notifications") {
+    matchAutomationStore.saveNotifications([]);
+    sendJson(response, 200, { ok: true, notifications: [], unreadCount: 0 }, origin);
+    return;
+  }
+
+  const notificationReadMatch = request.url?.match(/^\/notifications\/([^/]+)\/read$/);
+  if (notificationReadMatch && request.method === "POST") {
+    const notificationId = decodeURIComponent(notificationReadMatch[1]);
+    const notification = matchAutomationStore.update(notificationId, { read: true });
+    sendJson(response, notification ? 200 : 404, notification ? { ok: true, notification } : { error: "Bildirim bulunamadı." }, origin);
+    return;
+  }
+
+  const notificationActionMatch = request.url?.match(/^\/notifications\/([^/]+)\/action$/);
+  if (notificationActionMatch && request.method === "POST") {
+    const notificationId = decodeURIComponent(notificationActionMatch[1]);
+    const notification = matchAutomationStore.listNotifications().find((item) => item.id === notificationId || item.matchId === notificationId);
+    if (!notification) {
+      sendJson(response, 404, { error: "Bildirim bulunamadı." }, origin);
+      return;
+    }
+    matchAutomationStore.update(notification.matchId, { read: true });
+    if (notification.status === "ready") {
+      const match = getRecentMatches().find((item) => item.id === notification.matchId);
+      if (match?.fullAnalysis) {
+        sendJson(response, 200, { ok: true, ready: true, match, analysis: match.fullAnalysis }, origin);
+      } else {
+        sendJson(response, 404, { error: "Analiz kaydı bulunamadı; bildirimi yeniden deneyin." }, origin);
+      }
+      return;
+    }
+    if (["queued", "waiting", "downloading", "analyzing"].includes(notification.status)) {
+      sendJson(response, 202, { ok: true, queued: true, notification: matchAutomationStore.update(notification.matchId, { read: true }) }, origin);
+      return;
+    }
+    const scannedMatch = getScannedMatches().find((item) => item.id === notification.matchId);
+    if (!scannedMatch?.replayUrl) {
+      sendJson(response, 409, { error: "Replay henüz Steam geçmişinde hazır değil. Bir sonraki taramada tekrar deneyin." }, origin);
+      return;
+    }
+    matchAutomationStore.update(notification.matchId, {
+      status: "queued",
+      message: "İndirme ve analiz sırasına alındı.",
+      error: "",
+    });
+    queueMatchDownload(scannedMatch, { automatic: false });
+    sendJson(response, 202, { ok: true, queued: true, notification: matchAutomationStore.listNotifications().find((item) => item.matchId === notification.matchId) }, origin);
+    return;
+  }
+
+  // --- Steam GCPD Replay Otomatik Tarayıcı, İndirici & Analiz Uç Noktaları ---
+  if (request.method === "GET" && request.url === "/steam/status") {
+    const session = getSteamSession();
+    const matches = getRecentMatches();
+    const scanned = getScannedMatches();
+    sendJson(response, 200, {
+      ok: true,
+      hasSession: Boolean(session.steamLoginSecure),
+      session: {
+        steamLoginSecureMasked: session.steamLoginSecure ? `${session.steamLoginSecure.substring(0, 8)}...` : "",
+        sessionid: session.sessionid || "",
+        lastSyncTime: session.lastSyncTime || 0,
+        lastScanTime: session.lastScanTime || 0,
+        matchLimit: session.matchLimit || 5,
+        autoScanEnabled: session.autoScanEnabled !== false,
+        autoScanIntervalMinutes: session.autoScanIntervalMinutes || 5,
+      },
+      matchesCount: matches.length,
+      scannedCount: scanned.length,
+    }, origin);
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/steam/session") {
+    try {
+      const body = await readJsonBody(request, 16 * 1024);
+      const updated = saveSteamSession(body);
+      sendJson(response, 200, { ok: true, session: updated }, origin);
+    } catch (err) {
+      sendJson(response, 400, { error: err.message }, origin);
+    }
+    return;
+  }
+
+  if (request.method === "GET" && request.url === "/steam/scanned") {
+    const session = getSteamSession();
+    const scanned = getScannedMatches();
+    const matches = getRecentMatches();
+    sendJson(response, 200, {
+      ok: true,
+      hasSession: Boolean(session.steamLoginSecure),
+      scannedMatches: scanned,
+      matches,
+      lastScanTime: session.lastScanTime || 0,
+      autoScanEnabled: session.autoScanEnabled !== false,
+    }, origin);
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/steam/scan-now") {
+    try {
+      const result = await scanSteamGcpdMatches(true);
+      repairExistingMatchDates();
+      sendJson(response, 200, result, origin);
+    } catch (err) {
+      sendJson(response, 500, { error: err.message }, origin);
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/steam/download-match") {
+    if (pauseHeavyOperation(response, origin, "replay indirme ve demo analizi")) return;
+    try {
+      const body = await readJsonBody(request, 64 * 1024);
+      if (!body?.matchId) {
+        sendJson(response, 400, { error: "matchId parametresi gerekli." }, origin);
+        return;
+      }
+      const result = await downloadSingleMatch(body.matchId, body.replayUrl || "", body.matchMeta || {});
+      sendJson(response, result.ok ? 200 : 400, result, origin);
+    } catch (err) {
+      sendJson(response, 500, { error: err.message }, origin);
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/steam/sync-now") {
+    if (pauseHeavyOperation(response, origin, "Steam eşitleme ve replay indirme")) return;
+    try {
+      const result = await syncSteamGcpdMatches();
+      sendJson(response, 200, result, origin);
+    } catch (err) {
+      sendJson(response, 500, { error: err.message }, origin);
+    }
+    return;
+  }
+
+  if (request.method === "GET" && request.url === "/matches/recent") {
+    const matches = getRecentMatches();
+    const scanned = getScannedMatches();
+    const session = getSteamSession();
+    const automationSettings = matchAutomationStore.getSettings();
+    sendJson(response, 200, {
+      ok: true,
+      matches,
+      scannedMatches: scanned,
+      hasSession: Boolean(session.steamLoginSecure),
+      demoStorage: getDemoStorageState(),
+      demoRetentionCount: automationSettings.demoRetentionCount,
+      session: {
+        sessionid: session.sessionid || "",
+        lastSyncTime: session.lastSyncTime || 0,
+        lastScanTime: session.lastScanTime || 0,
+        matchLimit: session.matchLimit || 5,
+        autoScanEnabled: session.autoScanEnabled !== false,
+      },
+    }, origin);
+    return;
+  }
+
+  // --- Değişken Oyunculu Takım Koçu Arşivi ---
+  if (request.method === "GET" && request.url === "/squads/matches") {
+    const imported = squadStore.ingestMatches(getRecentMatches(), getScannedMatches());
+    sendJson(response, 200, { ok: true, imported: imported.imported, matches: imported.matches }, origin);
+    return;
+  }
+
+  if (request.method === "GET" && request.url === "/squads") {
+    sendJson(response, 200, { ok: true, squads: squadStore.listSquads() }, origin);
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/squads/ingest") {
+    const imported = squadStore.ingestMatches(getRecentMatches(), getScannedMatches());
+    sendJson(response, 200, imported, origin);
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/squads/discover") {
+    try {
+      const body = await readJsonBody(request, 128 * 1024);
+      const roster = Array.isArray(body?.roster) ? body.roster : [];
+      const map = String(body?.map || "");
+      if (!validSquadSelection(roster) || !map) {
+        sendJson(response, 400, { error: "Keşif için 1–5 arasında benzersiz oyuncu ve harita gerekli." }, origin);
+        return;
+      }
+      const ownerSteamId = resolveSquadOwnerSteamId(body);
+
+      const scan = body?.refresh === false
+        ? { ok: true, cached: true, message: "Kayıtlı Steam taraması kullanıldı.", scannedMatches: getScannedMatches() }
+        : await scanSteamGcpdMatches();
+      const scannedMatches = Array.isArray(scan?.scannedMatches) ? scan.scannedMatches : getScannedMatches();
+      squadStore.ingestMatches(getRecentMatches(), scannedMatches);
+      const archivedMatches = squadStore.listMatches();
+      const candidates = squadStore.partyCandidates(roster, map, ownerSteamId);
+      const analyzedCoverage = partyPlayerCoverage(candidates, roster, ownerSteamId);
+      const allAvailableMatches = findPartyDiscoveries(scannedMatches, archivedMatches, roster, map, ownerSteamId);
+      const availableMatches = selectPartyDiscoveryMatches(allAvailableMatches, analyzedCoverage, {
+        minimumMatches: SQUAD_MINIMUM_MATCHES,
+      });
+      const coverage = squadPlayerCoverage(candidates, availableMatches, roster, ownerSteamId);
+
+      sendJson(response, 200, {
+        ok: true,
+        ownerSteamId,
+        scan: {
+          ok: Boolean(scan?.ok),
+          busy: Boolean(scan?.busy),
+          cached: Boolean(scan?.cached),
+          requiresLogin: Boolean(scan?.requiresLogin),
+          message: String(scan?.message || ""),
+        },
+        candidates,
+        availableMatches,
+        allAvailableMatches,
+        coverage,
+        eligible: coverage.length > 0 && coverage.every((item) => item.eligible),
+        minimumMatches: SQUAD_MINIMUM_MATCHES,
+      }, origin);
+    } catch (err) {
+      sendJson(response, 400, { error: err instanceof Error ? err.message : String(err) }, origin);
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/squads/download") {
+    try {
+      const body = await readJsonBody(request, 256 * 1024);
+      const roster = Array.isArray(body?.roster) ? body.roster : [];
+      const map = String(body?.map || "");
+      const requestedIds = new Set(Array.isArray(body?.matchIds) ? body.matchIds.map(String) : []);
+      if (!validSquadSelection(roster) || !map || requestedIds.size === 0) {
+        sendJson(response, 400, { error: "İndirme için 1–5 benzersiz oyuncu, harita ve en az bir maç gerekli." }, origin);
+        return;
+      }
+      const ownerSteamId = resolveSquadOwnerSteamId(body);
+      if (pauseHeavyOperation(response, origin, "takım replay'lerini indirme ve analiz etme")) return;
+
+      squadStore.ingestMatches(getRecentMatches(), getScannedMatches());
+      const availableMatches = findPartyDiscoveries(getScannedMatches(), squadStore.listMatches(), roster, map, ownerSteamId)
+        .filter((match) => requestedIds.has(String(match.id)));
+      const results = [];
+      for (const match of availableMatches) {
+        const result = await downloadSingleMatch(match.id, match.replayUrl, match);
+        results.push({ id: match.id, ok: Boolean(result?.ok), message: String(result?.message || "") });
+      }
+
+      squadStore.ingestMatches(getRecentMatches(), getScannedMatches());
+      const candidates = squadStore.partyCandidates(roster, map, ownerSteamId);
+      const coverage = squadPlayerCoverage(candidates, [], roster, ownerSteamId);
+      const downloaded = results.filter((result) => result.ok);
+      const failed = results.filter((result) => !result.ok);
+      sendJson(response, 200, {
+        ok: true,
+        complete: failed.length === 0 && downloaded.length === requestedIds.size,
+        requested: requestedIds.size,
+        downloaded,
+        failed,
+        candidates,
+        coverage,
+        eligible: coverage.length > 0 && coverage.every((item) => item.eligible),
+      }, origin);
+    } catch (err) {
+      sendJson(response, 422, { error: err instanceof Error ? err.message : String(err) }, origin);
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/squads/candidates") {
+    try {
+      const body = await readJsonBody(request, 128 * 1024);
+      squadStore.ingestMatches(getRecentMatches(), getScannedMatches());
+      const seedMatch = body?.seedMatchId ? squadStore.getMatch(body.seedMatchId) : null;
+      const roster = Array.isArray(body?.roster) ? body.roster : [];
+      const map = body?.map || seedMatch?.map || "";
+      const ownerSteamId = resolveSquadOwnerSteamId(body) || normalizeSteamId(seedMatch?.userStats?.steamid);
+      const candidates = validSquadSelection(roster) ? squadStore.partyCandidates(roster, map, ownerSteamId) : [];
+      const coverage = validSquadSelection(roster) ? squadPlayerCoverage(candidates, [], roster, ownerSteamId) : [];
+      sendJson(response, 200, {
+        ok: true,
+        ownerSteamId,
+        seedMatch,
+        teams: seedMatch?.teams || [],
+        candidates,
+        coverage,
+        eligible: coverage.length > 0 && coverage.every((item) => item.eligible),
+        minimumMatches: SQUAD_MINIMUM_MATCHES,
+      }, origin);
+    } catch (err) {
+      sendJson(response, 400, { error: err instanceof Error ? err.message : String(err) }, origin);
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/squads/evidence") {
+    try {
+      const body = await readJsonBody(request, 256 * 1024);
+      squadStore.ingestMatches(getRecentMatches(), getScannedMatches());
+      const selectedIds = new Set(Array.isArray(body?.selectedMatchIds) ? body.selectedMatchIds.map(String) : []);
+      const sourceMatches = selectedIds.size
+        ? squadStore.listMatches().filter((match) => selectedIds.has(match.id))
+        : squadStore.listMatches();
+      const evidence = buildSquadEvidence(sourceMatches, body?.roster, body?.map, {
+        ownerSteamId: resolveSquadOwnerSteamId(body),
+      });
+      sendJson(response, 200, { ok: true, evidence }, origin);
+    } catch (err) {
+      sendJson(response, Number(err?.statusCode) || 422, {
+        error: err instanceof Error ? err.message : String(err),
+        details: err?.details || null,
+      }, origin);
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/squads/report") {
+    try {
+      const body = await readJsonBody(request, 512 * 1024);
+      squadStore.ingestMatches(getRecentMatches(), getScannedMatches());
+      const selectedIds = new Set(Array.isArray(body?.selectedMatchIds) ? body.selectedMatchIds.map(String) : []);
+      const sourceMatches = selectedIds.size
+        ? squadStore.listMatches().filter((match) => selectedIds.has(match.id))
+        : squadStore.listMatches();
+      const ownerSteamId = resolveSquadOwnerSteamId(body);
+      const report = buildSquadReport(sourceMatches, body?.roster, body?.map, { ownerSteamId });
+      const squad = squadStore.saveSquad({
+        roster: body?.roster,
+        map: body?.map,
+        ownerSteamId,
+        name: body?.name || defaultSquadName(body?.roster),
+        selectedMatchIds: report.evidence.matchIds,
+        report,
+      });
+      sendJson(response, 200, { ok: true, squad, report }, origin);
+    } catch (err) {
+      sendJson(response, Number(err?.statusCode) || 422, {
+        error: err instanceof Error ? err.message : String(err),
+        details: err?.details || null,
+      }, origin);
+    }
+    return;
+  }
+
+  const squadLiveMatch = request.url?.match(/^\/squads\/([^/]+)\/live(?:\/(start|feedback|stop))?$/);
+  if (squadLiveMatch) {
+    try {
+      const squadId = decodeURIComponent(squadLiveMatch[1]);
+      const action = squadLiveMatch[2] || "state";
+      const squad = squadStore.getSquad(squadId);
+      if (!squad) {
+        sendJson(response, 404, { error: "Takım raporu bulunamadı." }, origin);
+        return;
+      }
+      if (request.method === "POST" && action === "start") {
+        const session = reconcileLiveSession(startLiveSession(squad), squad.report, getLiveState());
+        squadStore.saveLiveSession(squadId, session);
+        sendJson(response, 200, { ok: true, session, squad }, origin);
+        return;
+      }
+      if (request.method === "POST" && action === "feedback") {
+        const body = await readJsonBody(request, 64 * 1024);
+        const current = squadStore.getLiveSession(squadId) || startLiveSession(squad);
+        const session = applyLiveFeedback(current, squad.report, body);
+        squadStore.saveLiveSession(squadId, session);
+        if (body?.notes !== undefined) squadStore.updateNotes(squadId, body.notes);
+        sendJson(response, 200, { ok: true, session }, origin);
+        return;
+      }
+      if (request.method === "POST" && action === "stop") {
+        const current = squadStore.getLiveSession(squadId) || startLiveSession(squad);
+        const session = { ...current, active: false, currentPlan: null, updatedAt: Date.now() };
+        squadStore.saveLiveSession(squadId, session);
+        sendJson(response, 200, { ok: true, session }, origin);
+        return;
+      }
+      if (request.method === "GET" && action === "state") {
+        const current = squadStore.getLiveSession(squadId);
+        if (!current) {
+          sendJson(response, 404, { error: "Canlı takım oturumu başlatılmadı." }, origin);
+          return;
+        }
+        const session = reconcileLiveSession(current, squad.report, getLiveState());
+        squadStore.saveLiveSession(squadId, session);
+        sendJson(response, 200, { ok: true, session, squad }, origin);
+        return;
+      }
+      sendJson(response, 405, { error: "Desteklenmeyen canlı takım işlemi." }, origin);
+    } catch (err) {
+      sendJson(response, 422, { error: err instanceof Error ? err.message : String(err) }, origin);
+    }
+    return;
+  }
+
+  const squadNotesMatch = request.url?.match(/^\/squads\/([^/]+)\/notes$/);
+  if (squadNotesMatch && request.method === "PUT") {
+    try {
+      const squadId = decodeURIComponent(squadNotesMatch[1]);
+      const body = await readJsonBody(request, 32 * 1024);
+      const squad = squadStore.updateNotes(squadId, body?.notes);
+      if (!squad) sendJson(response, 404, { error: "Takım raporu bulunamadı." }, origin);
+      else sendJson(response, 200, { ok: true, squad }, origin);
+    } catch (err) {
+      sendJson(response, 422, { error: err instanceof Error ? err.message : String(err) }, origin);
+    }
+    return;
+  }
+
+  if (request.method === "GET" && request.url?.startsWith("/matches/detail/")) {
+    const matchId = request.url.replace("/matches/detail/", "");
+    const matches = getRecentMatches();
+    const found = matches.find((m) => m.id === matchId);
+    if (found && found.fullAnalysis) {
+      sendJson(response, 200, { ok: true, match: found, analysis: found.fullAnalysis }, origin);
+    } else {
+      sendJson(response, 404, { error: "Maç analizi bulunamadı." }, origin);
+    }
+    return;
+  }
+
+  if (request.method === "DELETE" && request.url?.startsWith("/matches/")) {
+    const matchId = request.url.replace("/matches/", "");
+    const ok = await deleteSteamMatch(matchId);
+    sendJson(response, ok ? 200 : 404, {
+      ok,
+      message: ok ? "Maç silindi" : "Maç bulunamadı",
+      matches: getRecentMatches(),
+      scannedMatches: getScannedMatches(),
+      demoStorage: getDemoStorageState(),
+    }, origin);
+    return;
+  }
+
   if (request.method === "POST" && request.url === "/quick-meta") {
+    if (pauseHeavyOperation(response, origin, "demo bilgisi okuma")) return;
     const rawName = String(request.headers["x-file-name"] || "match.dem");
     let decodedName = rawName;
     try { decodedName = decodeURIComponent(rawName); } catch { /* ignore */ }
@@ -706,10 +1687,13 @@ const server = createServer(async (request, response) => {
         },
       });
       await pipeline(request, limiter, createWriteStream(tempPath, { flags: "wx" }));
+      console.log(`[PARSER] Hızlı demo bilgisi okunuyor: ${safeName}`);
       const meta = quickDemoMeta(tempPath);
+      console.log(`[PARSER] Hızlı demo bilgisi hazır: ${meta.map || "Bilinmeyen harita"}`);
       sendJson(response, 200, { ok: true, meta }, origin);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      console.error(`[PARSER] Hızlı demo hatası (${safeName}):`, message);
       sendJson(response, 422, { error: message }, origin);
     } finally {
       await rm(tempPath, { force: true }).catch(() => {});
@@ -721,8 +1705,11 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (pauseHeavyOperation(response, origin, "demo analizi")) return;
+
   const announcedSize = Number(request.headers["content-length"] || 0);
   if (announcedSize > MAX_DEMO_BYTES) {
+    console.warn(`[PARSER] Demo boyutu reddedildi (800MB sınırı): ${announcedSize} bytes`);
     sendJson(response, 413, { error: "Demo 800 MB sınırını aşıyor." }, origin);
     return;
   }
@@ -732,12 +1719,15 @@ const server = createServer(async (request, response) => {
   try { decodedName = decodeURIComponent(rawName); } catch { /* basename still sanitizes it */ }
   const safeName = basename(decodedName).replace(/[^a-zA-Z0-9._-]/g, "_");
   if (!safeName.toLowerCase().endsWith(".dem")) {
+    console.warn(`[PARSER] Geçersiz dosya uzantısı: ${safeName}`);
     sendJson(response, 400, { error: "Yalnızca .dem dosyaları kabul edilir." }, origin);
     return;
   }
 
   const workDir = join(tmpdir(), "tracer-cs2");
   const tempPath = join(workDir, `${randomUUID()}-${safeName}`);
+  console.log(`[PARSER] Demo sunucuya yükleniyor: ${safeName}`);
+
   try {
     await mkdir(workDir, { recursive: true });
     let received = 0;
@@ -749,10 +1739,13 @@ const server = createServer(async (request, response) => {
       },
     });
     await pipeline(request, limiter, createWriteStream(tempPath, { flags: "wx" }));
-    const result = analyzeDemo(tempPath);
+    console.log(`[PARSER] Demo parse ediliyor (worker thread, Valve CS2 Native Engine)... ${safeName}`);
+    const result = await analyzeDemoInWorker(tempPath);
+    console.log(`[PARSER] Analiz tamamlandı! (${result.players?.length || 0} oyuncu tespit edildi, harita: ${result.header?.map_name || "N/A"})`);
     sendJson(response, 200, result, origin);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    console.error(`[PARSER] Demo analizi sırasında hata (${safeName}):`, message);
     sendJson(response, 422, { error: message }, origin);
   } finally {
     await rm(tempPath, { force: true }).catch(() => {});
@@ -762,6 +1755,22 @@ const server = createServer(async (request, response) => {
 server.listen(PORT, HOST, () => {
   console.log(`TRACER yerel parser hazır: http://${HOST}:${PORT}`);
   console.log("Bu pencere açık kaldığı sürece güncel Valve demoları analiz edilebilir.");
+  try {
+    repairExistingMatchDates();
+    applyConfiguredDemoRetention();
+    resumePendingMatchDownloads();
+    void reconcileLatestAutomaticMatch().catch((error) => console.warn("[BİLDİRİM] Başlangıç otomatik son maç telafisi başarısız:", error.message));
+  } catch (e) {
+    console.warn("[STEAM-GCPD] Başlangıç veri bakımı uyarısı:", e.message);
+  }
+  if (process.env.TRACER_SKIP_GSI_AUTO_OPTIMIZE !== "1") {
+    void optimizeInstalledGsiConfig()
+      .then((result) => {
+        if (result.updated) console.log("[PERF] Eski TRACER GSI dosyası performans-v2 profiline yükseltildi; CS2 yeniden başlatılmalı.");
+      })
+      .catch((error) => console.warn("[PERF] GSI performans profili otomatik güncellenemedi:", error.message));
+  }
+  startAutoScanScheduler(5 * 60 * 1000);
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {

@@ -24,6 +24,21 @@ Geliştirici bilgisayarında PowerShell ile `launcher\package-portable.ps1` çal
 
 Model ve llama.cpp dosyaları kaynak klasörde yoksa önce `launcher\download-embedded-ai.ps1`, ardından `launcher\package-portable.ps1` çalıştırılır. İlk betik yalnızca llama.cpp'nin resmî GitHub sürümünü ve Hugging Face üzerindeki ggml-org dönüştürmesini indirir. Büyük dosyalar repoya eklenmez; dağıtım arşivine eklenir.
 
+## Arkadaşlara dağıtım ve tek tık güncelleme
+
+GitHub CLI bir kez kurulup `gh auth login` ile giriş yapıldıktan sonra yeni sürüm tek komutla yayınlanır:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\launcher\publish-release.ps1 -NewVersion 0.48.0
+```
+
+Betik sürümü senkronize eder, test edilebilir üretim build'ini alır ve GitHub Release'e iki dosya yükler:
+
+- `TRACER-Portable-vX.Y.Z.rar`: uygulamayı ilk kez kuracaklar için model ve runtime dahil tam paket.
+- `TRACER-Patch-vX.Y.Z.zip`: uygulaması bulunanlar için hafif güncelleme.
+
+Kullanıcı ilk kurulumu yalnızca bir kez `https://github.com/KdvGit1/CsTracer/releases/latest` adresinden indirir. Daha sonraki sürümlerde TRACER içindeki **Güncelle → 1-Tıkla Şimdi Güncelle** düğmesi doğru patch asset'ini indirir, SHA-256 bütünlüğünü doğrular, yedek alır, yamayı uygular ve uygulamayı yeniden başlatır. Güncelleme deposu herkese açık olmalıdır; özel repoya erişim anahtarı uygulamaya gömülmez.
+
 ## Yerel veriler
 
-Oyuncu seçimi ve son 90 maçın küçük özetleri `%LOCALAPPDATA%\TRACER\data` altında saklanır. Demo dosyaları kopyalanmaz. Tarayıcı pencere profili ve hata logları da `%LOCALAPPDATA%\TRACER` altındadır.
+Oyuncu seçimi, son 90 maçın analiz geçmişi ve Bildirim Merkezi verileri `%LOCALAPPDATA%\TRACER\data` altında saklanır. Steam'den indirilen ham `.dem` dosyalarının adedi kullanıcı tarafından 3-50 arasında ayarlanır; kota aşılınca yalnızca en eski ham demolar temizlenir, analiz ve Takım Koçu kanıtları korunur. Tarayıcı pencere profili ve hata logları da `%LOCALAPPDATA%\TRACER` altındadır.

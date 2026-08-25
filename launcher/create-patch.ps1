@@ -1,4 +1,4 @@
-# TRACER Lightweight Patch Creator (Only ~3-4 MB without AI model or node runtime)
+# TRACER Lightweight Patch Creator (~18 MB; AI modeli ve node runtime içermez)
 $ErrorActionPreference = "Stop"
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $releaseDir = Join-Path $root "release"

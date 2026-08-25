@@ -15,7 +15,7 @@ export async function POST(request: Request) {
     const response = await fetch(`https://api.steampowered.com/ICSGOPlayers_730/GetNextMatchSharingCode/v1?${params}`, {
       headers: { Accept: "application/json" },
     });
-    const payload = await response.json().catch(() => ({}));
+    const payload = (await response.json().catch(() => ({}))) as { result?: { nextcode?: string } };
     if (response.status === 202) return Response.json({ nextCode: null, upToDate: true });
     if (!response.ok) return Response.json({ error: "Valve maç geçmişi sorgusu başarısız.", status: response.status }, { status: 502 });
     const nextCode = payload?.result?.nextcode;

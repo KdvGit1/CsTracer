@@ -51,7 +51,7 @@ export function getWeaponMovementProfile(weaponName = "", weaponType = "") {
       thresholdSpeed: 230,
       isRunAndGun: true,
       label: "Hafif Makineli (SMG)",
-      mistakeText: null, // SMG ile koşarak sıkmak hata değildir
+      mistakeText: null,
       goldenAdvice: "SMG ile yakın mesafe hareketli baskı kur; mesafeyi kapatıp rakibin aim'ini boz.",
     };
   }
@@ -95,7 +95,7 @@ let liveSession = {
   connected: false,
   lastPacketTime: 0,
   packetCount: 0,
-  phase: "idle", // idle | warmup | live | freezetime | over
+  phase: "idle",
   map: {
     name: "",
     mode: "",
@@ -108,10 +108,12 @@ let liveSession = {
     phase: "freezetime",
     winTeam: "",
     bomb: "",
+    phaseEndsIn: null,
   },
   player: {
     name: "",
     steamid: "",
+    activity: "",
     team: "CT",
     health: 100,
     armor: 100,
@@ -140,11 +142,11 @@ let liveSession = {
   },
   team: {
     allies: [],
-    totalMoney: 0,
+    totalMoney: 800,
     totalUtility: { smoke: 0, flash: 0, molly: 0, he: 0 },
   },
   bomb: {
-    state: "carried", // carried | planted | defused | exploded
+    state: "carried",
     countdown: null,
     defusing: false,
     plantedTime: 0,
@@ -164,21 +166,93 @@ let liveSession = {
   history: [],
 };
 
-// Internal tracking state for live event delta detection
-let prevPlayerState = null;
+// State trackers for delta analysis
+let lastPosData = null;
+let lastWeaponState = null;
 let prevRoundNumber = -1;
 let prevRoundPhase = "";
-let prevWeaponClip = -1;
-let prevWeaponName = "";
-let roundStartTime = 0;
+let prevMapName = "";
+let prevMapPhase = "";
 let roundMistakesAccumulator = [];
+let packetRateWindowStartedAt = Date.now();
+let packetRateWindowCount = 0;
+let recentPacketRate = 0;
+
+const GSI_STALE_MS = 7000;
+
+// Yeni maç tespiti: harita değişimi, gameover→yeni maç geçişi veya round sayacının
+// gerilemesi. Sıfırlanmazsa ikinci maçın istatistikleri eski maçla karışır.
+function resetMatchDiagnostics() {
+  liveSession.diagnostics = {
+    movingShots: 0,
+    stationaryShots: 0,
+    counterStrafePercent: null,
+    panicSprays: 0,
+    reloadsInDanger: 0,
+    isolatedDeaths: 0,
+    overpeeksInAdvantage: 0,
+    wastedUtilityMoney: 0,
+  };
+  liveSession.roundMistakes = [];
+  liveSession.goldenAdvice = null;
+  roundMistakesAccumulator = [];
+  lastPosData = null;
+  lastWeaponState = null;
+}
 
 export function getLiveState() {
-  const isStale = Date.now() - liveSession.lastPacketTime > 7000;
+  const isStale = Date.now() - liveSession.lastPacketTime > GSI_STALE_MS;
   return {
     ...liveSession,
     connected: liveSession.packetCount > 0 && !isStale,
   };
+}
+
+export function getGamePerformanceStatus(now = Date.now()) {
+  const connected = liveSession.packetCount > 0 && now - liveSession.lastPacketTime <= GSI_STALE_MS;
+  const mapPhase = String(liveSession.map.phase || "").toLowerCase();
+  const playerActivity = String(liveSession.player.activity || "").toLowerCase();
+  const hasActiveMap = Boolean(liveSession.map.name) && mapPhase !== "gameover";
+  // CS2 lobide/ana menüde GSI heartbeat göndermeye devam edebilir. Bu sırada
+  // son harita adı bellekte kalsa bile `player.activity=menu` canlı maç değildir.
+  // `textinput` maç içi sohbet/konsol sırasında görülebildiğinden yalnızca menu
+  // kesin olarak performans korumasını kapatır.
+  const isLobbyOrMenu = playerActivity === "menu";
+  const active = connected && hasActiveMap && !isLobbyOrMenu;
+  return {
+    active,
+    connected,
+    map: liveSession.map.name || "",
+    mapPhase: liveSession.map.phase || "",
+    roundPhase: liveSession.round.phase || "",
+    playerActivity,
+    packetRate: Math.round(recentPacketRate * 10) / 10,
+    lastPacketTime: liveSession.lastPacketTime,
+    reason: active
+      ? "CS2 canlı harita gönderiyor; ağır arka plan işleri duraklatıldı."
+      : connected
+        ? isLobbyOrMenu
+          ? "CS2 bağlı; oyuncu lobide veya ana menüde, ağır işler çalışabilir."
+          : "CS2 bağlı, ancak canlı harita yok."
+        : "CS2 canlı bağlantısı bekleniyor.",
+  };
+}
+
+function parsePositionString(pos) {
+  if (!pos) return null;
+  if (typeof pos === "object") {
+    const x = Number(pos.x ?? pos[0]);
+    const y = Number(pos.y ?? pos[1]);
+    const z = Number(pos.z ?? pos[2] ?? 0);
+    if (!isNaN(x) && !isNaN(y)) return { x, y, z };
+  }
+  if (typeof pos === "string") {
+    const parts = pos.split(",").map((s) => Number(s.trim()));
+    if (parts.length >= 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
+      return { x: parts[0], y: parts[1], z: parts[2] || 0 };
+    }
+  }
+  return null;
 }
 
 export function processGsiPacket(payload) {
@@ -187,6 +261,13 @@ export function processGsiPacket(payload) {
   const now = Date.now();
   liveSession.lastPacketTime = now;
   liveSession.packetCount++;
+  packetRateWindowCount++;
+  const rateElapsed = now - packetRateWindowStartedAt;
+  if (rateElapsed >= 1000) {
+    recentPacketRate = (packetRateWindowCount * 1000) / rateElapsed;
+    packetRateWindowCount = 0;
+    packetRateWindowStartedAt = now;
+  }
 
   // 1. Parse Map & Match State
   if (payload.map) {
@@ -196,13 +277,22 @@ export function processGsiPacket(payload) {
     liveSession.map.round = Number(payload.map.round || 0);
     liveSession.map.scoreCT = Number(payload.map.team_ct?.score || 0);
     liveSession.map.scoreT = Number(payload.map.team_t?.score || 0);
+    // Eski/seyirci GSI paketlerinde activity alanı bulunmayabilir. Harita açıkça
+    // geldiyse bilinmeyen etkinliği menu diye miras bırakma; map fazı yedeği çalışsın.
+    if (!payload.player?.activity) liveSession.player.activity = "";
   }
 
-  // 2. Parse Round State
+  // 2. Parse Round & Phase Countdowns
   if (payload.round) {
     liveSession.round.phase = String(payload.round.phase || "live");
     liveSession.round.winTeam = String(payload.round.win_team || "");
     liveSession.round.bomb = String(payload.round.bomb || "");
+  }
+
+  if (payload.phase_countdowns) {
+    const pPhase = String(payload.phase_countdowns.phase || "");
+    if (pPhase) liveSession.round.phase = pPhase;
+    liveSession.round.phaseEndsIn = payload.phase_countdowns.phase_ends_in ? Number(payload.phase_countdowns.phase_ends_in) : null;
   }
 
   // 3. Parse Local Player State
@@ -213,24 +303,60 @@ export function processGsiPacket(payload) {
 
     liveSession.player.name = String(playerRaw.name || liveSession.player.name || "Oyuncu");
     liveSession.player.steamid = String(playerRaw.steamid || liveSession.player.steamid || "");
-    liveSession.player.team = Number(playerRaw.team) === 3 || String(playerRaw.team).toUpperCase() === "CT" ? "CT" : "T";
-    liveSession.player.health = Number(pState.health ?? 100);
-    liveSession.player.armor = Number(pState.armor ?? 0);
-    liveSession.player.helmet = Boolean(pState.helmet);
-    liveSession.player.flashed = Number(pState.flashed ?? 0);
-    liveSession.player.smoked = Number(pState.smoked ?? 0);
-    liveSession.player.money = Number(pState.money ?? 800);
-    liveSession.player.roundKills = Number(pState.round_kills ?? 0);
-    liveSession.player.roundDamage = Number(pState.round_totaldmg ?? 0);
-    liveSession.player.hasDefuser = Boolean(pState.defusekit);
+    const activity = String(playerRaw.activity || "").trim().toLowerCase();
+    if (activity) liveSession.player.activity = activity;
 
-    liveSession.player.kills = Number(pMatch.kills ?? liveSession.player.kills);
-    liveSession.player.deaths = Number(pMatch.deaths ?? liveSession.player.deaths);
-    liveSession.player.assists = Number(pMatch.assists ?? liveSession.player.assists);
-    liveSession.player.mvps = Number(pMatch.mvps ?? liveSession.player.mvps);
-    liveSession.player.score = Number(pMatch.score ?? liveSession.player.score);
+    // Team detection
+    const rawTeam = String(playerRaw.team || "").toUpperCase();
+    liveSession.player.team = rawTeam === "CT" || rawTeam === "3" ? "CT" : "T";
 
-    // Weapons & Active Weapon
+    // Player State values
+    if (pState.health !== undefined) liveSession.player.health = Number(pState.health);
+    if (pState.armor !== undefined) liveSession.player.armor = Number(pState.armor);
+    if (pState.helmet !== undefined) liveSession.player.helmet = Boolean(pState.helmet);
+    if (pState.flashed !== undefined) liveSession.player.flashed = Number(pState.flashed);
+    if (pState.smoked !== undefined) liveSession.player.smoked = Number(pState.smoked);
+    if (pState.money !== undefined) liveSession.player.money = Number(pState.money);
+    if (pState.round_kills !== undefined) liveSession.player.roundKills = Number(pState.round_kills);
+    if (pState.round_killhs !== undefined) liveSession.player.roundKillHs = Number(pState.round_killhs);
+    if (pState.round_totaldmg !== undefined) liveSession.player.roundDamage = Number(pState.round_totaldmg);
+    if (pState.defusekit !== undefined) liveSession.player.hasDefuser = Boolean(pState.defusekit);
+
+    if (pMatch.kills !== undefined) liveSession.player.kills = Number(pMatch.kills);
+    if (pMatch.deaths !== undefined) liveSession.player.deaths = Number(pMatch.deaths);
+    if (pMatch.assists !== undefined) liveSession.player.assists = Number(pMatch.assists);
+    if (pMatch.mvps !== undefined) liveSession.player.mvps = Number(pMatch.mvps);
+    if (pMatch.score !== undefined) liveSession.player.score = Number(pMatch.score);
+
+    if (liveSession.player.kills > 0 && liveSession.player.roundKillHs !== undefined) {
+      liveSession.player.hsPercent = Math.round((liveSession.player.roundKillHs / Math.max(1, liveSession.player.roundKills)) * 100);
+    }
+
+    // Position & Speed Velocity Calculation
+    const myId = liveSession.player.steamid;
+    const rawPos = playerRaw.position || (payload.allplayers && myId && payload.allplayers[myId]?.position);
+    const parsedPos = parsePositionString(rawPos);
+
+    if (parsedPos) {
+      if (lastPosData && lastPosData.time) {
+        const dt = (now - lastPosData.time) / 1000;
+        if (dt >= 0.03 && dt <= 1.2) {
+          const dist2D = Math.hypot(parsedPos.x - lastPosData.x, parsedPos.y - lastPosData.y);
+          const instantSpeed = dist2D / dt;
+          if (instantSpeed < 3.5) {
+            liveSession.player.speed = 0;
+          } else {
+            const smoothed = (instantSpeed * 0.75) + ((liveSession.player.speed || 0) * 0.25);
+            liveSession.player.speed = Math.min(320, Math.round(smoothed));
+          }
+        }
+      }
+      liveSession.player.position = parsedPos;
+      lastPosData = { x: parsedPos.x, y: parsedPos.y, z: parsedPos.z, time: now };
+    }
+
+    // Weapons & Grenades parsing
+    const localUtilityCounts = { smoke: 0, flash: 0, molly: 0, he: 0 };
     if (playerRaw.weapons && typeof playerRaw.weapons === "object") {
       const weaponList = Object.values(playerRaw.weapons);
       const parsedWeapons = [];
@@ -238,21 +364,30 @@ export function processGsiPacket(payload) {
       let activeWp = null;
 
       for (const w of weaponList) {
-        const name = String(w.name || "").replace(/^weapon_/, "");
+        const rawName = String(w.name || "");
+        const cleanName = rawName.replace(/^weapon_/, "");
         const type = String(w.type || "").toLowerCase();
         const clip = Number(w.ammo_clip ?? -1);
         const reserve = Number(w.ammo_reserve ?? 0);
         const isCurrent = w.state === "active" || w.state === "reloading" || w.state === "firing";
 
-        if (type === "c4") parsedWeapons.push({ name: "C4", type: "c4", isCurrent });
-        else if (type === "grenade") {
-          parsedGrenades.push({ name, type: "grenade", count: 1 });
+        if (type === "c4") {
+          parsedWeapons.push({ name: "C4", type: "c4", isCurrent });
+        } else if (type === "grenade" || rawName.includes("grenade") || rawName.includes("molotov") || rawName.includes("flashbang")) {
+          const count = Math.max(1, reserve || 1);
+          parsedGrenades.push({ name: cleanName, type: "grenade", count });
+
+          const lowerName = cleanName.toLowerCase();
+          if (lowerName.includes("smokegrenade")) localUtilityCounts.smoke += count;
+          else if (lowerName.includes("flashbang")) localUtilityCounts.flash += count;
+          else if (lowerName.includes("molotov") || lowerName.includes("incgrenade")) localUtilityCounts.molly += count;
+          else if (lowerName.includes("hegrenade")) localUtilityCounts.he += count;
         } else if (type !== "knife") {
-          parsedWeapons.push({ name, type, clip, reserve, isCurrent, state: w.state });
+          parsedWeapons.push({ name: cleanName, type, clip, reserve, isCurrent, state: w.state });
         }
 
         if (isCurrent) {
-          activeWp = { name, type, clip, reserve, state: w.state };
+          activeWp = { name: cleanName, type, clip, reserve, state: w.state };
         }
       }
 
@@ -265,30 +400,44 @@ export function processGsiPacket(payload) {
         liveSession.player.clip = activeWp.clip;
         liveSession.player.reserve = activeWp.reserve;
 
-        // BEHAVIOR DIAGNOSIS 1: Reload addiction in danger (reloading with > 16 bullets)
-        if (activeWp.state === "reloading" && prevWeaponName === activeWp.name && prevWeaponClip > 16) {
+        // DIAGNOSIS 1: Reload addiction in danger (reloading with > 16 bullets in primary rifle)
+        if (
+          lastWeaponState &&
+          lastWeaponState.name === activeWp.name &&
+          activeWp.state === "reloading" &&
+          lastWeaponState.state !== "reloading" &&
+          lastWeaponState.clip >= 18
+        ) {
           liveSession.diagnostics.reloadsInDanger++;
           const mistake = {
             round: liveSession.map.round,
             type: "reload",
-            text: `Şarjöründe ${prevWeaponClip} mermi varken açıkta reload yaptın.`,
+            text: `Şarjöründe ${lastWeaponState.clip} mermi varken açık alanda gereksiz reload yaptın.`,
           };
           roundMistakesAccumulator.push(mistake);
           liveSession.roundMistakes = [...roundMistakesAccumulator];
         }
 
-        // BEHAVIOR DIAGNOSIS 2: Weapon-Aware Counter-Strafe & Movement Penalty
-        if (prevWeaponClip > 0 && activeWp.clip < prevWeaponClip && activeWp.type !== "knife" && activeWp.type !== "grenade") {
+        // DIAGNOSIS 2: Weapon-Aware Counter-Strafe & Moving Shot Penalty
+        if (
+          lastWeaponState &&
+          lastWeaponState.name === activeWp.name &&
+          lastWeaponState.clip > 0 &&
+          activeWp.clip < lastWeaponState.clip &&
+          activeWp.type !== "knife" &&
+          activeWp.type !== "grenade"
+        ) {
+          const deltaShots = lastWeaponState.clip - activeWp.clip;
           const profile = getWeaponMovementProfile(activeWp.name, activeWp.type);
           const currentSpeed = liveSession.player.speed || 0;
 
           if (profile.isRunAndGun) {
-            // SMG / Shotgun / Mobil Tabancalarda koşmak geçerli ve beklenen bir mekaniktir
-            liveSession.diagnostics.stationaryShots++;
+            // SMG / Pompalı / Mobil Tabancalarda koşmak geçerli mekaniktir
+            liveSession.diagnostics.stationaryShots += deltaShots;
           } else {
-            // Tüfekler (AK/M4), Keskin Nişancılar (AWP), Ağır Tabancalar (Deagle)
+            // Tüfek (AK/M4), Sniper (AWP), Deagle
             if (currentSpeed > profile.thresholdSpeed) {
-              liveSession.diagnostics.movingShots++;
+              liveSession.diagnostics.movingShots += deltaShots;
               if (profile.mistakeText) {
                 const mistake = {
                   round: liveSession.map.round,
@@ -301,7 +450,7 @@ export function processGsiPacket(payload) {
                 liveSession.roundMistakes = [...roundMistakesAccumulator];
               }
             } else {
-              liveSession.diagnostics.stationaryShots++;
+              liveSession.diagnostics.stationaryShots += deltaShots;
             }
           }
 
@@ -311,50 +460,43 @@ export function processGsiPacket(payload) {
             : null;
         }
 
-        prevWeaponClip = activeWp.clip;
-        prevWeaponName = activeWp.name;
+        lastWeaponState = {
+          name: activeWp.name,
+          type: activeWp.type,
+          clip: activeWp.clip,
+          state: activeWp.state,
+          time: now,
+        };
       }
     }
 
-    // Position / Velocity if provided in allplayers
-    if (payload.allplayers && typeof payload.allplayers === "object") {
-      const myId = liveSession.player.steamid;
-      const myAllplayer = payload.allplayers[myId];
-      if (myAllplayer?.position) {
-        const [x, y, z] = String(myAllplayer.position).split(",").map(Number);
-        if (!isNaN(x) && !isNaN(y)) {
-          if (liveSession.player.position.x !== 0 && prevPlayerState?.time) {
-            const dt = Math.max(0.1, (now - prevPlayerState.time) / 1000);
-            const dist = Math.hypot(x - liveSession.player.position.x, y - liveSession.player.position.y);
-            liveSession.player.speed = Math.min(300, Math.round(dist / dt));
-          }
-          liveSession.player.position = { x, y, z: z || 0 };
-        }
-      }
-
-      // Parse Team Allies
+    // 4. Team Money & Team Utility aggregation
+    if (payload.allplayers && typeof payload.allplayers === "object" && Object.keys(payload.allplayers).length > 0) {
       const allies = [];
-      let totalAlliedMoney = 0;
-      const utilityCounts = { smoke: 0, flash: 0, molly: 0, he: 0 };
+      let totalMoney = 0;
+      const teamUtility = { ...localUtilityCounts };
 
       for (const [steamId, pData] of Object.entries(payload.allplayers)) {
-        const pTeam = Number(pData.team) === 3 || String(pData.team).toUpperCase() === "CT" ? "CT" : "T";
+        const rawPTeam = String(pData.team || "").toUpperCase();
+        const pTeam = rawPTeam === "CT" || rawPTeam === "3" ? "CT" : "T";
+
         if (pTeam === liveSession.player.team) {
           const money = Number(pData.state?.money || 0);
-          totalAlliedMoney += money;
+          totalMoney += money;
 
-          // Utility count
-          if (pData.weapons) {
-            for (const w of Object.values(pData.weapons)) {
-              const wName = String(w.name || "").toLowerCase();
-              if (wName.includes("smokegrenade")) utilityCounts.smoke++;
-              else if (wName.includes("flashbang")) utilityCounts.flash++;
-              else if (wName.includes("molotov") || wName.includes("incgrenade")) utilityCounts.molly++;
-              else if (wName.includes("hegrenade")) utilityCounts.he++;
-            }
-          }
-
+          // If this is an ally (not local player), add their utility
           if (steamId !== myId) {
+            if (pData.weapons) {
+              for (const w of Object.values(pData.weapons)) {
+                const wName = String(w.name || "").toLowerCase();
+                const reserve = Number(w.ammo_reserve || 1);
+                if (wName.includes("smokegrenade")) teamUtility.smoke += reserve;
+                else if (wName.includes("flashbang")) teamUtility.flash += reserve;
+                else if (wName.includes("molotov") || wName.includes("incgrenade")) teamUtility.molly += reserve;
+                else if (wName.includes("hegrenade")) teamUtility.he += reserve;
+              }
+            }
+
             allies.push({
               name: String(pData.name || "Takım Arkadaşı"),
               health: Number(pData.state?.health || 0),
@@ -368,32 +510,45 @@ export function processGsiPacket(payload) {
       }
 
       liveSession.team.allies = allies;
-      liveSession.team.totalMoney = totalAlliedMoney;
-      liveSession.team.totalUtility = utilityCounts;
+      liveSession.team.totalMoney = Math.max(liveSession.player.money, totalMoney);
+      liveSession.team.totalUtility = teamUtility;
+    } else {
+      // Single player context (Competitive Matchmaking client GSI)
+      liveSession.team.totalMoney = liveSession.player.money;
+      liveSession.team.totalUtility = localUtilityCounts;
     }
   }
 
-  // 4. Parse Bomb State
+  // 5. Parse Bomb State
   if (payload.bomb) {
     liveSession.bomb.state = String(payload.bomb.state || "carried");
     liveSession.bomb.countdown = payload.bomb.countdown ? Number(payload.bomb.countdown) : null;
     liveSession.bomb.defusing = Boolean(payload.bomb.defusing);
   }
 
-  // 5. Round Transitions & Golden Focus Card Generation
+  // 6. Round Transitions & Golden Focus Card Generation
   const currentRoundNum = liveSession.map.round;
   const currentRoundPhase = liveSession.round.phase;
 
+  // Yeni maç / harita geçişi: tüm teşhis sayaçlarını sıfırla
+  const isNewMatch =
+    (prevMapName && liveSession.map.name && liveSession.map.name !== prevMapName) ||
+    (prevMapPhase === "gameover" && (liveSession.map.phase === "warmup" || liveSession.map.phase === "live")) ||
+    (prevRoundNumber > 2 && currentRoundNum < prevRoundNumber - 1);
+  if (isNewMatch) {
+    resetMatchDiagnostics();
+  }
+  prevMapName = liveSession.map.name;
+  prevMapPhase = liveSession.map.phase;
+
   if (currentRoundPhase === "freezetime" && prevRoundPhase !== "freezetime") {
-    // A new round has started! Generate Golden Advice based on previous round mistakes.
+    // New round started! Generate golden focus advice from previous round telemetry
     const advice = generateGoldenAdvice(currentRoundNum, roundMistakesAccumulator, liveSession);
     liveSession.goldenAdvice = advice;
     liveSession.roundMistakes = [];
     roundMistakesAccumulator = [];
-    roundStartTime = now;
   }
 
-  prevPlayerState = { time: now };
   prevRoundNumber = currentRoundNum;
   prevRoundPhase = currentRoundPhase;
 

@@ -18,7 +18,7 @@ export type HitboxPercents = {
   legs: number;
 };
 
-export function HitboxMannequin({
+export const HitboxMannequin = React.memo(function HitboxMannequin({
   counts,
   percents,
   totalHits,
@@ -302,4 +302,4 @@ export function HitboxMannequin({
       </div>
     </div>
   );
-}
+});

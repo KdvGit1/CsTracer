@@ -1,34 +1,54 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 export const GSI_CONFIG_FILENAME = "gamestate_integration_tracer.cfg";
+export const GSI_CONFIG_PROFILE = "performance-v2";
 
-export const GSI_CONFIG_CONTENT = `"TRACER CS2 Realtime Coach"
+// Canlı koç yerel oyuncunun hareket/şarjör değişimini 10 Hz'de güvenilir biçimde
+// izleyebilir. Önceki 20 Hz + sıfır buffer profili, CS2'ye gereksiz JSON/HTTP işi
+// yaptırıyordu. allplayers_position ve allplayers_match_stats canlı oyuncu ekranında
+// kullanılmıyor; özellikle gözlemci paketlerinde payload'ı ciddi büyütebiliyor.
+export const GSI_CONFIG_CONTENT = `"TRACER CS2 Realtime Coach ${GSI_CONFIG_PROFILE}"
 {
     "uri" "http://127.0.0.1:43119/gsi"
     "timeout" "5.0"
     "buffer"  "0.1"
     "throttle" "0.1"
-    "heartbeat" "1.0"
+    "heartbeat" "2.0"
+    "output"
+    {
+        "precision_time" "1"
+        "precision_position" "1"
+        "precision_vector" "1"
+    }
     "data"
     {
-        "provider"            "1"
-        "map"                 "1"
-        "round"               "1"
-        "player_id"           "1"
-        "player_state"        "1"
-        "player_weapons"      "1"
-        "player_match_stats"  "1"
-        "allplayers_id"       "1"
-        "allplayers_state"    "1"
-        "allplayers_weapons"  "1"
-        "allplayers_position" "1"
-        "bomb"                "1"
+        "provider"              "1"
+        "map"                   "1"
+        "round"                 "1"
+        "player_id"             "1"
+        "player_state"          "1"
+        "player_weapons"        "1"
+        "player_match_stats"    "1"
+        "player_position"       "1"
+        "allplayers_id"         "1"
+        "allplayers_state"      "1"
+        "allplayers_weapons"    "1"
+        "bomb"                  "1"
+        "phase_countdowns"      "1"
     }
 }
 `;
+
+function normalizeConfig(content = "") {
+  return String(content).replace(/\r\n/g, "\n").trim();
+}
+
+export function isPerformanceGsiConfig(content = "") {
+  return normalizeConfig(content) === normalizeConfig(GSI_CONFIG_CONTENT);
+}
 
 function getSteamPathFromRegistry() {
   if (process.platform !== "win32") return null;
@@ -118,12 +138,17 @@ export function checkGsiStatus(customPath = "") {
       try {
         const content = readFileSync(targetFile, "utf8");
         const hasTracerUri = content.includes("127.0.0.1:43119/gsi") || content.includes("localhost:43119/gsi");
+        const performanceOptimized = hasTracerUri && isPerformanceGsiConfig(content);
         return {
           installed: true,
           valid: hasTracerUri,
+          performanceOptimized,
+          profile: performanceOptimized ? GSI_CONFIG_PROFILE : "legacy",
           cfgPath: targetFile,
           cfgDir: parentDir,
-          message: hasTracerUri ? "CS2 GSI entegrasyonu etkin ve hazır." : "GSI dosyası mevcut ancak port ayarı farklı.",
+          message: hasTracerUri
+            ? (performanceOptimized ? "CS2 GSI entegrasyonu performans profiliyle etkin." : "CS2 GSI entegrasyonu etkin; performans profili güncellenecek.")
+            : "GSI dosyası mevcut ancak port ayarı farklı.",
         };
       } catch (err) {
         return { installed: true, valid: false, cfgPath: targetFile, cfgDir: parentDir, message: String(err) };
@@ -148,14 +173,25 @@ export function checkGsiStatus(customPath = "") {
   };
 }
 
+// Kullanıcının verdiği özel yol yalnızca CS2'nin cfg dizini olabilir — aksi halde
+// HTTP body'sinden gelen bir yol ile keyfi dizine dosya yazmak mümkün olurdu.
+function isLegitCs2CfgPath(candidate) {
+  const normalized = resolve(candidate).toLowerCase().replace(/\//g, "\\");
+  return /counter-strike.*\\game\\csgo\\cfg$/.test(normalized) || /\\game\\csgo\\cfg$/.test(normalized);
+}
+
 export async function installGsiConfig(targetDirOrPath = "") {
   let targetFile = "";
   if (targetDirOrPath) {
-    if (targetDirOrPath.toLowerCase().endsWith(".cfg")) {
-      targetFile = targetDirOrPath;
-    } else {
-      targetFile = join(targetDirOrPath, GSI_CONFIG_FILENAME);
+    const cleaned = String(targetDirOrPath).slice(0, 500);
+    const asDir = cleaned.toLowerCase().endsWith(".cfg") ? resolve(cleaned, "..") : cleaned;
+    if (!isLegitCs2CfgPath(asDir)) {
+      throw new Error("Güvenlik: Yalnızca CS2'nin 'game/csgo/cfg' klasörüne kurulum yapılabilir.");
     }
+    if (!existsSync(asDir)) {
+      throw new Error("Belirtilen cfg klasörü mevcut değil. CS2 en az bir kez çalıştırılmış olmalı.");
+    }
+    targetFile = cleaned.toLowerCase().endsWith(".cfg") ? cleaned : join(cleaned, GSI_CONFIG_FILENAME);
   } else {
     const status = checkGsiStatus();
     if (status.cfgPath) {
@@ -178,7 +214,30 @@ export async function installGsiConfig(targetDirOrPath = "") {
 
   return {
     ok: true,
+    profile: GSI_CONFIG_PROFILE,
+    performanceOptimized: true,
+    needsGameRestart: true,
     cfgPath: targetFile,
-    message: `GSI yapılandırması başarıyla oluşturuldu: ${targetFile}`,
+    message: `Performans odaklı GSI yapılandırması oluşturuldu: ${targetFile}. CS2 açıksa yeniden başlatın.`,
+  };
+}
+
+// TRACER'ın daha önce kurduğu geçerli dosyayı yerinde yükselt. Kullanıcının başka
+// bir GSI entegrasyonuna veya farklı porta ait dosyasına dokunulmaz.
+export async function optimizeInstalledGsiConfig() {
+  const status = checkGsiStatus();
+  if (!status.installed || !status.valid || !status.cfgPath) {
+    return { ok: true, updated: false, status };
+  }
+  if (status.performanceOptimized) {
+    return { ok: true, updated: false, status };
+  }
+
+  await writeFile(status.cfgPath, GSI_CONFIG_CONTENT, "utf8");
+  return {
+    ok: true,
+    updated: true,
+    needsGameRestart: true,
+    status: checkGsiStatus(status.cfgPath),
   };
 }

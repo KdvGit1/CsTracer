@@ -45,3 +45,11 @@ yarn-error.log*
 /model/*.gguf
 /TEMP/
 *.tsbuildinfo
+
+# oyuncu verileri ve oturum bilgileri — ASLA commit edilmemeli
+/data/
+steam_session.json
+recent_matches.json
+*.dem
+*.dem.bz2
+*.rar
