@@ -51,6 +51,11 @@ test("analyzeDemo tam maç raporu üretir", { skip: skipReason, timeout: 300000 
   assert.ok(report.movementProfile && Number.isFinite(report.movementProfile.severityScore), "movementProfile üretilmeli");
   assert.ok(report.crosshairStats && Number.isFinite(report.crosshairStats.headErrorAngle), "crosshairStats üretilmeli");
   assert.ok(report.duelStats && Number.isFinite(report.duelStats.averageTTD), "duelStats üretilmeli");
+  assert.equal(report.duelStats.ttdMethod, "spotted-to-first-damage-v1", "TTD yeni görünürlük yöntemiyle hesaplanmalı");
+  assert.equal(report.duelStats.duelMethod, "mutual-spotted-death-v1", "düello karşılıklı görünür temaslardan hesaplanmalı");
+  assert.ok(Number.isFinite(report.duelStats.medianTTD), "medyan TTD sayısal olmalı");
+  assert.ok((report.duelStats.ttdSampleCount || 0) > 0, "gerçek demoda TTD örnekleri bulunmalı");
+  assert.equal(report.duelStats.duelTotal, report.duelStats.duelWins + report.duelStats.duelLosses, "düello toplamı galibiyet ve mağlubiyetlerden oluşmalı");
   assert.ok(Array.isArray(report.recommendations) && report.recommendations.length > 0, "en az bir tavsiye üretilmeli");
   assert.ok(Array.isArray(report.deathDetails), "deathDetails dizisi olmalı");
 });

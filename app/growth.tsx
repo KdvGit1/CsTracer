@@ -12,7 +12,12 @@ export type AimMetrics = {
   bodyErrorAngle: number;
   preAimScore: number;
   averageTTD: number;
+  medianTTD?: number;
+  ttdSampleCount?: number;
+  ttdMethod?: "spotted-to-first-damage-v1";
   duelWinrate: number;
+  duelSampleCount?: number;
+  duelMethod?: "mutual-spotted-death-v1";
   earlyAccuracy: number;
   lateAccuracy: number;
 };
@@ -47,8 +52,8 @@ const DIMENSIONS: Array<{ key: DimensionKey; label: string; color: string }> = [
 export const AIM_METRIC_CONFIG: Array<{ key: AimMetricKey; label: string; unit: string; color: string; lowerIsBetter?: boolean; desc: string }> = [
   { key: "preAim", label: "Pre-Aim Kalitesi", unit: "/100", color: "#c8f54d", desc: "Kafa hizası ve köşe dönme yerleşimi" },
   { key: "headError", label: "Kafa Sapması", unit: "°", color: "#ff9c4d", lowerIsBetter: true, desc: "Düşman kafasından açı sapması (Düşük = İyi)" },
-  { key: "ttd", label: "Time-to-Damage", unit: "ms", color: "#68d4ff", lowerIsBetter: true, desc: "Temastan ilk hasara kadar geçen süre (Düşük = Hızlı)" },
-  { key: "duelWinrate", label: "1v1 Düello Kazanma", unit: "%", color: "#b99cff", desc: "1v1 karşılaşmaları kazanma yüzdesi" },
+  { key: "ttd", label: "Medyan Time-to-Damage", unit: "ms", color: "#68d4ff", lowerIsBetter: true, desc: "Yaklaşık görünür temastan ilk hasara medyan süre (Düşük = Hızlı)" },
+  { key: "duelWinrate", label: "Karşılıklı Düello Kazanma", unit: "%", color: "#b99cff", desc: "İki rakibin birbirini gördüğü ve ölümle sonuçlanan temasların kazanma yüzdesi" },
   { key: "earlyAccuracy", label: "İlk 3 Mermi İsabeti", unit: "%", color: "#f4e37a", desc: "Burst ve ilk mermi isabet başarısı" },
 ];
 
@@ -157,20 +162,21 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
   const selectedDimension = DIMENSIONS.find((item) => item.key === dimension) || DIMENSIONS[0];
   const selectedAimConfig = AIM_METRIC_CONFIG.find((item) => item.key === aimMetric) || AIM_METRIC_CONFIG[0];
 
+  const hasAimMetricValue = (match: ProgressMatch, key: AimMetricKey): boolean => {
+    const aim = match.summary.aimMetrics;
+    if (!aim) return false;
+    if (key === "ttd") return aim.ttdMethod === "spotted-to-first-damage-v1" && (aim.ttdSampleCount || 0) > 0;
+    if (key === "duelWinrate") return aim.duelMethod === "mutual-spotted-death-v1" && (aim.duelSampleCount || 0) > 0;
+    return true;
+  };
+
   const getAimMetricValue = (match: ProgressMatch, key: AimMetricKey): number => {
     const aim = match.summary.aimMetrics;
-    if (!aim) {
-      if (key === "preAim") return match.summary.dimensions.aim || 50;
-      if (key === "headError") return 4.5;
-      if (key === "ttd") return 320;
-      if (key === "duelWinrate") return match.summary.stats.headshotPercent || 50;
-      if (key === "earlyAccuracy") return 30;
-      return 0;
-    }
+    if (!aim) return 0;
     switch (key) {
       case "preAim": return aim.preAimScore;
       case "headError": return aim.headErrorAngle;
-      case "ttd": return aim.averageTTD;
+      case "ttd": return aim.medianTTD || 0;
       case "duelWinrate": return aim.duelWinrate;
       case "earlyAccuracy": return aim.earlyAccuracy;
       default: return 0;
@@ -219,7 +225,8 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
 
         <div className="aim-metric-buttons-grid">
           {AIM_METRIC_CONFIG.map((item) => {
-            const values = ordered.map((match) => getAimMetricValue(match, item.key));
+            const metricMatches = ordered.filter((match) => hasAimMetricValue(match, item.key));
+            const values = metricMatches.map((match) => getAimMetricValue(match, item.key));
             const current = values[values.length - 1];
             const prior = values[values.length - 2];
             const form = momentum(values);
@@ -235,8 +242,8 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
                 style={{ "--accent-color": item.color } as React.CSSProperties}
               >
                 <span>{item.label}</span>
-                <strong>{current} {item.unit}</strong>
-                <em>{prior === undefined ? "Başlangıç" : `${deltaLabel(Math.round((current - prior) * 10) / 10, item.unit)} son maç`}</em>
+                <strong>{current === undefined ? "—" : `${current} ${item.unit}`}</strong>
+                <em>{current === undefined ? "Geçerli ölçüm yok" : prior === undefined ? "Başlangıç" : `${deltaLabel(Math.round((current - prior) * 10) / 10, item.unit)} son maç`}</em>
                 <small className={isGoodTrend ? "trend-good" : "trend-bad"}>
                   {form.trend === null ? "Eğim için 2 maç" : `Eğim ${deltaLabel(form.trend, item.unit)}`}
                 </small>
@@ -246,7 +253,7 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
         </div>
 
         <ScoreChart
-          matches={matches}
+          matches={matches.filter((match) => hasAimMetricValue(match, aimMetric))}
           value={(match) => getAimMetricValue(match, aimMetric)}
           color={selectedAimConfig.color}
           label={selectedAimConfig.label}
@@ -270,7 +277,7 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
 
       <details className="score-method">
         <summary>Puanlar ve aim metrikleri nasıl hesaplanıyor?</summary>
-        <p>Pre-Aim & Kafa Sapması (°): Düşmanla temas anındaki 3D açı sapmasıdır. Time-to-Damage (ms): İlk temas ile ilk merminin isabeti arasındaki refleks süresidir. Aim: HS, ADR ve K/D; hareket: hız ağırlıklı hata; utility: round başına utility hasarı ve rakip körlük süresi; takım oyunu: trade ve asist; pozisyon: ölüm kümesi ve opening kaybı; round etkisi: maç etki skoru.</p>
+        <p>Pre-Aim & Kafa Sapması (°): Düşmanla temas anındaki 3D açı sapmasıdır. Time-to-Damage (ms): Rakibin approximate spotted verisinde görünmesinden ilk silahlı hasara kadar geçen medyan süredir; örnek yoksa tahmin üretilmez. Karşılıklı düello: iki oyuncunun birbirini gördüğü ve ölümle sonuçlanan temaslardır. Aim: HS, ADR ve K/D; hareket: hız ağırlıklı hata; utility: round başına utility hasarı ve rakip körlük süresi; takım oyunu: trade ve asist; pozisyon: ölüm kümesi ve opening kaybı; round etkisi: maç etki skoru.</p>
       </details>
 
       <article className="growth-panel">
@@ -320,7 +327,7 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
             <span>%{match.summary.stats.headshotPercent}</span>
             <span>{match.summary.aimMetrics ? `${match.summary.aimMetrics.preAimScore}/100` : "—"}</span>
             <span>{match.summary.aimMetrics ? `${match.summary.aimMetrics.headErrorAngle}°` : "—"}</span>
-            <span>{match.summary.aimMetrics ? `${match.summary.aimMetrics.averageTTD}ms` : "—"}</span>
+            <span>{hasAimMetricValue(match, "ttd") ? `${match.summary.aimMetrics?.medianTTD}ms` : "—"}</span>
             <strong>{match.summary.overall}</strong>
           </div>
         ))}

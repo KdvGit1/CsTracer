@@ -18,6 +18,14 @@ const PLAYER_PROPS = [
 
 const OTHER_PROPS = ["total_rounds_played", "game_time", "is_warmup_period"];
 
+export const TTD_METHOD = "spotted-to-first-damage-v1";
+export const DUEL_METHOD = "mutual-spotted-death-v1";
+const CONTACT_WINDOW_MS = 2000;
+const MAX_REACTION_TTD_MS = 1500;
+const MIN_REACTION_TTD_MS = 50;
+const DUEL_DEATH_GRACE_MS = 250;
+const VISIBILITY_GAP_TOLERANCE_TICKS = 2;
+
 function normalizedKey(key) {
   return String(key).toLowerCase().replace(/[^a-z0-9]/g, "");
 }
@@ -149,6 +157,21 @@ function buildTickIndex(tickRows) {
   return { byPlayerTick, byPlayerList, byTick, raw: Array.isArray(tickRows) ? tickRows : [] };
 }
 
+function mergeTickRows(...groups) {
+  const merged = new Map();
+  for (const rows of groups) {
+    if (!Array.isArray(rows)) continue;
+    for (const row of rows) {
+      const tick = number(row, ["tick"], 0);
+      const identity = text(row, ["steamid", "steam_id"]) || text(row, ["name", "player_name"]);
+      if (!identity || !tick) continue;
+      const key = `${identity}:${tick}`;
+      merged.set(key, { ...(merged.get(key) || {}), ...row });
+    }
+  }
+  return [...merged.values()];
+}
+
 function rowForPlayerAtTick(ticksOrIndex, tick, player) {
   if (!ticksOrIndex) return undefined;
   if (ticksOrIndex.byPlayerTick) {
@@ -198,6 +221,193 @@ function weaponLabel(weapon) {
 
 function isGun(weapon) {
   return Boolean(weapon) && !/knife|bayonet|grenade|flash|smoke|molotov|incendiary|inferno|taser|c4|world|decoy/.test(weapon);
+}
+
+function percentile(values, ratio) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * ratio))];
+}
+
+function spottedByIds(row) {
+  const found = value(row, ["approximate_spotted_by", "CCSPlayerPawn.m_bSpottedByMask"], []);
+  return new Set(Array.isArray(found) ? found.map(String) : []);
+}
+
+function rowGameTime(row, tick, tickRate) {
+  return number(row, ["game_time"], Number(tick) / Math.max(1, tickRate));
+}
+
+function isVisibleTo(ticks, tick, observer, target, requireMutual = false) {
+  if (!observer?.steamid || !target?.steamid) return false;
+  const targetRow = rowForPlayerAtTick(ticks, tick, target);
+  if (!targetRow || !spottedByIds(targetRow).has(String(observer.steamid))) return false;
+  if (!requireMutual) return true;
+  const observerRow = rowForPlayerAtTick(ticks, tick, observer);
+  return Boolean(observerRow && spottedByIds(observerRow).has(String(target.steamid)));
+}
+
+function sameKnownTeam(ticks, tick, first, second) {
+  const firstRow = rowForPlayerAtTick(ticks, tick, first);
+  const secondRow = rowForPlayerAtTick(ticks, tick, second);
+  const firstTeam = number(firstRow, ["team_num"], 0);
+  const secondTeam = number(secondRow, ["team_num"], 0);
+  return firstTeam > 1 && secondTeam > 1 && firstTeam === secondTeam;
+}
+
+function findVisibilitySegment({ ticks, observer, target, eventRecord, tickRate, requireMutual, endGraceMs }) {
+  const endTick = number(eventRecord, ["tick"], 0);
+  if (!endTick || !observer?.steamid || !target?.steamid) return null;
+  const endRow = rowForPlayerAtTick(ticks, endTick, target) || rowForPlayerAtTick(ticks, endTick, observer);
+  const eventTime = number(eventRecord, ["game_time"], rowGameTime(endRow, endTick, tickRate));
+  const maxTicks = Math.ceil((CONTACT_WINDOW_MS / 1000) * Math.max(1, tickRate));
+  const minTick = Math.max(0, endTick - maxTicks);
+
+  let anchorTick = -1;
+  for (let tick = endTick; tick >= minTick; tick--) {
+    const row = rowForPlayerAtTick(ticks, tick, target) || rowForPlayerAtTick(ticks, tick, observer);
+    const ageMs = Math.max(0, (eventTime - rowGameTime(row, tick, tickRate)) * 1000);
+    if (ageMs > CONTACT_WINDOW_MS) break;
+    if (isVisibleTo(ticks, tick, observer, target, requireMutual)) {
+      if (ageMs > endGraceMs) return null;
+      anchorTick = tick;
+      break;
+    }
+  }
+  if (anchorTick < 0) return null;
+
+  let onsetTick = anchorTick;
+  let missingTicks = 0;
+  let reachedWindowLimit = false;
+  for (let tick = anchorTick - 1; tick >= minTick; tick--) {
+    const row = rowForPlayerAtTick(ticks, tick, target) || rowForPlayerAtTick(ticks, tick, observer);
+    const ageMs = Math.max(0, (eventTime - rowGameTime(row, tick, tickRate)) * 1000);
+    if (ageMs > CONTACT_WINDOW_MS) {
+      reachedWindowLimit = true;
+      break;
+    }
+    if (isVisibleTo(ticks, tick, observer, target, requireMutual)) {
+      onsetTick = tick;
+      missingTicks = 0;
+    } else {
+      missingTicks++;
+      if (missingTicks > VISIBILITY_GAP_TOLERANCE_TICKS) break;
+    }
+    if (tick === minTick) reachedWindowLimit = true;
+  }
+
+  const onsetRow = rowForPlayerAtTick(ticks, onsetTick, target) || rowForPlayerAtTick(ticks, onsetTick, observer);
+  const delayMs = Math.max(0, Math.round((eventTime - rowGameTime(onsetRow, onsetTick, tickRate)) * 1000));
+  if (reachedWindowLimit && delayMs >= CONTACT_WINDOW_MS - 25) return { censored: true, onsetTick, delayMs };
+  return { censored: false, onsetTick, delayMs };
+}
+
+export function estimateDemoTickRate(eventRows, fallback = 64) {
+  const samples = (Array.isArray(eventRows) ? eventRows : [])
+    .map((row) => ({ tick: number(row, ["tick"], 0), time: number(row, ["game_time"], Number.NaN) }))
+    .filter((row) => row.tick > 0 && Number.isFinite(row.time))
+    .sort((a, b) => a.tick - b.tick);
+  const rates = [];
+  for (let index = 1; index < samples.length; index++) {
+    const tickDelta = samples[index].tick - samples[index - 1].tick;
+    const timeDelta = samples[index].time - samples[index - 1].time;
+    if (tickDelta > 0 && timeDelta >= 0.1) {
+      const rate = tickDelta / timeDelta;
+      if (rate >= 16 && rate <= 256) rates.push(rate);
+    }
+  }
+  return rates.length ? Math.round(percentile(rates, 0.5) * 1000) / 1000 : fallback;
+}
+
+export function calculateDuelStatsForPlayer(player, grouped, ticksOrRows, tickRate = 64) {
+  const ticks = ticksOrRows?.byPlayerTick ? ticksOrRows : buildTickIndex(ticksOrRows);
+  const ttdContacts = new Map();
+  let preparedContacts = 0;
+  let unseenHits = 0;
+  let censoredContacts = 0;
+
+  const hurts = (grouped?.player_hurt || [])
+    .filter((record) => !isWarmup(record))
+    .filter((record) => matchesPlayer(record, "attacker", player) && !matchesPlayer(record, "user", player))
+    .filter((record) => isGun(eventWeapon(record)))
+    .sort((a, b) => number(a, ["tick"]) - number(b, ["tick"]));
+
+  for (const hurt of hurts) {
+    const observer = { name: playerName(hurt, "attacker"), steamid: steamId(hurt, "attacker") };
+    const target = { name: playerName(hurt, "user"), steamid: steamId(hurt, "user") };
+    const tick = number(hurt, ["tick"], 0);
+    if (!observer.steamid || !target.steamid || sameKnownTeam(ticks, tick, observer, target)) continue;
+    const segment = findVisibilitySegment({
+      ticks, observer, target, eventRecord: hurt, tickRate, requireMutual: false, endGraceMs: 40,
+    });
+    if (!segment) {
+      unseenHits++;
+      continue;
+    }
+    if (segment.censored) {
+      censoredContacts++;
+      continue;
+    }
+    const key = `${observer.steamid}:${target.steamid}:${segment.onsetTick}`;
+    if (!ttdContacts.has(key)) ttdContacts.set(key, segment.delayMs);
+  }
+
+  const reactionValues = [];
+  for (const delayMs of ttdContacts.values()) {
+    if (delayMs < MIN_REACTION_TTD_MS) preparedContacts++;
+    else if (delayMs <= MAX_REACTION_TTD_MS) reactionValues.push(delayMs);
+  }
+  const averageTTD = reactionValues.length
+    ? Math.round(reactionValues.reduce((sum, delay) => sum + delay, 0) / reactionValues.length)
+    : 0;
+  const medianTTD = percentile(reactionValues, 0.5);
+
+  let duelWins = 0;
+  let duelLosses = 0;
+  const deaths = (grouped?.player_death || [])
+    .filter((record) => !isWarmup(record))
+    .filter((record) => isGun(eventWeapon(record)))
+    .filter((record) => matchesPlayer(record, "attacker", player) || matchesPlayer(record, "user", player));
+
+  for (const death of deaths) {
+    const observer = { name: playerName(death, "attacker"), steamid: steamId(death, "attacker") };
+    const target = { name: playerName(death, "user"), steamid: steamId(death, "user") };
+    const tick = number(death, ["tick"], 0);
+    if (!observer.steamid || !target.steamid || observer.steamid === target.steamid || sameKnownTeam(ticks, tick, observer, target)) continue;
+    const segment = findVisibilitySegment({
+      ticks, observer, target, eventRecord: death, tickRate, requireMutual: true, endGraceMs: DUEL_DEATH_GRACE_MS,
+    });
+    if (!segment || segment.censored) continue;
+    if (matchesPlayer(death, "attacker", player)) duelWins++;
+    else if (matchesPlayer(death, "user", player)) duelLosses++;
+  }
+
+  const duelTotal = duelWins + duelLosses;
+  const duelWinrate = duelTotal ? Math.round((duelWins / duelTotal) * 100) : 0;
+  const reactionRating = !reactionValues.length
+    ? "Ölçülemedi"
+    : medianTTD <= 240
+      ? "Çok Hızlı (<240ms)"
+      : medianTTD <= 360
+        ? "Normal (240-360ms)"
+        : "Yavaş (>360ms)";
+
+  return {
+    averageTTD,
+    medianTTD,
+    ttdSampleCount: reactionValues.length,
+    preparedContacts,
+    unseenHits,
+    censoredContacts,
+    ttdMethod: TTD_METHOD,
+    duelWinrate,
+    duelWins,
+    duelLosses,
+    duelTotal,
+    duelMethod: DUEL_METHOD,
+    fastReactions: reactionValues.filter((delay) => delay <= 250).length,
+    reactionRating,
+  };
 }
 
 function weaponCategory(weapon) {
@@ -313,7 +523,7 @@ function calculateAngleDeviation(attackerPos, targetPos) {
   return Math.sqrt(deltaYaw * deltaYaw + deltaPitch * deltaPitch);
 }
 
-function buildPlayerReport(player, grouped, ticks, header) {
+function buildPlayerReport(player, grouped, ticks, header, tickRate) {
   const deathsAll = grouped.player_death.filter((record) => !isWarmup(record));
   const deaths = deathsAll.filter((record) => matchesPlayer(record, "user", player));
   const kills = deathsAll.filter((record) => matchesPlayer(record, "attacker", player) && !matchesPlayer(record, "user", player));
@@ -446,38 +656,11 @@ function buildPlayerReport(player, grouped, ticks, header) {
     headLevelRating: avgHeadError <= 3.5 ? "Mükemmel (Pro Seviye)" : avgHeadError <= 6.0 ? "İyi (Hizalı)" : "Geliştirilmeli (Aşağı/Yukarı Sapma)",
   };
 
-  // 4. Time to Damage (TTD) ve Düello Analizi
-  const ttdValues = [];
-  let duelWins = 0;
-  let duelTotal = 0;
-
-  kills.forEach((k) => {
-    const kTick = number(k, ["tick"]);
-    const initialShot = gunShots.filter((s) => number(s, ["tick"]) <= kTick && kTick - number(s, ["tick"]) <= 128).sort((a, b) => number(b, ["tick"]) - number(a, ["tick"]))[0];
-    if (initialShot) {
-      const delayTicks = kTick - number(initialShot, ["tick"]);
-      const delayMs = Math.round((delayTicks / 64) * 1000);
-      if (delayMs >= 50 && delayMs <= 2000) ttdValues.push(delayMs);
-    }
-    duelWins++;
-    duelTotal++;
-  });
-
-  deaths.forEach(() => {
-    duelTotal++;
-  });
-
-  const avgTTD = ttdValues.length ? Math.round(ttdValues.reduce((s, v) => s + v, 0) / ttdValues.length) : 340;
-  const duelWinrate = duelTotal ? Math.round((duelWins / duelTotal) * 100) : 50;
-
-  const duelStats = {
-    averageTTD: avgTTD,
-    duelWinrate,
-    duelWins,
-    duelTotal,
-    fastReactions: ttdValues.filter((t) => t <= 250).length,
-    reactionRating: avgTTD <= 240 ? "Çok Hızlı (<240ms)" : avgTTD <= 360 ? "Normal (240-360ms)" : "Yavaş (>360ms)",
-  };
+  // 4. Yaklaşık Time-to-Damage (TTD) ve gerçek karşılıklı görünür düello analizi.
+  // TTD: hedefin approximate_spotted_by listesine saldırganın girdiği temas başlangıcından
+  // ilk silahlı player_hurt olayına kadar. Düello: iki oyuncu birbirini görürken ölümle
+  // sonuçlanan temaslar. Ölçüm yoksa sahte bir varsayılan değer üretilmez.
+  const duelStats = calculateDuelStatsForPlayer(player, grouped, ticks, tickRate);
 
   // 5. Ekonomi Analizi (Economy Stats)
   const roundEconomy = [];
@@ -699,12 +882,12 @@ function buildPlayerReport(player, grouped, ticks, header) {
     });
   }
 
-  if (duelStats.averageTTD > 360) {
+  if (duelStats.ttdSampleCount >= 5 && duelStats.medianTTD > 360) {
     recommendations.push({
       id: "time_to_damage",
       title: "Time-to-Damage (TTD) ve reaksiyon gecikmesi",
-      body: `Düşmanı gördükten sonra hasar verme süren ortalama ${duelStats.averageTTD} ms (${duelStats.reactionRating}). Reaktif aim ve crosshair sabitleme drilleriyle ilk hasar süreni hızlandır.`,
-      confidence: 82,
+      body: `Yaklaşık görünür temastan ilk hasara medyan süren ${duelStats.medianTTD} ms; ortalama ${duelStats.averageTTD} ms (${duelStats.ttdSampleCount} geçerli temas). Reaktif aim ve crosshair sabitleme drilleriyle ilk hasar süreni hızlandır.`,
+      confidence: Math.min(92, 65 + duelStats.ttdSampleCount),
     });
   }
 
@@ -921,6 +1104,7 @@ export function analyzeDemo(pathOrBuffer) {
   const eventRows = parseEvents(pathOrBuffer, CORE_EVENTS, PLAYER_PROPS, OTHER_PROPS);
   const grouped = groupEvents(eventRows);
   const players = collectPlayers(eventRows);
+  const tickRate = estimateDemoTickRate(eventRows);
 
   const roundStarts = (grouped.round_start || []).filter((r) => !isWarmup(r));
   const freezeEnds = (grouped.round_freeze_end || []).filter((r) => !isWarmup(r));
@@ -938,23 +1122,42 @@ export function analyzeDemo(pathOrBuffer) {
     }
   }
 
-  const importantTicks = [...new Set([
+  const importantTickSet = new Set([
     ...grouped.player_death.map((record) => number(record, ["tick"])),
     ...grouped.weapon_fire.map((record) => number(record, ["tick"])),
     ...roundPathTicks,
-  ].filter(Boolean))].sort((a, b) => a - b);
+  ].filter(Boolean));
 
-  const tickRows = importantTicks.length
+  // Yalnız savaş olaylarının iki saniyelik çevresini parse et. Tüm demoyu her tick
+  // okumadan hassas görünürlük başlangıcı elde edilir; pencere demo tick hızına uyar.
+  const combatEvents = [
+    ...grouped.player_hurt.filter((record) => !isWarmup(record) && isGun(eventWeapon(record))),
+    ...grouped.player_death.filter((record) => !isWarmup(record) && isGun(eventWeapon(record))),
+  ];
+  const combatTickSet = new Set();
+  const combatWindowTicks = Math.ceil(tickRate * (CONTACT_WINDOW_MS / 1000));
+  for (const record of combatEvents) {
+    const endTick = number(record, ["tick"], 0);
+    if (!endTick) continue;
+    for (let tick = Math.max(0, endTick - combatWindowTicks); tick <= endTick; tick++) combatTickSet.add(tick);
+  }
+  const importantTicks = [...importantTickSet].sort((a, b) => a - b);
+  const combatTicks = [...combatTickSet].sort((a, b) => a - b);
+
+  const detailTickRows = importantTicks.length
     ? parseTicks(pathOrBuffer, [
         "X", "Y", "Z", "pitch", "yaw", "velocity_X", "velocity_Y", "team_num", "last_place_name",
-        "health",
+        "health", "game_time",
         "CCSPlayerPawn.m_iShotsFired",
         "CCSPlayerController.CCSPlayerController_InGameMoneyServices.m_iAccount",
         "CCSPlayerController.CCSPlayerController_InGameMoneyServices.m_iCashSpentThisRound",
         "CCSPlayerController.CCSPlayerController_InGameMoneyServices.m_iStartAccount",
       ], importantTicks)
     : [];
-  const tickIndex = buildTickIndex(tickRows);
-  const reports = players.map((player) => buildPlayerReport(player, grouped, tickIndex, header));
-  return { header, players, reports, parserVersion: "0.42.0" };
+  const combatTickRows = combatTicks.length
+    ? parseTicks(pathOrBuffer, ["game_time", "team_num", "health", "approximate_spotted_by"], combatTicks)
+    : [];
+  const tickIndex = buildTickIndex(mergeTickRows(detailTickRows, combatTickRows));
+  const reports = players.map((player) => buildPlayerReport(player, grouped, tickIndex, header, tickRate));
+  return { header, players, reports, parserVersion: "0.42.0", analysisVersion: "2.0.0", tickRate };
 }

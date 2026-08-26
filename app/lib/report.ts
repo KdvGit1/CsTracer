@@ -32,7 +32,12 @@ export function buildCompactSummary(report: PlayerReport, coachVerdict?: Compact
     bodyErrorAngle: report.crosshairStats.bodyErrorAngle,
     preAimScore: report.crosshairStats.preAimScore,
     averageTTD: report.duelStats.averageTTD,
+    medianTTD: report.duelStats.medianTTD || 0,
+    ttdSampleCount: report.duelStats.ttdSampleCount || 0,
+    ttdMethod: report.duelStats.ttdMethod,
     duelWinrate: report.duelStats.duelWinrate,
+    duelSampleCount: report.duelStats.duelTotal,
+    duelMethod: report.duelStats.duelMethod,
     earlyAccuracy: report.sprayStats.earlyAccuracy,
     lateAccuracy: report.sprayStats.lateAccuracy,
   } : undefined;

@@ -48,9 +48,17 @@ export type CrosshairStats = {
 };
 export type DuelStats = {
   averageTTD: number;
+  medianTTD?: number;
+  ttdSampleCount?: number;
+  preparedContacts?: number;
+  unseenHits?: number;
+  censoredContacts?: number;
+  ttdMethod?: "spotted-to-first-damage-v1";
   duelWinrate: number;
   duelWins: number;
+  duelLosses?: number;
   duelTotal: number;
+  duelMethod?: "mutual-spotted-death-v1";
   fastReactions: number;
   reactionRating: string;
 };

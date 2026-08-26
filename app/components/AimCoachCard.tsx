@@ -32,6 +32,8 @@ export function evaluateAimMechanics(report: PlayerReport): {
   const spray = report.sprayStats;
   const duel = report.duelStats;
   const movement = report.movementProfile;
+  const hasReliableTtd = duel?.ttdMethod === "spotted-to-first-damage-v1" && (duel.ttdSampleCount || 0) >= 5;
+  const measuredTtd = duel?.medianTTD || 0;
 
   // 1. Kafa Sapması & Pre-Aim Analizi
   if (crosshair) {
@@ -151,23 +153,23 @@ export function evaluateAimMechanics(report: PlayerReport): {
   }
 
   // 6. Time-to-Damage & Reaksiyon Gecikmesi
-  if (duel && duel.averageTTD > COACH_THRESHOLDS.ttd.warnMs) {
+  if (duel && hasReliableTtd && measuredTtd > COACH_THRESHOLDS.ttd.warnMs) {
     diagnoses.push({
       id: "ttd_delay",
       category: "ttd",
       title: "Time-to-Damage (İlk Hasar Gecikmesi)",
-        severity: duel.averageTTD > COACH_THRESHOLDS.ttd.highMs ? "high" : "moderate",
-      evidence: `Düşmanı gördükten ilk hasara kadar geçen süre ortalama ${duel.averageTTD} ms (${duel.reactionRating}).`,
+        severity: measuredTtd > COACH_THRESHOLDS.ttd.highMs ? "high" : "moderate",
+      evidence: `Yaklaşık görünür temastan ilk hasara medyan ${measuredTtd} ms, ortalama ${duel.averageTTD} ms (${duel.ttdSampleCount} geçerli temas; ${duel.reactionRating}).`,
       rootCause: "Görsel temas sonrası karar verme ve nişangahı hedefe kilitleme (micro-flick) süresi gecikiyor.",
       drill: {
         name: "Fast Aim / Microshot Reaksiyon Drill'i",
         duration: "10 dk (Aimlabs Microshot veya CS2 Reflex Bots)",
-        target: "Ortalama TTD süresini 320 ms altına indirmek",
+        target: "Medyan TTD süresini 320 ms altına indirmek",
         instructions: "Hızlı hareket eden botlara karşı mikro-düzeltme atışları çalış. Açıyı tutarken odaklanma noktanı daralt.",
       },
     });
-  } else if (duel && duel.averageTTD <= COACH_THRESHOLDS.ttd.strongMs && duel.duelTotal > COACH_THRESHOLDS.ttd.strongMinDuels) {
-    strengths.push(`Işık hızında reaksiyon (${duel.averageTTD} ms ortalama TTD)`);
+  } else if (duel && hasReliableTtd && measuredTtd <= COACH_THRESHOLDS.ttd.strongMs && (duel.ttdSampleCount || 0) > COACH_THRESHOLDS.ttd.strongMinDuels) {
+    strengths.push(`Hızlı ilk hasar (${measuredTtd} ms medyan TTD, ${duel.ttdSampleCount} temas)`);
   }
 
   // Genel Puan Hesaplama
@@ -175,7 +177,7 @@ export function evaluateAimMechanics(report: PlayerReport): {
   if (crosshair) score += (crosshair.preAimScore - 60) * 0.25;
   if (spray) score += (spray.accuracyPercent - 20) * 0.6;
   if (rifleStats) score -= (rifleStats.movingPercent - 10) * 0.8;
-  if (duel && duel.averageTTD > 0) score -= (duel.averageTTD - 300) * 0.05;
+  if (duel && hasReliableTtd) score -= (measuredTtd - 300) * 0.05;
   score = Math.max(25, Math.min(98, Math.round(score)));
 
   const rating = score >= 85 ? "Tier 1 Pro Standardı" : score >= 72 ? "İleri Düzey Rekabetçi" : score >= 58 ? "Ortalama / Gelişime Açık" : "Temel Mekanik Hatalar";

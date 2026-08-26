@@ -1,8 +1,8 @@
 {
-  "version": "0.48.0",
+  "version": "0.49.0",
   "githubRepo": "KdvGit1/CsTracer",
   "releaseDate": "2026-08-26",
-  "title": "TRACER v0.48.0 - Dinamik Takım Koçu",
+  "title": "TRACER v0.49.0 - Dinamik Takım Koçu",
   "changelog": [
     "Takım Koçu artık seçilen 1-5 oyuncu için çalışıyor ve yalnızca seçilen oyuncular kadar rol, rota, silah ve canlı round görevi gösteriyor.",
     "Her oyuncunun uygulama sahibiyle aynı takımda oynadığı en az üç aynı harita maçı bağımsız bulunuyor; oyuncuların aynı maçlarda bulunması gerekmiyor.",

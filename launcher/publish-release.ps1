@@ -1,6 +1,7 @@
 # TRACER Otomatik Sürüm & Yama Yayınlayıcı (1-Tık GitHub Release Publisher)
 param(
-  [string]$NewVersion = ""
+  [string]$NewVersion = "",
+  [switch]$VersionSyncOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,7 +9,7 @@ $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $versionFile = Join-Path $root "version.json"
 
 Write-Host "=====================================================" -ForegroundColor Cyan
-Write-Host "  TRACER OTOMATİK SÜRÜM & YAMA YAYINLAYICI (v1.0)" -ForegroundColor Cyan
+Write-Host "  TRACER OTOMATİK SÜRÜM & YAMA YAYINLAYICI (v1.1)" -ForegroundColor Cyan
 Write-Host "=====================================================" -ForegroundColor Cyan
 
 # 1. Mevcut sürümü oku
@@ -29,6 +30,10 @@ if (-not $targetVersion) {
   if ($prompt) { $targetVersion = $prompt.Trim().Replace("v", "") }
   else { $targetVersion = $currentVersion }
 }
+$targetVersion = $targetVersion.Trim().TrimStart("v")
+if ($targetVersion -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+  throw "Geçersiz sürüm numarası: '$targetVersion'. Örnek: 0.49.0"
+}
 
 # Helper: Write UTF-8 WITHOUT BOM (Node.js JSON.parse compatibility)
 function Write-Utf8NoBom([string]$filePath, [string]$fileContent) {
@@ -36,13 +41,7 @@ function Write-Utf8NoBom([string]$filePath, [string]$fileContent) {
   [System.IO.File]::WriteAllText($filePath, $fileContent, $utf8NoBom)
 }
 
-# 3. version.json dosyasını güncelle
-$vData.version = $targetVersion
-$vData.releaseDate = (Get-Date -Format "yyyy-MM-dd")
-$versionJsonStr = $vData | ConvertTo-Json -Depth 5
-Write-Utf8NoBom $versionFile $versionJsonStr
-
-# 3b. updater, package.json ve package-lock.json sürümlerini senkronize et
+# 3. updater ve JSON sürüm dosyalarını senkronize et
 $updaterMjsPath = Join-Path $root "companion\updater.mjs"
 if (Test-Path -LiteralPath $updaterMjsPath) {
   $content = Get-Content -Raw -LiteralPath $updaterMjsPath
@@ -51,26 +50,37 @@ if (Test-Path -LiteralPath $updaterMjsPath) {
 }
 
 $pkgJsonPath = Join-Path $root "package.json"
-if (Test-Path -LiteralPath $pkgJsonPath) {
-  $pkgData = Get-Content -Raw -LiteralPath $pkgJsonPath | ConvertFrom-Json
-  $pkgData.version = $targetVersion
-  $pkgJsonStr = $pkgData | ConvertTo-Json -Depth 5
-  Write-Utf8NoBom $pkgJsonPath $pkgJsonStr
-}
-
 $pkgLockPath = Join-Path $root "package-lock.json"
-if (Test-Path -LiteralPath $pkgLockPath) {
-  # package-lock.json içindeki packages[""] anahtarı PowerShell nesnesinde
-  # desteklenmez; Hashtable boş anahtarı güvenle korur.
-  $lockData = Get-Content -Raw -LiteralPath $pkgLockPath | ConvertFrom-Json -AsHashtable
-  $lockData["version"] = $targetVersion
-  if ($lockData.ContainsKey("packages") -and $lockData["packages"].ContainsKey("")) {
-    $lockData["packages"][""]["version"] = $targetVersion
+if ((Test-Path -LiteralPath $pkgJsonPath) -and (Test-Path -LiteralPath $pkgLockPath)) {
+  # Windows PowerShell 5.1 hem -AsHashtable parametresini desteklemez hem de
+  # npm lockfile'daki packages[""] anahtarını ConvertFrom-Json ile okuyamaz.
+  # Yayın işlemi zaten Node/npm gerektirdiği için kilit dosyasını Node ile
+  # güncelliyor, boş anahtarı ve dosyanın geri kalanını kayıpsız koruyoruz.
+  $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+  if (-not $nodeCommand) {
+    throw "package-lock.json sürümünü güncellemek için node.exe bulunamadı. Node.js 22 veya üstünü kurun."
   }
-  Write-Utf8NoBom $pkgLockPath ($lockData | ConvertTo-Json -Depth 100)
+
+  $manifestUpdaterPath = Join-Path $PSScriptRoot "sync-version-files.mjs"
+  if (-not (Test-Path -LiteralPath $manifestUpdaterPath)) {
+    throw "Paket sürümü güncelleme yardımcısı bulunamadı: $manifestUpdaterPath"
+  }
+
+  $releaseDate = Get-Date -Format "yyyy-MM-dd"
+  & $nodeCommand.Source $manifestUpdaterPath $versionFile $pkgJsonPath $pkgLockPath $targetVersion $releaseDate
+  if ($LASTEXITCODE -ne 0) {
+    throw "JSON sürüm dosyaları güncellenemedi (node çıkış kodu $LASTEXITCODE)."
+  }
+} else {
+  throw "package.json veya package-lock.json bulunamadı; sürüm senkronizasyonu güvenle tamamlanamaz."
 }
 
 Write-Host "`n[1/4] version.json ve kod tabanı güncellendi: v$targetVersion" -ForegroundColor Green
+
+if ($VersionSyncOnly) {
+  Write-Host "Sürüm senkronizasyonu test modu tamamlandı; paketleme, Git ve GitHub adımları çalıştırılmadı." -ForegroundColor Cyan
+  return
+}
 
 # 4. Patch ZIP Paketini Oluştur
 Write-Host "[2/4] Hafif Yama Paketi (TRACER-Patch-v$targetVersion.zip) oluşturuluyor..." -ForegroundColor Yellow

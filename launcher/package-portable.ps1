@@ -48,7 +48,7 @@ Copy-Item -LiteralPath (Join-Path $tracerRoot "companion") -Destination $release
 Copy-Item -LiteralPath (Join-Path $tracerRoot "launcher") -Destination $releaseRoot -Recurse -Force
 
 # Geliştiriciye özel betikler oyuncu paketine girmemeli
-$excludedLauncherFiles = @("publish-release.ps1", "create-patch.ps1", "download-embedded-ai.ps1", "package-portable.ps1")
+$excludedLauncherFiles = @("publish-release.ps1", "create-patch.ps1", "download-embedded-ai.ps1", "package-portable.ps1", "sync-version-files.mjs")
 foreach ($devScript in $excludedLauncherFiles) {
   $devScriptPath = Join-Path $releaseRoot "launcher\$devScript"
   if (Test-Path -LiteralPath $devScriptPath) { Remove-Item -LiteralPath $devScriptPath -Force }

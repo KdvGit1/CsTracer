@@ -45,6 +45,7 @@ import type {
   CoachEngine,
   CoachFinding,
   CoachState,
+  DuelStats,
   FullMatchReport,
   ParseStatus,
   PlayerIdentity,
@@ -85,6 +86,14 @@ const sampleMetrics = [
 ];
 
 const sampleEvidence: { round: string; time: string; text: string; type: string }[] = [];
+
+function hasMeasuredTtd(stats?: DuelStats): boolean {
+  return stats?.ttdMethod === "spotted-to-first-damage-v1" && (stats.ttdSampleCount || 0) > 0;
+}
+
+function hasMeasuredDuels(stats?: DuelStats): boolean {
+  return stats?.duelMethod === "mutual-spotted-death-v1" && stats.duelTotal > 0;
+}
 
 
 export default function Home() {
@@ -1570,32 +1579,58 @@ export default function Home() {
           <div className="section-title-row">
             <div>
               <p className="eyebrow">REAKSİYON & DÜELLO</p>
-              <h2>Time-to-Damage (TTD) ve 1v1 Temas Başarısı</h2>
-              <p>Düşmanı ilk gördüğün an ile hasara dönüştürme hızın ve düelloları kazanma oranın.</p>
+              <h2>Time-to-Damage (TTD) ve Karşılıklı Düello Başarısı</h2>
+              <p>Yaklaşık görünür temasın ilk hasara dönüşme hızı ve iki rakibin birbirini gördüğü düelloların sonucu.</p>
             </div>
-            <span>{report?.duelStats ? `${report.duelStats.reactionRating}` : "Demo bekleniyor"}</span>
+            <span>
+              {report?.duelStats?.ttdMethod !== "spotted-to-first-damage-v1"
+                ? report?.duelStats ? "Eski analiz · yeniden analiz et" : "Demo bekleniyor"
+                : report.duelStats.reactionRating}
+            </span>
           </div>
 
           {report ? (
             <div className="duel-metrics-grid">
               <article className="duel-hero-card">
-                <span>ORTALAMA HASAR VERME SÜRESİ</span>
-                <h3>{report.duelStats?.averageTTD || 0} <i>ms</i></h3>
-                <p>İlk temas anından ilk merminin isabetine kadar geçen reaksiyon süresi.</p>
-                <div className="reaction-pill">{report.duelStats?.reactionRating || "Normal"}</div>
+                <span>MEDYAN HASAR VERME SÜRESİ</span>
+                <h3>
+                  {hasMeasuredTtd(report.duelStats) ? report.duelStats?.medianTTD : "—"}
+                  {hasMeasuredTtd(report.duelStats) && <i> ms</i>}
+                </h3>
+                <p>
+                  {hasMeasuredTtd(report.duelStats)
+                    ? `${report.duelStats?.ttdSampleCount} geçerli görünür temas · ortalama ${report.duelStats?.averageTTD} ms.`
+                    : report.duelStats?.ttdMethod === "spotted-to-first-damage-v1"
+                      ? "Bu maçta güvenilir TTD üretmeye yetecek görünür temas bulunamadı."
+                      : "Bu rapor eski hesaplama yöntemiyle oluşturulmuş; doğru TTD için maçı yeniden analiz et."}
+                </p>
+                <div className="reaction-pill">{hasMeasuredTtd(report.duelStats) ? report.duelStats?.reactionRating : "Ölçülemedi"}</div>
               </article>
 
               <article className="duel-hero-card">
-                <span>1v1 DÜELLO KAZANMA ORANI</span>
-                <h3>%{report.duelStats?.duelWinrate || 0}</h3>
-                <p>{report.duelStats?.duelWins || 0} galibiyet · {report.duelStats?.duelTotal || 0} toplam temas</p>
-                <div className="score-line"><i style={{ width: `${report.duelStats?.duelWinrate || 0}%` }} /></div>
+                <span>KARŞILIKLI DÜELLO KAZANMA ORANI</span>
+                <h3>{hasMeasuredDuels(report.duelStats) ? `%${report.duelStats?.duelWinrate}` : "—"}</h3>
+                <p>
+                  {hasMeasuredDuels(report.duelStats)
+                    ? `${report.duelStats?.duelWins} galibiyet · ${report.duelStats?.duelLosses || 0} mağlubiyet · ${report.duelStats?.duelTotal} sonuçlanan düello`
+                    : report.duelStats?.duelMethod === "mutual-spotted-death-v1"
+                      ? "Ölümle sonuçlanan karşılıklı görünür düello bulunamadı."
+                      : "Eski kill/death oranı gösterilmiyor; maçı yeniden analiz et."}
+                </p>
+                <div className="score-line"><i style={{ width: `${hasMeasuredDuels(report.duelStats) ? report.duelStats?.duelWinrate : 0}%` }} /></div>
               </article>
 
               <article className="duel-hero-card">
                 <span>YILDIRIM REAKSİYONLAR (&lt;250ms)</span>
-                <h3>{report.duelStats?.fastReactions || 0} <i>kez</i></h3>
-                <p>250 milisaniyenin altında düşmanı avladığın refleks anları.</p>
+                <h3>
+                  {hasMeasuredTtd(report.duelStats) ? report.duelStats?.fastReactions : "—"}
+                  {hasMeasuredTtd(report.duelStats) && <i> kez</i>}
+                </h3>
+                <p>
+                  {hasMeasuredTtd(report.duelStats)
+                    ? `250 ms veya altındaki ilk hasarlar · ${report.duelStats?.preparedContacts || 0} aynı-tick hazır temas/prefire ayrı tutuldu.`
+                    : "Yalnız yeni görünürlük tabanlı analizde hesaplanır."}
+                </p>
               </article>
             </div>
           ) : (

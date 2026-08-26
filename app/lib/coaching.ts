@@ -44,7 +44,7 @@ export const COACH_THRESHOLDS = {
 export const COACH_RULES: CoachRule[] = [
   { id: "aim_crosshair", area: "Pre-Aim & Kafa Hizası", title: "Köşe dönme ve kafa seviyesi", target: "Kafa sapması ≤ 4.0° · Pre-Aim ≥ 75/100 (pro bandı 2–4°)", rationale: "Köşeleri dönerken crosshair kafa seviyesinde tutulduğunda flick ihtiyacı azalır ve ilk mermi isabeti artar. Üst düzey oyuncular 2–4° bandında kalır.", caveat: "Eğimli zeminler ve çömelmiş rakipler açı sapmasını doğal olarak değiştirebilir." },
   { id: "aim_spray", area: "Sprey & Recoil", title: "Burst ve geri tepme kontrolü", target: "İlk 3 mermi ≥ %30 · 4+ mermi sprey ≥ %18", rationale: "Menzile göre uzun sprey yerine 2-3 mermilik kısa burst atışları tercih etmek recoil sapmasını önler.", caveat: "Yakın mesafe çatışmalarında ve SMG silahlarında tam sprey bazen en doğru karardır." },
-  { id: "duel_ttd", area: "İlk Temas & TTD", title: "Time-to-Damage (Reaksiyon)", target: "Ortalama TTD ≤ 320 ms (elit bandı 200–280 ms) · 1v1 Galibiyet ≥ %50", rationale: "İlk temas anından ilk hasara kadar geçen süreyi kısaltarak rakibe cevap fırsatı bırakmaz.", caveat: "Geniş swing atan rakipler veya flash sonrası açılışlar TTD süresini uzatabilir." },
+  { id: "duel_ttd", area: "İlk Temas & TTD", title: "Time-to-Damage (Reaksiyon)", target: "Medyan yaklaşık TTD ≤ 320 ms · karşılıklı görünür düello galibiyeti ≥ %50", rationale: "Yaklaşık görünür temasın ilk hasara dönüşme süresini kısaltarak rakibe cevap fırsatı bırakmaz.", caveat: "Spotted verisi yaklaşık ölçümdür; geniş swing, flash, prefire ve görünmeden verilen hasarlar ayrı değerlendirilir." },
   { id: "movement", area: "Counter-Strafe & Duruş", title: "Atış anında tam durma disiplini", target: "Tüfekte hareketli atış <%8 (pro <%5) · ≤15 u/s sabit · 15–50 mikro · 50–120 belirgin · >120 ağır", rationale: "Küçük hareketi koşarak atışla aynı hata saymaz; ortalama, P90 ve ağırlıklı hata skoru birlikte okunur. Pro demolarında tüfekle hareketli atış %5'in altındadır.", caveat: "Silah, mesafe ve duruş doğruluğu değiştirir; hız bandı yayılımın birebir ölçümü değil, koçluk sezgisidir." },
   { id: "trade", area: "Takım & Trade", title: "Trade edilebilir temas", target: "Trade oranı ≥ %45", rationale: "Düello kaybedildiğinde takımın skoru eşitleme ihtimalini artırır.", caveat: "Lurk ve clutch rollerinde hedef daha düşük olabilir; görüş hattı demodan her zaman kesin kurulamaz." },
   { id: "position", area: "Harita Pozisyonu", title: "Tekrarlayan ölüm kümesi", target: "Aynı bölgede 3+ ölümde round incelemesi", rationale: "Aynı açı, zamanlama veya geri düşme planındaki tekrarları görünür yapar.", caveat: "Bölge etiketi geniş olabilir; sebep aim, utility, ekonomi veya takım planı olabilir." },
@@ -185,6 +185,46 @@ export function buildCoachPacket(report: PlayerReport): CoachPacket {
   const sampleConfidence = Math.min(92, 58 + Math.min(14, report.deaths) * 2);
   const movement = report.movementProfile;
   const movementSeverity: ErrorSeverity = movement?.severity === "severe" ? "high" : movement?.severity === "moderate" ? "moderate" : movement?.severity === "minor" ? "minor" : movement ? "strong" : report.movingShotPercent > 20 ? "high" : report.movingShotPercent > 12 ? "moderate" : "strong";
+  const duelStats = report.duelStats;
+  const hasReliableTtd = duelStats?.ttdMethod === "spotted-to-first-damage-v1" && (duelStats.ttdSampleCount || 0) >= 5;
+  const hasReliableDuels = duelStats?.duelMethod === "mutual-spotted-death-v1" && duelStats.duelTotal >= 3;
+  const measuredTtd = duelStats?.medianTTD || 0;
+  const duelFinding: CoachFinding | null = duelStats && (hasReliableTtd || hasReliableDuels) ? {
+    id: "duel_ttd",
+    area: "İlk Temas & Karşılıklı Düello",
+    title: hasReliableTtd && measuredTtd > 380
+      ? "Time-to-Damage (TTD) süresi uzun"
+      : hasReliableDuels && duelStats.duelWinrate < 45
+        ? "Karşılıklı düello kazanma oranı düşük"
+        : "İlk temas ve düello reaksiyonları keskin",
+    evidence: [
+      hasReliableTtd
+        ? `Yaklaşık TTD medyan ${measuredTtd} ms, ortalama ${duelStats.averageTTD} ms (${duelStats.ttdSampleCount} geçerli temas; ${duelStats.reactionRating}).`
+        : "TTD için yeterli görünür temas örneği yok.",
+      hasReliableDuels
+        ? `Karşılıklı görünür düellolarda ${duelStats.duelWins} galibiyet / ${duelStats.duelLosses || 0} mağlubiyet (%${duelStats.duelWinrate}).`
+        : "Karşılıklı düello oranı için yeterli sonuç yok.",
+      hasReliableTtd ? `${duelStats.fastReactions} temas 250 ms veya altında.` : "",
+    ].filter(Boolean).join(" "),
+    interpretation: hasReliableTtd && measuredTtd > 350
+      ? "Rakibi yaklaşık olarak gördüğün andan ilk hasara kadar geçen süre uzuyor; rakip karşılık vermek için daha fazla zaman buluyor."
+      : hasReliableDuels && duelStats.duelWinrate < 45
+        ? "İki tarafın da birbirini gördüğü ölümle sonuçlanan temaslarda rakip daha sık son vuruşu yapıyor."
+        : "Ölçülen görünür temaslarda ilk hasar ve düello sonucu dengeli veya güçlü.",
+    action: hasReliableTtd && measuredTtd > 350
+      ? "Aim Botz ve reaktif tracking modlarında target-switching çalış; sonraki demoda medyan TTD'yi izle."
+      : hasReliableDuels && duelStats.duelWinrate < 45
+        ? "Karşılıklı açılarda ilk mermi, counter-strafe ve hasar aldıktan sonra geri düşme disiplinini çalış."
+        : "Mevcut temas disiplinini koru.",
+    severity: (hasReliableTtd && measuredTtd > 420
+      ? "high"
+      : (hasReliableTtd && measuredTtd > 350) || (hasReliableDuels && duelStats.duelWinrate < 40)
+        ? "moderate"
+        : hasReliableTtd && measuredTtd > 320
+          ? "minor"
+          : "strong") as ErrorSeverity,
+    confidence: Math.min(92, 64 + Math.min(16, duelStats.ttdSampleCount || 0) + Math.min(10, duelStats.duelTotal)),
+  } : null;
 
   const findings: CoachFinding[] = [
     ...(report.crosshairStats ? [{
@@ -205,15 +245,7 @@ export function buildCoachPacket(report: PlayerReport): CoachPacket {
       severity: (report.sprayStats.lateAccuracy < 12 && report.sprayStats.totalShots > 40 ? "high" : report.sprayStats.lateAccuracy < 18 && report.sprayStats.totalShots > 30 ? "moderate" : "strong") as ErrorSeverity,
       confidence: 84,
     }] : []),
-    ...(report.duelStats ? [{
-      id: "duel_ttd", area: "İlk Temas & TTD",
-      title: report.duelStats.averageTTD > 380 ? "Time-to-Damage (TTD) süresi uzun" : report.duelStats.duelWinrate < 45 ? "1v1 düello kazanma oranı düşük" : "Düello reaksiyonları keskin",
-      evidence: `Ortalama TTD ${report.duelStats.averageTTD} ms (${report.duelStats.reactionRating}). 1v1 düellolarda ${report.duelStats.duelWins}/${report.duelStats.duelTotal} galibiyet (%${report.duelStats.duelWinrate}), ${report.duelStats.fastReactions} yıldırım reaksiyon.`,
-      interpretation: report.duelStats.averageTTD > 350 ? "Düşmanı gördükten sonra ilk hasarı işleme süren uzuyor; rakip ilk ateşi açarak avantaj elde ediyor." : "Hedefe kilitlenme ve ilk hasarı verme reaksiyonun hızlı.",
-      action: report.duelStats.averageTTD > 350 ? "Aim Botz ve reaktif tracking modlarında hedef değiştirme (target switching) egzersizleri yap." : "Hızlı reaksiyon refleksini koru.",
-      severity: (report.duelStats.averageTTD > 420 ? "high" : report.duelStats.averageTTD > 350 || report.duelStats.duelWinrate < 40 ? "moderate" : report.duelStats.averageTTD > 320 ? "minor" : "strong") as ErrorSeverity,
-      confidence: 82,
-    }] : []),
+    ...(duelFinding ? [duelFinding] : []),
     {
       id: "movement", area: "Counter-Strafe & Duruş",
       title: movement?.severity === "severe" ? "Yüksek hızda atış öncelikli sorun" : movement?.severity === "moderate" ? "Duruş zamanlaması geliştirilebilir" : movement?.severity === "minor" ? "Küçük hareket sapmaları" : "Duruş disiplini hedefte",
