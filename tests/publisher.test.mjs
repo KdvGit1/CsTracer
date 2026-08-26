@@ -62,5 +62,19 @@ test("yayıncı Windows PowerShell 5.1 uyumsuz AsHashtable seçeneğini kullanma
 
   assert.doesNotMatch(source, /ConvertFrom-Json\s+-AsHashtable/);
   assert.match(source, /\[switch\]\$VersionSyncOnly/);
+  assert.match(source, /\[switch\]\$BuildOnly/);
+  assert.match(source, /npm test/);
+  assert.match(source, /npm run lint/);
+  assert.match(source, /npm run typecheck/);
   assert.match(source, /sync-version-files\.mjs/);
+});
+
+test("patch ve portable ortak skor motorunu içerir", () => {
+  const patchScript = readFileSync(join(root, "launcher", "create-patch.ps1"), "utf8");
+  const portableScript = readFileSync(join(root, "launcher", "package-portable.ps1"), "utf8");
+
+  assert.match(patchScript, /"shared"/);
+  assert.match(patchScript, /shared\\scoring\.mjs/);
+  assert.match(portableScript, /Join-Path \$tracerRoot "shared"/);
+  assert.match(portableScript, /shared\\scoring\.mjs/);
 });

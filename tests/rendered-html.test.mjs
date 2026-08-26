@@ -49,7 +49,7 @@ test("portable mode keeps progress player-scoped and unloads the embedded coach"
   assert.match(page, /coachEngine.*"embedded"/);
   assert.match(page, /\/coach\/chat/);
   assert.match(coaching, /Basitçe: Her 10 atışın yaklaşık/);
-  assert.match(coaching, /hareket hatası/);
+  assert.match(coaching, /sınır üstü atış payıdır/);
   assert.match(coaching, /COACH_THRESHOLDS/);
   assert.match(companion, /process-exit-after-response/);
   assert.match(companion, /await stopCoachProcess\(\)/);
@@ -148,4 +148,11 @@ test("sayfa yenileme companion servisini kapatmaz", async () => {
   const pageSource = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(pageSource, /addEventListener\(["'](?:beforeunload|pagehide)["']/);
   assert.match(pageSource, /onClick=\{shutdownTracer\}/);
+});
+
+test("gelişim hafızası ölçülemeyen yüzdeleri null olarak kabul eder", async () => {
+  const progressRoute = await readFile(new URL("../app/api/progress/route.ts", import.meta.url), "utf8");
+  assert.match(progressRoute, /overall: number \| null/);
+  assert.match(progressRoute, /value === null/);
+  assert.doesNotMatch(progressRoute, /!Number\.isFinite\(summary\.overall\)/);
 });

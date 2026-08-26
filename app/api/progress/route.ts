@@ -22,10 +22,10 @@ const MATCH_TABLE = `CREATE TABLE IF NOT EXISTS tracer_match_summaries (
 const MATCH_INDEX = "CREATE INDEX IF NOT EXISTS idx_tracer_match_owner_date ON tracer_match_summaries(owner_id, match_date)";
 
 type CompactSummary = {
-  overall: number;
-  dimensions: Record<string, number>;
-  stats: Record<string, number>;
-  weapons: Array<{ weapon: string; label: string; score: number; kills: number; shots: number }>;
+  overall: number | null;
+  dimensions: Record<string, number | null>;
+  stats: Record<string, number | null>;
+  weapons: Array<{ weapon: string; label: string; score: number | null; kills: number; shots: number }>;
 };
 
 type ProgressInput = {
@@ -68,9 +68,10 @@ function safeJson(value: string) {
 }
 
 function validSummary(summary: CompactSummary | undefined) {
-  if (!summary || !Number.isFinite(summary.overall) || summary.overall < 0 || summary.overall > 100) return false;
+  const validMetric = (value: number | null) => value === null || (Number.isFinite(value) && value >= 0 && value <= 100);
+  if (!summary || !validMetric(summary.overall)) return false;
   const dimensions = Object.values(summary.dimensions || {});
-  if (dimensions.length !== 6 || dimensions.some((score) => !Number.isFinite(score) || score < 0 || score > 100)) return false;
+  if (dimensions.length !== 6 || dimensions.some((score) => !validMetric(score))) return false;
   return Array.isArray(summary.weapons) && summary.weapons.length <= 6;
 }
 

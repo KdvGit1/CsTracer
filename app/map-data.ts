@@ -22,12 +22,12 @@ const RADAR_MAPS: Record<string, RadarMap> = {
 };
 
 export function radarMapFor(rawName?: string): RadarMap | undefined {
-  const normalized = (rawName || "de_dust2")
+  const normalized = (rawName || "")
     .toLowerCase()
     .replace(/\\/g, "/")
     .split("/")
     .pop()
-    ?.replace(/\.(vpk|bsp)$/i, "") || "de_dust2";
+    ?.replace(/\.(vpk|bsp)$/i, "") || "";
   return RADAR_MAPS[normalized] || RADAR_MAPS[`de_${normalized}`];
 }
 

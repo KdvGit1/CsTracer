@@ -5,6 +5,7 @@ import {
   TTD_METHOD,
   calculateDuelStatsForPlayer,
   estimateDemoTickRate,
+  isDeathTraded,
 } from "../companion/analyze.mjs";
 
 const A = { name: "Alpha", steamid: "76561198000000001" };
@@ -102,12 +103,44 @@ test("düello yalnız karşılıklı görünür ve ölümle sonuçlanan temaslar
 
 test("örnek yoksa sahte 340 yerine ölçülemedi sonucu döner", () => {
   const stats = calculateDuelStatsForPlayer(C, { player_hurt: [], player_death: [] }, tickRows(), 64);
-  assert.equal(stats.averageTTD, 0);
-  assert.equal(stats.medianTTD, 0);
+  assert.equal(stats.averageTTD, null);
+  assert.equal(stats.medianTTD, null);
   assert.equal(stats.ttdSampleCount, 0);
+  assert.equal(stats.ttdStatus, "insufficient-sample");
   assert.equal(stats.reactionRating, "Ölçülemedi");
   assert.equal(stats.duelTotal, 0);
-  assert.equal(stats.duelWinrate, 0);
+  assert.equal(stats.duelWinrate, null);
+  assert.equal(stats.duelStatus, "insufficient-sample");
+});
+
+function death(tick, round, attacker, victim, attackerTeam, victimTeam) {
+  return {
+    event_name: "player_death",
+    tick,
+    game_time: tick / 64,
+    total_rounds_played: round,
+    weapon: "ak47",
+    attacker_name: attacker.name,
+    attacker_steamid: attacker.steamid,
+    attacker_team_num: attackerTeam,
+    user_name: victim.name,
+    user_steamid: victim.steamid,
+    user_team_num: victimTeam,
+  };
+}
+
+test("trade aynı roundda doğru killer ve takım ile beş saniye içinde doğrulanır", () => {
+  const teammate = { name: "Delta", steamid: "76561198000000004" };
+  const first = death(100, 4, B, A, 3, 2);
+  const validReply = death(300, 4, teammate, B, 2, 3);
+  assert.equal(isDeathTraded(first, [first, validReply], [], 64), true);
+
+  const wrongKiller = death(250, 4, teammate, C, 2, 3);
+  const nextRound = death(250, 5, teammate, B, 2, 3);
+  const tooLate = death(500, 4, teammate, B, 2, 3);
+  assert.equal(isDeathTraded(first, [first, wrongKiller], [], 64), false);
+  assert.equal(isDeathTraded(first, [first, nextRound], [], 64), false);
+  assert.equal(isDeathTraded(first, [first, tooLate], [], 64), false);
 });
 
 test("demo tick hızı game_time alanından çıkarılır", () => {

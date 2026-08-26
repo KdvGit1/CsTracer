@@ -1,7 +1,8 @@
 # TRACER Otomatik Sürüm & Yama Yayınlayıcı (1-Tık GitHub Release Publisher)
 param(
   [string]$NewVersion = "",
-  [switch]$VersionSyncOnly
+  [switch]$VersionSyncOnly,
+  [switch]$BuildOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -75,15 +76,25 @@ if ((Test-Path -LiteralPath $pkgJsonPath) -and (Test-Path -LiteralPath $pkgLockP
   throw "package.json veya package-lock.json bulunamadı; sürüm senkronizasyonu güvenle tamamlanamaz."
 }
 
-Write-Host "`n[1/4] version.json ve kod tabanı güncellendi: v$targetVersion" -ForegroundColor Green
+Write-Host "`n[1/5] version.json ve kod tabanı güncellendi: v$targetVersion" -ForegroundColor Green
 
 if ($VersionSyncOnly) {
   Write-Host "Sürüm senkronizasyonu test modu tamamlandı; paketleme, Git ve GitHub adımları çalıştırılmadı." -ForegroundColor Cyan
   return
 }
 
-# 4. Patch ZIP Paketini Oluştur
-Write-Host "[2/4] Hafif Yama Paketi (TRACER-Patch-v$targetVersion.zip) oluşturuluyor..." -ForegroundColor Yellow
+# 4. Yayın kapısı: birim/uçtan uca testler ve statik kontrol
+Write-Host "[2/5] Testler çalıştırılıyor..." -ForegroundColor Yellow
+Set-Location $root
+cmd.exe /c "npm test"
+if ($LASTEXITCODE -ne 0) { throw "Testler başarısız oldu; paket ve yayın oluşturulmadı." }
+cmd.exe /c "npm run lint"
+if ($LASTEXITCODE -ne 0) { throw "Lint başarısız oldu; paket ve yayın oluşturulmadı." }
+cmd.exe /c "npm run typecheck"
+if ($LASTEXITCODE -ne 0) { throw "TypeScript kontrolü başarısız oldu; paket ve yayın oluşturulmadı." }
+
+# 5. Patch ZIP Paketini Oluştur
+Write-Host "[3/5] Hafif Yama Paketi (TRACER-Patch-v$targetVersion.zip) oluşturuluyor..." -ForegroundColor Yellow
 & (Join-Path $PSScriptRoot "create-patch.ps1")
 
 $patchZip = Join-Path $root "release\TRACER-Patch-v$targetVersion.zip"
@@ -116,8 +127,15 @@ if ($portableBytes -ge [long]2GB) {
 $portableMb = [Math]::Round($portableBytes / 1MB, 2)
 Write-Host "İlk kurulum paketi hazır: $portableArchive ($portableMb MB)" -ForegroundColor Green
 
-# 5. Git Commit & Tag oluştur
-Write-Host "`n[3/4] Git commit ve sürüm etiketi (tag) hazırlanıyor..." -ForegroundColor Yellow
+if ($BuildOnly) {
+  Write-Host "`nBUILD-ONLY tamamlandı. Git commit/tag/push ve GitHub Release çalıştırılmadı." -ForegroundColor Cyan
+  Write-Host "Patch: $patchZip" -ForegroundColor Green
+  Write-Host "Portable: $portableArchive" -ForegroundColor Green
+  return
+}
+
+# 6. Git Commit & Tag oluştur
+Write-Host "`n[4/5] Git commit ve sürüm etiketi (tag) hazırlanıyor..." -ForegroundColor Yellow
 Set-Location $root
 
 # .gitignore oyuncu verilerini, paket çıktılarını, runtime ve modeli dışarıda tutar.
@@ -161,7 +179,7 @@ Write-Host "Değişiklikler GitHub'a gönderiliyor (git push)..." -ForegroundCol
 git push origin main --tags
 if ($LASTEXITCODE -ne 0) { throw "git push başarısız oldu (çıkış kodu $LASTEXITCODE). Yayınlama durduruldu; sürüm HENÜZ yayınlanmadı." }
 
-# 6. GitHub Release oluştur: gh CLI varsa otomatik, yoksa manuel tarayıcı akışı
+# 7. GitHub Release oluştur: gh CLI varsa otomatik, yoksa manuel tarayıcı akışı
 $tag = "v$targetVersion"
 $ghCommand = Get-Command gh -ErrorAction SilentlyContinue
 $ghPath = if ($ghCommand) {
@@ -172,7 +190,7 @@ $ghPath = if ($ghCommand) {
   $null
 }
 if ($ghPath) {
-  Write-Host "`n[4/4] GitHub CLI bulundu, release otomatik oluşturuluyor..." -ForegroundColor Green
+  Write-Host "`n[5/5] GitHub CLI bulundu, release otomatik oluşturuluyor..." -ForegroundColor Green
   & $ghPath release create $tag "$patchZip" "$portableArchive" --repo $repo --title "TRACER v$targetVersion Güncellemesi" --generate-notes --latest
   if ($LASTEXITCODE -ne 0) { throw "gh release create başarısız oldu (çıkış kodu $LASTEXITCODE). Etiket GitHub'da zaten yayınlanmış olabilir." }
 
@@ -182,7 +200,7 @@ if ($ghPath) {
   Write-Host "Release sayfası: https://github.com/$repo/releases/tag/$tag" -ForegroundColor Cyan
   Write-Host "`nTüm arkadaşlarınız anında bu güncellemeyi tek tıkla alacaktır.`n" -ForegroundColor Cyan
 } else {
-  Write-Host "`n[4/4] 'gh' CLI bulunamadı, manuel yayınlama sayfası açılıyor..." -ForegroundColor Green
+  Write-Host "`n[5/5] 'gh' CLI bulunamadı, manuel yayınlama sayfası açılıyor..." -ForegroundColor Green
   $title = [System.Uri]::EscapeDataString("TRACER v$targetVersion Güncellemesi")
   $releaseUrl = "https://github.com/$repo/releases/new?tag=$tag&title=$title"
 

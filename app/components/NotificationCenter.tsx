@@ -47,7 +47,7 @@ type MatchNotification = {
     mode: string;
     timestamp: number;
     formattedDate?: string;
-    score?: { userScore: number; enemyScore: number; result: string; rawScore: string } | null;
+    score?: { userScore: number | null; enemyScore: number | null; result: string; rawScore: string } | null;
   };
   comparison?: MatchComparison | null;
   stats?: { kills?: number; deaths?: number; assists?: number; adr?: number } | null;
@@ -85,10 +85,10 @@ function formatBytes(bytes: number) {
 
 function comparisonText(comparison?: MatchComparison | null) {
   if (!comparison) return "Kişisel kıyas tam analizden sonra hazırlanacak.";
-  const unit = comparison.kind === "overall" ? "/100" : " K/D";
+  const unit = comparison.kind === "overall" ? "% KAST" : " K/D";
   if (!comparison.sufficient) return `${comparison.value}${unit} · kıyas için ${3 - comparison.sampleSize} eski maç daha gerekli`;
   const sign = Number(comparison.delta) > 0 ? "+" : "";
-  return `${comparison.value}${unit} · ortalamaya göre ${sign}${comparison.delta}${comparison.kind === "overall" ? " puan" : " K/D"}`;
+  return `${comparison.value}${unit} · ortalamaya göre ${sign}${comparison.delta}${comparison.kind === "overall" ? " yüzde puanı" : " K/D"}`;
 }
 
 function notificationActionLabel(status: MatchNotification["status"]) {

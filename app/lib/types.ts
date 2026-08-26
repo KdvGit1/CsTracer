@@ -1,4 +1,11 @@
 export type Recommendation = { id: string; title: string; body: string; confidence: number };
+export type MetricStatus = "measured" | "insufficient-sample" | "unavailable";
+export type MetricQuality = {
+  status: MetricStatus;
+  sampleCount: number;
+  methodVersion: string;
+  reason?: string;
+};
 export type DeathDetail = {
   round: number; tick: number; time: number; zone: string; x: number; y: number; z: number;
   killer: string; weapon: string; nearestTeammate: number | null; usedRecentFlash: boolean;
@@ -10,19 +17,23 @@ export type KillDetail = {
 };
 export type SideStat = {
   side: "CT" | "T"; rounds: number; kills: number; deaths: number; assists: number; damage: number;
-  adr: number; shots: number; movingShotPercent: number; tradePercent: number; topZone: string; topZoneDeaths: number;
+  adr: number | null; shots: number; movingShotPercent: number | null; movementSampleCount?: number;
+  tradePercent: number | null; topZone: string; topZoneDeaths: number;
 };
 export type WeaponStat = {
   weapon: string; label: string; category?: string; kills: number; damage: number; shots: number; headshots: number;
-  headshotPercent: number; movingShotPercent: number; efficiency: number; score: number;
-  status: "signature" | "strong" | "developing" | "sample";
+  headshotPercent: number; movingShotPercent: number | null; movementSampleCount?: number;
+  efficiency: number | null; score: number | null;
+  status: "large-sample" | "measured" | "small-sample";
 };
 export type MovementCategoryStat = { shots: number; movingPercent: number };
 export type MovementProfile = {
   averageSpeed: number; p90Speed: number; stableShots: number; microMoveShots: number;
   movingShots: number; fastMoveShots: number; stablePercent: number; microPercent: number;
-  movingPercent: number; fastPercent: number; severityScore: number;
-  severity: "clean" | "minor" | "moderate" | "severe";
+  movingPercent: number; fastPercent: number; invalidShotPercent: number; severityScore: number;
+  severity: "clean" | "minor" | "moderate" | "severe" | "unavailable";
+  status: MetricStatus; sampleCount: number; unmeasuredShots: number;
+  method: "weapon-max-speed-34pct-v1"; reason?: string;
   byCategory?: {
     sniper?: MovementCategoryStat;
     rifle?: MovementCategoryStat;
@@ -34,49 +45,66 @@ export type MovementProfile = {
 export type SprayStats = {
   totalShots: number;
   totalHits: number;
-  accuracyPercent: number;
-  earlyAccuracy: number;
-  lateAccuracy: number;
+  hitboxSampleCount?: number;
+  accuracyPercent: number | null;
+  earlyAccuracy: number | null;
+  lateAccuracy: number | null;
+  earlyShots: number;
+  lateShots: number;
+  status: MetricStatus;
+  method: "bullet-damage-attack-tick-v1";
+  reason?: string;
   hitboxCounts: { head: number; chest: number; stomach: number; arms: number; legs: number };
   hitboxPercents: { head: number; chest: number; stomach: number; arms: number; legs: number };
 };
 export type CrosshairStats = {
-  headErrorAngle: number;
-  bodyErrorAngle: number;
-  preAimScore: number;
+  headErrorAngle: number | null;
+  bodyErrorAngle: number | null;
   headLevelRating: string;
+  status: MetricStatus;
+  sampleCount: number;
+  method: "kill-tick-alignment-v2";
+  reason?: string;
 };
 export type DuelStats = {
-  averageTTD: number;
-  medianTTD?: number;
+  averageTTD: number | null;
+  medianTTD: number | null;
   ttdSampleCount?: number;
   preparedContacts?: number;
   unseenHits?: number;
   censoredContacts?: number;
-  ttdMethod?: "spotted-to-first-damage-v1";
-  duelWinrate: number;
+  ttdMethod?: "spotted-to-first-damage-v2";
+  ttdStatus: MetricStatus;
+  ttdReason?: string;
+  duelWinrate: number | null;
   duelWins: number;
   duelLosses?: number;
   duelTotal: number;
-  duelMethod?: "mutual-spotted-death-v1";
+  duelMethod?: "mutual-spotted-death-v2";
+  duelStatus: MetricStatus;
+  duelReason?: string;
   fastReactions: number;
   reactionRating: string;
 };
 export type RoundEconomy = {
   round: number;
-  startMoney: number;
-  spentMoney: number;
-  endMoney: number;
+  startMoney: number | null;
+  spentMoney: number | null;
+  endMoney: number | null;
   buyType: string;
-  heroBuy: boolean;
+  status: MetricStatus;
 };
 export type EconomyStats = {
-  averageStartMoney: number;
-  totalCashSpent: number;
+  averageStartMoney: number | null;
+  totalCashSpent: number | null;
   roundEconomy: RoundEconomy[];
   ecoRounds: number;
   forceRounds: number;
   fullBuyRounds: number;
+  status: MetricStatus;
+  sampleCount: number;
+  method: "round-freeze-money-v1";
+  reason?: string;
 };
 export type PathPoint = { x: number; y: number; z: number; zone: string; tick: number };
 export type RoundPath = {
@@ -109,8 +137,9 @@ export type PlayerReport = {
   player: { name: string; steamid: string }; map: string; rounds: number; kills: number; deaths: number;
   assists: number; adr: number; headshotPercent: number; openingKills: number; openingDeaths: number;
   utilityDamage: number; enemyBlindSeconds: number; flashesThrown: number; shots: number;
-  movingShotPercent: number; tradePercent: number; topZone: string; topZoneDeaths: number;
-  unflashedDeaths: number; untradedDeaths: number; impact: number; deathDetails: DeathDetail[];
+  movingShotPercent: number | null; tradePercent: number | null; topZone: string; topZoneDeaths: number;
+  unflashedDeaths: number; untradedDeaths: number; impact: number | null; deathDetails: DeathDetail[];
+  kastPercent?: number | null; survivalPercent?: number | null; utilityImpactRoundPercent?: number | null; utilityImpactRoundSampleCount?: number;
   killDetails?: KillDetail[]; sideStats?: SideStat[]; weaponStats?: WeaponStat[]; movementProfile?: MovementProfile;
   sprayStats?: SprayStats; crosshairStats?: CrosshairStats; duelStats?: DuelStats; economyStats?: EconomyStats;
   roundPaths?: RoundPath[]; routeStats?: RouteStat[];
@@ -146,15 +175,16 @@ export type FullMatchReport = {
   title: string;
   summary: string;
   matchScorecard: {
-    overallScore: number;
+    overallScore: number | null;
     grade: string;
-    impactScore: number;
-    aimScore: number;
-    movementScore: number;
-    utilityScore: number;
-    teamworkScore: number;
-    positionScore: number;
-    economyScore: number;
+    method: "kast-round-contribution-v1";
+    sampleCount: number;
+    impactScore: number | null;
+    aimScore: number | null;
+    movementScore: number | null;
+    utilityScore: number | null;
+    teamworkScore: number | null;
+    positionScore: number | null;
   };
   priorities: Array<{
     area: string;
@@ -170,10 +200,10 @@ export type FullMatchReport = {
   sideReview: {
     ctKills: number;
     ctDeaths: number;
-    ctAdr: number;
+    ctAdr: number | null;
     tKills: number;
     tDeaths: number;
-    tAdr: number;
+    tAdr: number | null;
     verdict: string;
   };
   weaponVerdict: {

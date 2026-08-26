@@ -28,7 +28,7 @@ if (Test-Path -LiteralPath $versionJsonPath) {
 Copy-Item -LiteralPath (Join-Path $root "dist\standalone") -Destination (Join-Path $tempPatchDir "app-runtime") -Recurse -Force
 
 # 4b. Essential support folders (companion, launcher, etc.)
-$includedFolders = @("companion", "launcher", "public")
+$includedFolders = @("companion", "launcher", "public", "shared")
 foreach ($folder in $includedFolders) {
   $folderPath = Join-Path $root $folder
   if (Test-Path -LiteralPath $folderPath) {
@@ -50,11 +50,26 @@ Get-ChildItem -LiteralPath $root -File | ForEach-Object {
   }
 }
 
+$requiredPatchFiles = @(
+  "app-runtime\server.js",
+  "companion\analyze.mjs",
+  "shared\scoring.mjs",
+  "version.json"
+)
+foreach ($requiredFile in $requiredPatchFiles) {
+  if (-not (Test-Path -LiteralPath (Join-Path $tempPatchDir $requiredFile))) {
+    throw "Patch çekirdek dosyası eksik: $requiredFile"
+  }
+}
+
 # 5. Create Patch ZIP Archive
 $patchZipPath = Join-Path $releaseDir "TRACER-Patch-v$version.zip"
 if (Test-Path -LiteralPath $patchZipPath) { Remove-Item -LiteralPath $patchZipPath -Force }
 
 Compress-Archive -Path "$tempPatchDir\*" -DestinationPath $patchZipPath -CompressionLevel Optimal -Force
+if (-not (Test-Path -LiteralPath $patchZipPath) -or (Get-Item -LiteralPath $patchZipPath).Length -le 0) {
+  throw "Patch ZIP oluşturulamadı veya boş: $patchZipPath"
+}
 Remove-Item -LiteralPath $tempPatchDir -Recurse -Force
 
 $sizeMb = [Math]::Round(((Get-Item $patchZipPath).Length / 1MB), 2)

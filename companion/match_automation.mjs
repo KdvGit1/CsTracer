@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { scoreMatchReport } from "../shared/scoring.mjs";
 
 export const MIN_DEMO_RETENTION = 3;
 export const MAX_DEMO_RETENTION = 50;
@@ -38,10 +39,6 @@ function round(value, decimals = 1) {
   return Math.round((Number(value) || 0) * scale) / scale;
 }
 
-function clampScore(value) {
-  return Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
-}
-
 function samePlayer(match, identity) {
   if (!identity) return true;
   if (identity.steamid && match?.playerSteamId) return String(match.playerSteamId) === String(identity.steamid);
@@ -50,51 +47,31 @@ function samePlayer(match, identity) {
 
 export function buildCompactSummaryFromReport(report) {
   if (!report || typeof report !== "object") return null;
-  const rounds = Math.max(1, Number(report.rounds) || 0);
   const kills = Number(report.kills) || 0;
   const deaths = Number(report.deaths) || 0;
   const assists = Number(report.assists) || 0;
-  const kd = kills / Math.max(1, deaths);
-  const aim = clampScore(
-    Math.min(100, (Number(report.headshotPercent) || 0) / 60 * 100) * 0.42
-    + Math.min(100, (Number(report.adr) || 0) / 90 * 100) * 0.36
-    + Math.min(100, kd / 1.25 * 100) * 0.22,
-  );
-  const movementPenalty = report.movementProfile?.severityScore ?? Math.min(100, (Number(report.movingShotPercent) || 0) * 2.2);
-  const movement = clampScore(100 - Number(movementPenalty || 0));
-  const utility = clampScore(
-    Math.min(100, (Number(report.utilityDamage) || 0) / rounds / 6 * 100) * 0.58
-    + Math.min(100, (Number(report.enemyBlindSeconds) || 0) / rounds / 1.5 * 100) * 0.42,
-  );
-  const teamwork = clampScore(
-    Math.min(100, (Number(report.tradePercent) || 0) / 55 * 100) * 0.68
-    + Math.min(100, assists / rounds / 0.28 * 100) * 0.32,
-  );
-  const zoneShare = deaths ? (Number(report.topZoneDeaths) || 0) / deaths * 100 : 0;
-  const openingDeathShare = rounds ? (Number(report.openingDeaths) || 0) / rounds * 100 : 0;
-  const position = clampScore(100 - Math.max(0, zoneShare - 20) * 0.9 - openingDeathShare * 1.5);
-  const roundImpact = clampScore(report.impact);
-  const dimensions = { aim, movement, utility, teamwork, position, roundImpact };
-  const overall = clampScore(aim * 0.24 + movement * 0.16 + utility * 0.14 + teamwork * 0.15 + position * 0.15 + roundImpact * 0.16);
+  const scorecard = scoreMatchReport(report);
 
   return {
-    overall,
-    dimensions,
+    overall: scorecard?.overall ?? null,
+    dimensions: scorecard?.dimensions || { aim: null, movement: null, utility: null, teamwork: null, position: null, roundImpact: null },
     stats: {
       kills,
       deaths,
       assists,
       adr: round(report.adr),
       headshotPercent: Number(report.headshotPercent) || 0,
-      tradePercent: Number(report.tradePercent) || 0,
+      tradePercent: report.tradePercent === null || report.tradePercent === undefined ? null : Number(report.tradePercent),
     },
     weapons: (Array.isArray(report.weaponStats) ? report.weaponStats : []).slice(0, 6).map((weapon) => ({
       weapon: String(weapon.weapon || ""),
       label: String(weapon.label || weapon.weapon || "Silah"),
-      score: Number(weapon.score) || 0,
+      score: weapon.score === null || weapon.score === undefined ? null : Number(weapon.score),
       kills: Number(weapon.kills) || 0,
       shots: Number(weapon.shots) || 0,
     })),
+    scoreMethod: scorecard?.method,
+    scoreSampleCount: scorecard?.sampleCount || 0,
   };
 }
 
@@ -102,14 +79,20 @@ export function performanceComparison({ summary = null, livePlayer = null, progr
   const history = (Array.isArray(progressMatches) ? progressMatches : [])
     .filter((match) => match?.id !== currentMatchId && samePlayer(match, identity));
   if (summary) {
-    const samples = history.map((match) => Number(match?.summary?.overall)).filter(Number.isFinite);
-    if (samples.length < 3) return { kind: "overall", value: summary.overall, sampleSize: samples.length, sufficient: false };
+    const overall = summary.overall === null || summary.overall === undefined ? null : Number(summary.overall);
+    if (overall === null || !Number.isFinite(overall)) return null;
+    const samples = history.map((match) => {
+      const value = match?.summary?.overall;
+      if (value === null || value === undefined || value === "") return Number.NaN;
+      return Number(value);
+    }).filter(Number.isFinite);
+    if (samples.length < 3) return { kind: "overall", value: overall, sampleSize: samples.length, sufficient: false };
     const baseline = round(samples.reduce((sum, value) => sum + value, 0) / samples.length);
     return {
       kind: "overall",
-      value: Number(summary.overall) || 0,
+      value: overall,
       baseline,
-      delta: round((Number(summary.overall) || 0) - baseline),
+      delta: round(overall - baseline),
       sampleSize: samples.length,
       sufficient: true,
     };
@@ -117,13 +100,14 @@ export function performanceComparison({ summary = null, livePlayer = null, progr
 
   const kills = Number(livePlayer?.kills) || 0;
   const deaths = Number(livePlayer?.deaths) || 0;
-  if (!livePlayer || (kills === 0 && deaths === 0)) return null;
-  const value = round(kills / Math.max(1, deaths), 2);
+  if (!livePlayer || deaths <= 0) return null;
+  const value = round(kills / deaths, 2);
   const samples = history
     .map((match) => {
       const stats = match?.summary?.stats;
-      if (!stats) return Number.NaN;
-      return (Number(stats.kills) || 0) / Math.max(1, Number(stats.deaths) || 0);
+      const sampleDeaths = Number(stats?.deaths);
+      if (!stats || !Number.isFinite(sampleDeaths) || sampleDeaths <= 0) return Number.NaN;
+      return (Number(stats.kills) || 0) / sampleDeaths;
     })
     .filter(Number.isFinite);
   if (samples.length < 3) return { kind: "kd", value, sampleSize: samples.length, sufficient: false };
@@ -222,6 +206,11 @@ export function enforceDemoRetention({ demosDir, matches = [], retentionCount, p
 }
 
 function cleanMatchMeta(match) {
+  const nullableNumber = (value) => {
+    if (value === null || value === undefined || value === "") return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
   return {
     id: String(match?.id || "").slice(0, 500),
     map: String(match?.map || "unknown").replace(/^de_/, "").slice(0, 80),
@@ -229,8 +218,8 @@ function cleanMatchMeta(match) {
     timestamp: safeTimestamp(match?.timestamp),
     formattedDate: String(match?.formattedDate || "").slice(0, 120),
     score: match?.score && typeof match.score === "object" ? {
-      userScore: Number(match.score.userScore) || 0,
-      enemyScore: Number(match.score.enemyScore) || 0,
+      userScore: nullableNumber(match.score.userScore),
+      enemyScore: nullableNumber(match.score.enemyScore),
       result: String(match.score.result || ""),
       rawScore: String(match.score.rawScore || ""),
     } : null,

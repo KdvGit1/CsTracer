@@ -46,6 +46,7 @@ foreach ($module in $essentialModules) {
 
 Copy-Item -LiteralPath (Join-Path $tracerRoot "companion") -Destination $releaseRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $tracerRoot "launcher") -Destination $releaseRoot -Recurse -Force
+Copy-Item -LiteralPath (Join-Path $tracerRoot "shared") -Destination $releaseRoot -Recurse -Force
 
 # Geliştiriciye özel betikler oyuncu paketine girmemeli
 $excludedLauncherFiles = @("publish-release.ps1", "create-patch.ps1", "download-embedded-ai.ps1", "package-portable.ps1", "sync-version-files.mjs")
@@ -111,6 +112,21 @@ if (Test-Path -LiteralPath (Join-Path $releaseRoot "data")) {
 $leakedSession = @(Get-ChildItem -LiteralPath $releaseRoot -Recurse -Filter "steam_session.json" -File -Force -ErrorAction SilentlyContinue)
 if ($leakedSession.Count -gt 0) {
   throw "GÜVENLİK HATASI: Pakete Steam oturum dosyası sızmış: $($leakedSession[0].FullName). Paketleme durduruldu."
+}
+
+$requiredPortableFiles = @(
+  "app-runtime\server.js",
+  "companion\analyze.mjs",
+  "shared\scoring.mjs",
+  "runtime\node.exe",
+  "node_modules\@laihoe\demoparser2-win32-x64-msvc\demoparser2.win32-x64-msvc.node",
+  "version.json",
+  "TRACER-Yerel.cmd"
+)
+foreach ($requiredFile in $requiredPortableFiles) {
+  if (-not (Test-Path -LiteralPath (Join-Path $releaseRoot $requiredFile))) {
+    throw "Portable çekirdek dosyası eksik: $requiredFile"
+  }
 }
 
 # Paket özeti

@@ -88,16 +88,15 @@ const sampleMetrics = [
 const sampleEvidence: { round: string; time: string; text: string; type: string }[] = [];
 
 function hasMeasuredTtd(stats?: DuelStats): boolean {
-  return stats?.ttdMethod === "spotted-to-first-damage-v1" && (stats.ttdSampleCount || 0) > 0;
+  return stats?.ttdMethod === "spotted-to-first-damage-v2" && stats.ttdStatus === "measured" && stats.medianTTD !== null;
 }
 
 function hasMeasuredDuels(stats?: DuelStats): boolean {
-  return stats?.duelMethod === "mutual-spotted-death-v1" && stats.duelTotal > 0;
+  return stats?.duelMethod === "mutual-spotted-death-v2" && stats.duelStatus === "measured" && stats.duelWinrate !== null;
 }
 
 
 export default function Home() {
-  const workerRef = useRef<Worker | null>(null);
   const [status, setStatus] = useState<ParseStatus>("idle");
   const [progress, setProgress] = useState(0);
   const [progressLabel, setProgressLabel] = useState("");
@@ -189,16 +188,9 @@ export default function Home() {
 
     return () => {
       cancelled = true;
-      workerRef.current?.terminate();
       clearInterval(heartbeatTimer);
     };
   }, []);
-
-  useEffect(() => {
-    if (activeView !== "live" && activeView !== "team") return;
-    workerRef.current?.terminate();
-    workerRef.current = null;
-  }, [activeView]);
 
   async function shutdownTracer() {
     if (!window.confirm("TRACER ve tüm arka plan servisleri tamamen kapatılsın mı?")) return;
@@ -276,10 +268,10 @@ export default function Home() {
   const coachConfidence = aiInsight?.confidence || coachPacket?.confidence;
   const coachCards = displayedCoachItems;
   const metrics = report ? [
-    { label: "K / D", value: `${report.kills} / ${report.deaths}`, delta: `${report.assists} asist`, tone: report.kills >= report.deaths ? "good" : "warn" },
-    { label: "ADR", value: report.adr.toFixed(1), delta: report.adr >= 75 ? "iyi" : "geliştir", tone: report.adr >= 75 ? "good" : "warn" },
-    { label: "HS", value: `%${report.headshotPercent}`, delta: `${report.openingKills}-${report.openingDeaths} opening`, tone: report.headshotPercent >= 45 ? "good" : "warn" },
-    { label: "Trade", value: `%${report.tradePercent}`, delta: `${report.untradedDeaths} çevrilmedi`, tone: report.tradePercent >= 45 ? "good" : "bad" },
+    { label: "K / D", value: `${report.kills} / ${report.deaths}`, delta: `${report.assists} asist`, tone: "" },
+    { label: "ADR", value: report.adr.toFixed(1), delta: "rakip hasarı", tone: "" },
+    { label: "HS", value: `%${report.headshotPercent}`, delta: `${report.openingKills}-${report.openingDeaths} opening`, tone: "" },
+    { label: "Trade", value: report.tradePercent === null ? "—" : `%${report.tradePercent}`, delta: report.deaths ? `${report.untradedDeaths} çevrilmedi` : "ölüm örneği yok", tone: "" },
   ] : sampleMetrics;
   const evidence = report ? report.deathDetails.slice(0, 3).map((item) => ({
     round: `R${String(item.round || 0).padStart(2, "0")}`,
@@ -326,29 +318,28 @@ export default function Home() {
   const tStats = report?.sideStats?.find((item) => item.side === "T");
   const weaponStats = report?.weaponStats || [];
   const strongestWeapon = weaponStats[0];
-  const developmentWeapon = [...weaponStats].filter((item) => item.shots >= 12 && item !== strongestWeapon).sort((a, b) => a.efficiency - b.efficiency || b.shots - a.shots)[0] || weaponStats[1];
-  const weakerSide = ctStats && tStats
-    ? ((ctStats.kills / Math.max(1, ctStats.deaths)) <= (tStats.kills / Math.max(1, tStats.deaths)) ? ctStats : tStats)
-    : ctStats || tStats;
+  const comparisonWeapon = [...weaponStats].filter((item) => item.shots >= 15 && item.efficiency !== null && item !== strongestWeapon).sort((a, b) => Number(a.efficiency) - Number(b.efficiency) || b.shots - a.shots)[0];
+  const measuredSides = [ctStats, tStats].filter((side): side is NonNullable<typeof side> => Boolean(side && side.rounds > 0 && side.adr !== null));
+  const comparisonSide = [...measuredSides].sort((a, b) => Number(a.adr) - Number(b.adr))[0];
   const primaryDevelopmentFinding = coachPacket?.priorities[0];
   const developmentSteps = report ? [
     {
       number: "01", duration: "15 dk", title: primaryDevelopmentFinding?.title || "Maçın en güçlü tekrarını düzelt",
       reason: primaryDevelopmentFinding?.evidence || "Kural motorunun öncelikli bulgusu.",
       work: primaryDevelopmentFinding?.action || "İlgili roundları sırayla incele ve tek davranış hedefi seç.",
-      success: primaryDevelopmentFinding?.id === "movement" ? "Sonraki maçta hızlı hareket ederken attığın mermi payını ve hareket hata ağırlığını düşür." : "Aynı hata kümesini sonraki demoda en az %30 azalt.",
+      success: "Sonraki demoda aynı yöntemle yeniden ölç ve ilgili round videosunda davranışın değiştiğini doğrula.",
     },
     {
-      number: "02", duration: "12 dk", title: developmentWeapon ? `${developmentWeapon.label} gelişim bloğu` : "Ana tüfek mekanik bloğu",
-      reason: developmentWeapon ? `${developmentWeapon.shots} atış, ${developmentWeapon.kills} kill, %${developmentWeapon.movingShotPercent} hareketli atış.` : "Silah örneği henüz yeterli değil.",
-      work: developmentWeapon?.movingShotPercent && developmentWeapon.movingShotPercent > 12 ? "Counter-strafe sonrası 3–5 mermilik burst çalış; her seride tamamen durduğunu kontrol et." : "İlk mermi, recoil reset ve orta mesafe spray transfer bloklarını ayrı çalış.",
-      success: developmentWeapon ? `${developmentWeapon.label} ile hareketli atış oranını düşürürken kill/atış verimini koru.` : "En az 30 kayıtlı atıştan sonra tekrar ölç.",
+      number: "02", duration: "12 dk", title: comparisonWeapon ? `${comparisonWeapon.label} karşılaştırma bloğu` : "Ana tüfek mekanik bloğu",
+      reason: comparisonWeapon ? `${comparisonWeapon.shots} atış, ${comparisonWeapon.kills} kill, ${comparisonWeapon.efficiency} hasar/atış${comparisonWeapon.movingShotPercent === null ? "; hareket ölçülemedi" : `, %${comparisonWeapon.movingShotPercent} sınır üstü hareket`}.` : "15+ atışlı ikinci bir silah örneği yok.",
+      work: "İlk mermi, recoil reset ve counter-strafe bloklarını ayrı çalış; sonra aynı silah çatışmalarını menzil ve satın alma bağlamıyla videoda incele.",
+      success: comparisonWeapon ? `${comparisonWeapon.label} hasar/atış ve max_speed tabanlı hareket oranını aynı yöntemle sonraki demoda karşılaştır.` : "15+ kayıtlı atıştan sonra tekrar ölç.",
     },
     {
-      number: "03", duration: "10 dk", title: weakerSide ? `${weakerSide.side} tarafı round incelemesi` : "CT/T taraf incelemesi",
-      reason: weakerSide ? `${weakerSide.kills}/${weakerSide.deaths} K/D · en yoğun ölüm ${weakerSide.topZone}.` : "Taraf ayrımı için yeni parser sonucu bekleniyor.",
-      work: weakerSide ? `${weakerSide.side} tarafındaki ilk üç ölümü izle; temas amacı, takım görüşü, utility ve kaçış rotasını not et.` : "Demoyu güncel yerel parser ile yeniden analiz et.",
-      success: weakerSide ? `${weakerSide.topZone} bölgesinde ikinci plansız teması tekrarlama.` : "CT ve T verisini ayrı oluştur.",
+      number: "03", duration: "10 dk", title: comparisonSide ? `${comparisonSide.side} tarafı round incelemesi` : "CT/T taraf incelemesi",
+      reason: comparisonSide ? `${comparisonSide.rounds} round · ${comparisonSide.adr} ADR · en yoğun ölüm ${comparisonSide.topZone}. Bu yalnız ölçülen taraflar içindeki düşük ADR karşılaştırmasıdır.` : "Taraf ayrımı için yeni parser sonucu bekleniyor.",
+      work: comparisonSide ? `${comparisonSide.side} tarafındaki ilk üç ölümü izle; temas amacı, takım görüşü, utility ve kaçış rotasını not et.` : "Demoyu güncel yerel parser ile yeniden analiz et.",
+      success: comparisonSide ? `${comparisonSide.topZone} roundlarını aynı kontrol listesiyle yeniden değerlendir.` : "CT ve T verisini ayrı oluştur.",
     },
   ] : [];
 
@@ -438,41 +429,6 @@ export default function Home() {
     setStatus("ready");
   }
 
-  async function analyzeInBrowser(file: File) {
-    workerRef.current?.terminate();
-    const worker = new Worker("/demo-worker.js");
-    workerRef.current = worker;
-    setProgressLabel("Uyumlu eski demo için tarayıcı parserı deneniyor");
-    return await new Promise<PlayerReport[]>((resolve, reject) => {
-      worker.onmessage = (message: MessageEvent) => {
-        const data = message.data;
-        if (data.type === "progress") {
-          setStatus("parsing");
-          setProgress(data.progress);
-          setProgressLabel(data.label);
-        } else if (data.type === "warning") {
-          setProgressLabel(data.label);
-        } else if (data.type === "done") {
-          worker.terminate();
-          resolve((data.reports || []) as PlayerReport[]);
-        } else if (data.type === "error") {
-          worker.terminate();
-          reject(new Error(String(data.message || "Demo çözümlenemedi")));
-        }
-      };
-      worker.onerror = (workerError) => {
-        worker.terminate();
-        reject(new Error(`Analiz worker'ı durdu: ${workerError.message}`));
-      };
-      void file.arrayBuffer().then((buffer) => {
-        worker.postMessage({ fileBytes: buffer }, [buffer]);
-      }).catch((readError) => {
-        worker.terminate();
-        reject(readError);
-      });
-    });
-  }
-
   async function analyzeFile(file: File) {
     setAiInsight(null);
     setFullMatchReport(null);
@@ -497,7 +453,6 @@ export default function Home() {
     setStatus("reading");
     setProgress(8);
     setProgressLabel("Demo yerel parsera aktarılıyor");
-    let companionReached = false;
     try {
       setStatus("parsing");
       setProgress(34);
@@ -507,27 +462,13 @@ export default function Home() {
         headers: { "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(file.name) },
         body: file,
       });
-      companionReached = true;
       const payload = await response.json() as { reports?: PlayerReport[]; error?: string };
       if (!response.ok) throw new Error(payload.error || `Yerel parser ${response.status} döndürdü`);
       applyReports(payload.reports || []);
       return;
     } catch (companionError) {
-      if (companionReached) {
-        setError(`Demo çözümlenemedi: ${companionError instanceof Error ? companionError.message : "Bilinmeyen parser hatası"}`);
-        setStatus("error");
-        return;
-      }
-    }
-    try {
-      const nextReports = await analyzeInBrowser(file);
-      applyReports(nextReports);
-    } catch (browserError) {
-      const rawMessage = browserError instanceof Error ? browserError.message : String(browserError);
-      const requiresCompanion = /EntityNotFound|LOCAL_PARSER_REQUIRED|FailedByteRead/i.test(rawMessage);
-      setError(requiresCompanion
-        ? "Bu güncel Valve demosu parser 0.42.0 gerektiriyor. D:\\CsTracker\\TRACER-Yerel.cmd dosyasını çalıştırıp tekrar dene."
-        : `Demo çözümlenemedi: ${rawMessage}`);
+      const rawMessage = companionError instanceof Error ? companionError.message : String(companionError);
+      setError(`Yerel parser zorunlu ve sentetik tarayıcı fallback'i kapalıdır. Portable klasöründeki TRACER-Yerel.cmd ile açıp yeniden dene. Ayrıntı: ${rawMessage}`);
       setStatus("error");
     }
   }
@@ -617,9 +558,10 @@ export default function Home() {
         sprayStats: report.sprayStats || null,
         duelStats: report.duelStats || null,
         economySummary: report.economyStats ? {
-          heroBuys: report.economyStats.roundEconomy.filter((r) => r.heroBuy).length,
-          ecoBuys: report.economyStats.roundEconomy.filter((r) => r.buyType === "Eco").length,
-          fullBuys: report.economyStats.roundEconomy.filter((r) => r.buyType === "Full Buy").length,
+          status: report.economyStats.status,
+          measuredRounds: report.economyStats.sampleCount,
+          averageStartMoney: report.economyStats.averageStartMoney,
+          totalCashSpent: report.economyStats.totalCashSpent,
         } : null,
         positionZones: coachPacket.positionZones.slice(0, 5),
         sideStats: report.sideStats || [],
@@ -646,8 +588,8 @@ export default function Home() {
     try {
       const messages = [
         { role: "system", content: useEmbeddedCoach
-          ? "Görev: Aşağıdaki demo kanıtından oyuncuya doğrudan ve ayrıntılı bir CS2 maç raporu yaz. Yanıt görev tanımını değil maçtaki sonucu anlatarak başlasın; başlıkta TRACER, model, koç veya analiz kelimelerini kullanma. deterministicAssessment ve kural kitabındaki bütün dalları karşılaştır; kanıtta olmayan sebebi kesinleştirme. Aim (Kafa ve Gövde sapması, Pre-Aim, ilk 3 mermi vs 4+ mermi sprey kontrolü), düello reaksiyonu (TTD), CT ve T, hareket, tüm ölüm bölgeleri, ortak ölüm koşulları, trade, utility, opening, silahlar ve genel etki arasından en önemli üç önceliği seç. Her öncelikte sayısal/round kanıtı, oyuncu için anlamı ve uygulanabilir çalışma/drill ver. Teknik terimin günlük Türkçe anlamını aynı cümlede açıkla. Küçük hareketi koşarak atışla eşitleme; tek maçtan kesin silah uzmanlığı ilan etme. strengths yalnızca deterministicAssessment.strengths içinde gerçekten bulunan güçlü alanlardan oluşsun; yoksa boş dizi olsun. sessionPlan süre, drill ve sonraki demoda ölçülecek başarı ölçütünü içersin. Önemli: Düşünme veya ek açıklama yapma. Doğrudan geçerli JSON ile yanıt ver."
-          : "Sen TRACER'ın CS2 koç editörüsün; hükmü deterministicAssessment ve kural kitabı verir. Veride olmayan pozisyonu, utility kullanımını, aim sebebini veya takım planını uydurma. Aim ve nişangah sapması (Kafa sapması, pre-aim, sprey dağılımı, TTD), CT ve T tarafını ayrı karşılaştır. Hata derecesini büyütme; küçük hareketi koşarak atışla eşitleme. Ortak ölüm özelliklerini round kanıtıyla özetle. Tek maçtan kesin silah uzmanlığı ilan etme. En fazla 3 öncelik, güçlü alanlar ve tek antrenman planı yaz. Teknik terim veya sayı kullandığında aynı cümlede günlük Türkçeyle anlamını açıkla. Sayıları yeniden sıralamak yerine oyuncu için ne anlama geldiğini söyle. Kısa, anlaşılır Türkçe kullan. Yalnızca istenen JSON alanlarını döndür." },
+          ? "Görev: Aşağıdaki demo kanıtından oyuncuya doğrudan ve ayrıntılı bir CS2 maç raporu yaz. Yanıt görev tanımını değil maçtaki sonucu anlatarak başlasın; başlıkta TRACER, model, koç veya analiz kelimelerini kullanma. deterministicAssessment ve kural kitabındaki bütün dalları karşılaştır; kanıtta olmayan sebebi kesinleştirme. Kill anı hizasını pre-aim diye adlandırma; approximate-spotted TTD'yi reaksiyon veya profesyonel seviye puanı yapma. bullet_damage ile ölçülen ilk 3/4+ mermi, max_speed tabanlı hareket, CT/T, ölüm bölgeleri, trade, utility, opening, silahlar ve KAST arasından yalnız doğrulanmış en önemli üç önceliği seç. Eksik/null metriği yorumlama ve ekonomi verisini puanlama. Her öncelikte sayısal/round kanıtı, oyuncu için anlamı ve uygulanabilir çalışma/drill ver. strengths yalnızca deterministicAssessment.strengths içinde bulunan alanlardan oluşsun. Doğrudan geçerli JSON döndür."
+          : "Sen TRACER'ın CS2 koç editörüsün; hükmü deterministicAssessment ve kural kitabı verir. Veride olmayan sebebi uydurma. Kill anı hizası pre-aim değildir; approximate-spotted TTD profesyonel reaksiyon puanı değildir; ekonomi yalnız bilgi tablosudur. Null/ölçülemedi metriği yorumlama. En fazla 3 doğrulanmış öncelik, güçlü alanlar ve tek antrenman planı yaz. Kısa, anlaşılır Türkçe ve yalnız istenen JSON alanlarını döndür." },
         { role: "user", content: `KURAL KİTABI VE MAÇ KANITI:\n${JSON.stringify(fullCoachInput)}` },
       ];
 
@@ -962,7 +904,7 @@ export default function Home() {
               title="Full Maç Koçluk Raporunu Aç"
             >
               <IconSparkles size={12} style={{ marginRight: "4px", display: "inline-block", verticalAlign: "middle" }} />
-              {fullMatchReport.matchScorecard.overallScore}/100 Karne ({fullMatchReport.matchScorecard.grade})
+              {fullMatchReport.matchScorecard.overallScore === null ? "KAST ölçülemedi" : `%${fullMatchReport.matchScorecard.overallScore} KAST`}
             </button>
           )}
         </div>
@@ -1008,25 +950,25 @@ export default function Home() {
             </article>
           ))}
           <article className="metric-card focus-score">
-            <span>Maç etkisi</span>
-            <div><strong>{report?.impact ?? "—"}</strong><small>/100</small></div>
+            <span>KAST round katkısı</span>
+            <div><strong>{report?.kastPercent ?? "—"}</strong><small>%</small></div>
             <div className="score-line"><i style={{ width: `${report?.impact ?? 0}%` }} /></div>
           </article>
         </div>
 
         <section className="side-analysis" id="side-analysis">
-          <div className="section-title-row"><div><p className="eyebrow">CT / T AYRIMI</p><h2>İki taraf, iki farklı oyun problemi</h2></div><span>{report?.sideStats?.length ? "Gerçek taraf verisi" : "Yeni parser analizi gerekli"}</span></div>
+          <div className="section-title-row"><div><p className="eyebrow">CT / T AYRIMI</p><h2>İki taraf, ayrı round paydaları</h2></div><span>{report?.sideStats?.length ? "Gerçek taraf verisi" : "Yeni parser analizi gerekli"}</span></div>
           {report ? <div className="side-grid">
             {([ctStats, tStats] as (SideStat | undefined)[]).map((side, index) => {
               const sideName = index === 0 ? "CT" : "T";
               return <article className={`side-card ${sideName.toLowerCase()}`} key={sideName}>
                 <header><span>{sideName}</span><div><b>{sideName === "CT" ? "Savunma tarafı" : "Hücum tarafı"}</b><small>{side ? `${side.rounds} gözlenen round` : "Demo yeniden analiz edildiğinde dolar"}</small></div></header>
-                <div className="side-metrics"><div><span>K / D</span><b>{side ? `${side.kills} / ${side.deaths}` : "—"}</b></div><div><span>ADR</span><b>{side?.adr ?? "—"}</b></div><div><span>Trade</span><b>{side ? `%${side.tradePercent}` : "—"}</b></div><div><span>Hareketli atış</span><b>{side ? `%${side.movingShotPercent}` : "—"}</b></div></div>
+                <div className="side-metrics"><div><span>K / D</span><b>{side ? `${side.kills} / ${side.deaths}` : "—"}</b></div><div><span>ADR</span><b>{side?.adr ?? "—"}</b></div><div><span>Trade</span><b>{side?.tradePercent === null || side?.tradePercent === undefined ? "—" : `%${side.tradePercent}`}</b></div><div><span>Sınır üstü atış</span><b>{side?.movingShotPercent === null || side?.movingShotPercent === undefined ? "—" : `%${side.movingShotPercent}`}</b></div></div>
                 <footer><span>En çok öldüğün bölge</span><b>{side ? `${side.topZone} · ${side.topZoneDeaths}` : "—"}</b></footer>
               </article>;
             })}
           </div> : <div className="section-empty"><b>CT/T değerlendirmesi için demo gerekli</b><span>Demosuz ekranda taraf istatistiği veya örnek sonuç gösterilmez.</span></div>}
-          {report && <p className="data-caveat">Taraf ADR’sindeki round sayısı oyuncunun olay ürettiği roundlardan hesaplanır. Sessiz roundlar nedeniyle genel ADR kadar kesin olmayabilir; K/D ve ölüm bölgeleri doğrudan olay kaydıdır.</p>}
+          {report && <p className="data-caveat">Taraf round sayıları freeze/end tick aralıklarındaki gerçek takım bilgisinden hesaplanır; sessiz roundlar da paydaya dahildir.</p>}
         </section>
 
         <div className="dashboard-grid">
@@ -1046,7 +988,7 @@ export default function Home() {
                 ))}
               </div>
               {report.movementProfile && <section className="movement-spectrum">
-                <header><div><span>ATIŞ HIZI PROFİLİ</span><b>Ortalama {report.movementProfile.averageSpeed} u/s · P90 hız eşiği {report.movementProfile.p90Speed} u/s</b></div><em className={`severity-badge ${coachPacket.findings.find((item) => item.id === "movement")?.severity || "info"}`}>{report.movementProfile.severityScore}/100 hata ağırlığı</em></header>
+                <header><div><span>ATIŞ HIZI PROFİLİ</span><b>{report.movementProfile.status === "measured" ? `Ortalama ${report.movementProfile.averageSpeed} u/s · P90 ${report.movementProfile.p90Speed} u/s` : "Hız / max_speed ölçülemedi"}</b></div><em className={`severity-badge ${coachPacket.findings.find((item) => item.id === "movement")?.severity || "info"}`}>{report.movementProfile.status === "measured" ? `%${report.movementProfile.invalidShotPercent} sınır üstü` : "Ölçülemedi"}</em></header>
                 <div className="movement-bands">
                   {[
                     { label: "Sabit", range: "≤15", percent: report.movementProfile.stablePercent, className: "stable" },
@@ -1066,10 +1008,10 @@ export default function Home() {
                 </>}
                 {report.movementProfile.byCategory && (
                   <div className="weapon-movement-grid">
-                    <div className="w-cat-box"><span>Tüfekler (AK/M4)</span><b>%{report.movementProfile.byCategory.rifle?.movingPercent ?? 0}</b><small>{report.movementProfile.byCategory.rifle?.shots ?? 0} atış (Katı Duruş)</small></div>
-                    <div className="w-cat-box"><span>Sniper (AWP/SSG)</span><b>%{report.movementProfile.byCategory.sniper?.movingPercent ?? 0}</b><small>{report.movementProfile.byCategory.sniper?.shots ?? 0} atış (Sıfır Tolerans)</small></div>
-                    <div className="w-cat-box"><span>Tabancalar</span><b>%{report.movementProfile.byCategory.pistol?.movingPercent ?? 0}</b><small>{report.movementProfile.byCategory.pistol?.shots ?? 0} atış (Orta Tolerans)</small></div>
-                    <div className="w-cat-box"><span>Hafif Makineli (SMG)</span><b>%{report.movementProfile.byCategory.smg?.movingPercent ?? 0}</b><small>{report.movementProfile.byCategory.smg?.shots ?? 0} atış (Doğal Run&Gun)</small></div>
+                    <div className="w-cat-box"><span>Tüfekler (AK/M4)</span><b>%{report.movementProfile.byCategory.rifle?.movingPercent ?? 0}</b><small>{report.movementProfile.byCategory.rifle?.shots ?? 0} ölçüm · max_speed %34</small></div>
+                    <div className="w-cat-box"><span>Sniper (AWP/SSG)</span><b>%{report.movementProfile.byCategory.sniper?.movingPercent ?? 0}</b><small>{report.movementProfile.byCategory.sniper?.shots ?? 0} ölçüm · max_speed %34</small></div>
+                    <div className="w-cat-box"><span>Tabancalar</span><b>%{report.movementProfile.byCategory.pistol?.movingPercent ?? 0}</b><small>{report.movementProfile.byCategory.pistol?.shots ?? 0} ölçüm · max_speed %34</small></div>
+                    <div className="w-cat-box"><span>Hafif Makineli (SMG)</span><b>%{report.movementProfile.byCategory.smg?.movingPercent ?? 0}</b><small>{report.movementProfile.byCategory.smg?.shots ?? 0} ölçüm · max_speed %34</small></div>
                   </div>
                 )}
               </section>}
@@ -1383,25 +1325,25 @@ export default function Home() {
         </div>
 
         <section className="weapon-profile" id="weapon-profile">
-          <div className="section-title-row"><div><p className="eyebrow">SİLAH UZMANLIĞI</p><h2>Hangi silahın taşıyor, hangisi seni yavaşlatıyor?</h2><p>Tek maç “uzmanım” demek için yetmez; TRACER bu maçtan uzmanlık ve gelişim adayları çıkarır.</p></div><span>{weaponStats.length ? `${weaponStats.length} silah ölçüldü` : "Demo verisi bekleniyor"}</span></div>
+          <div className="section-title-row"><div><p className="eyebrow">SİLAH OLAYLARI</p><h2>Kill, hasar, atış ve hareket örnekleri</h2><p>Tek maç uzmanlık göstermez; değerler yalnız bu demodaki doğrudan olayların karşılaştırmasıdır.</p></div><span>{weaponStats.length ? `${weaponStats.length} silah ölçüldü` : "Demo verisi bekleniyor"}</span></div>
           {report ? <><div className="weapon-highlights">
-            <article className="weapon-hero strong"><span>BU MAÇTAKİ GÜÇLÜ SİLAH</span><h3>{strongestWeapon?.label || "—"}</h3><p>{strongestWeapon ? `${strongestWeapon.kills} kill · ${strongestWeapon.damage} hasar · %${strongestWeapon.headshotPercent} HS` : "Gerçek silah olayları analiz edildiğinde görünür."}</p><div><i style={{ width: `${strongestWeapon?.score || 0}%` }}/></div><small>{strongestWeapon ? `${strongestWeapon.score}/100 maç içi kanıt skoru` : "Örnek istatistik gösterilmiyor"}</small></article>
-            <article className="weapon-hero develop"><span>GELİŞİM ADAYI</span><h3>{developmentWeapon?.label || "—"}</h3><p>{developmentWeapon ? `${developmentWeapon.shots} atış · ${developmentWeapon.kills} kill · %${developmentWeapon.movingShotPercent} hareketli atış` : "Yeterli ikinci silah örneği yok."}</p><b>{developmentWeapon ? (developmentWeapon.movingShotPercent > 12 ? "Önce duruş ve ilk burst" : "İlk mermi ve recoil reset") : "Yeni demo bekleniyor"}</b><small>Bu öneri kullanım hacmi ve verime göre seçilir.</small></article>
+            <article className="weapon-hero strong"><span>EN ÇOK KILL ÜRETİLEN SİLAH</span><h3>{strongestWeapon?.label || "—"}</h3><p>{strongestWeapon ? `${strongestWeapon.kills} kill · ${strongestWeapon.damage} hasar · %${strongestWeapon.headshotPercent} HS` : "Gerçek silah olayları analiz edildiğinde görünür."}</p><div><i style={{ width: `${Math.min(100, strongestWeapon?.efficiency ?? 0)}%` }}/></div><small>{strongestWeapon ? `${strongestWeapon.efficiency ?? "—"} hasar/atış · birleşik puan değildir` : "Örnek istatistik gösterilmiyor"}</small></article>
+            <article className="weapon-hero develop"><span>15+ ATIŞTA EN DÜŞÜK HASAR/ATIŞ</span><h3>{comparisonWeapon?.label || "—"}</h3><p>{comparisonWeapon ? `${comparisonWeapon.shots} atış · ${comparisonWeapon.kills} kill · ${comparisonWeapon.efficiency} hasar/atış` : "15+ atışlı ikinci silah örneği yok."}</p><b>{comparisonWeapon?.movingShotPercent === null || comparisonWeapon?.movingShotPercent === undefined ? "Hareket ölçülemedi" : `%${comparisonWeapon.movingShotPercent} max_speed sınırı üstü`}</b><small>İyi/kötü puanı değildir; menzil, rol ve satın alma bağlamı videoda doğrulanmalıdır.</small></article>
           </div>
           <div className="weapon-table" role="table" aria-label="Silah performansı">
             <div className="weapon-table-head" role="row"><span>Silah</span><span>Kill</span><span>Hasar</span><span>Atış</span><span>HS</span><span>Hareketli</span><span>Durum</span></div>
-            {weaponStats.map((weapon) => <div className="weapon-row" role="row" key={weapon.weapon}><b>{weapon.label}</b><span>{weapon.kills}</span><span>{weapon.damage}</span><span>{weapon.shots}</span><span>%{weapon.headshotPercent}</span><span>%{weapon.movingShotPercent}</span><em className={weapon.status}>{weapon.status === "signature" ? "Uzmanlık adayı" : weapon.status === "strong" ? "Güçlü" : weapon.status === "developing" ? "Geliştir" : "Az örnek"}</em></div>)}
+            {weaponStats.map((weapon) => <div className="weapon-row" role="row" key={weapon.weapon}><b>{weapon.label}</b><span>{weapon.kills}</span><span>{weapon.damage}</span><span>{weapon.shots}</span><span>%{weapon.headshotPercent}</span><span>{weapon.movingShotPercent === null ? "—" : `%${weapon.movingShotPercent}`}</span><em className={weapon.status}>{weapon.status === "large-sample" ? "40+ atış" : weapon.status === "measured" ? "15+ atış" : "Az örnek"}</em></div>)}
             {!weaponStats.length && <div className="weapon-empty">Silah bazlı kill, hasar ve atış verisi için demoyu güncel yerel parser ile analiz et.</div>}
-          </div></> : <div className="section-empty"><b>Silah profili için demo gerekli</b><span>Güçlü silah, gelişim adayı ve tablo yalnızca gerçek silah olaylarından üretilecek.</span></div>}
+          </div></> : <div className="section-empty"><b>Silah olayları için demo gerekli</b><span>Karşılaştırma ve tablo yalnızca gerçek silah olaylarından üretilecek.</span></div>}
         </section>
 
-        {/* 1 & 5. NİŞANGAH SAPMASI, PRE-AIM & HITBOX DAĞILIMI */}
+        {/* KILL ANI NİŞANGAH HİZASI & HITBOX DAĞILIMI */}
         <section className="aim-precision-section" id="aim-precision">
           <div className="section-title-row">
             <div>
               <p className="eyebrow">NİŞANGAH & İSABET DERİNLİĞİ</p>
-              <h2>Kafa Sapması, Gövde Sapması ve İnsan Hedef Hitbox Dağılımı</h2>
-              <p>Temas anlarında crosshair’in kafa seviyesinden sapması ve hedef insan maketi üstünde mermilerin vücut bölgelerine dağılımı.</p>
+              <h2>Kill Anı Kafa/Gövde Açısı ve Hitbox Dağılımı</h2>
+              <p>Açı yalnız öldürme tick’inde ölçülür; pre-aim veya ilk görünür temas metriği değildir.</p>
             </div>
             <span>{report?.crosshairStats ? `${report.crosshairStats.headLevelRating}` : "Demo bekleniyor"}</span>
           </div>
@@ -1411,12 +1353,12 @@ export default function Home() {
             <article className="aim-stat-card mannequin-card">
               <header>
                 <span>HEDEF İNSAN MAKETİ (HITBOX SİLUETİ)</span>
-                <small>{report?.sprayStats ? `${report.sprayStats.totalHits} İsabetli Mermi` : "Demo analizi bekleniyor"}</small>
+                <small>{report?.sprayStats ? `${report.sprayStats.hitboxSampleCount ?? Object.values(report.sprayStats.hitboxCounts).reduce((sum, count) => sum + count, 0)} Hitgroup Örneği` : "Demo analizi bekleniyor"}</small>
               </header>
               <HitboxMannequin
                 counts={report?.sprayStats?.hitboxCounts}
                 percents={report?.sprayStats?.hitboxPercents}
-                totalHits={report?.sprayStats?.totalHits}
+                totalHits={report?.sprayStats ? (report.sprayStats.hitboxSampleCount ?? Object.values(report.sprayStats.hitboxCounts).reduce((sum, count) => sum + count, 0)) : 0}
               />
             </article>
 
@@ -1427,72 +1369,34 @@ export default function Home() {
                   <em className="rating-pill">{report?.crosshairStats?.headLevelRating || "Hazır"}</em>
                 </header>
                 {(() => {
-                  const headAngle = report?.crosshairStats?.headErrorAngle ?? 0;
-                  const bodyAngle = report?.crosshairStats?.bodyErrorAngle ?? 0;
+                  const headAngle = report?.crosshairStats?.headErrorAngle ?? null;
+                  const bodyAngle = report?.crosshairStats?.bodyErrorAngle ?? null;
                   const headTier = getAngleTier(headAngle, "head");
                   const bodyTier = getAngleTier(bodyAngle, "body");
-                  const pointerLeftPercent = Math.min(96, Math.max(4, (headAngle / 10) * 100));
 
                   return (
                     <>
                       <div className="deviation-metrics">
                         <div className="dev-box">
                           <span>Kafa Sapması</span>
-                          <b>{headAngle}°</b>
+                          <b>{headAngle === null ? "—" : `${headAngle}°`}</b>
                           <em className={`tier-badge ${headTier.tone}`}>{headTier.label}</em>
                           <small>{headTier.hint}</small>
                         </div>
                         <div className="dev-box">
                           <span>Gövde Sapması</span>
-                          <b>{bodyAngle}°</b>
+                          <b>{bodyAngle === null ? "—" : `${bodyAngle}°`}</b>
                           <em className={`tier-badge ${bodyTier.tone}`}>{bodyTier.label}</em>
                           <small>{bodyTier.hint}</small>
                         </div>
                         <div className="dev-box highlight">
-                          <span>Pre-Aim Skoru</span>
-                          <b>{report?.crosshairStats?.preAimScore ?? 0}<i>/100</i></b>
-                          <em className="tier-badge good">Kafa Seviyesi</em>
-                          <small>Açı yerleşim kalitesi</small>
+                          <span>GEÇERLİ KILL ÖRNEĞİ</span>
+                          <b>{report?.crosshairStats?.sampleCount ?? 0}</b>
+                          <em className="tier-badge normal">Bilgi metriği</em>
+                          <small>{report?.crosshairStats?.method || "kill-tick-alignment-v2"}</small>
                         </div>
                       </div>
-
-                      <div className="angle-spectrum-container">
-                        <div className="spectrum-head">
-                          <span>Kafa Açı Sapması Spektrumu</span>
-                          <b className={headTier.tone}>{headAngle}° · {headTier.label} ({headTier.range})</b>
-                        </div>
-                        <div className="spectrum-track-wrap">
-                          <div className="spectrum-pointer" style={{ left: `${pointerLeftPercent}%` }}>
-                            <div className="spectrum-pointer-tag">{headAngle}°</div>
-                            <div className="spectrum-pointer-arrow" />
-                          </div>
-                          <div className="spectrum-bar">
-                            <div className="spectrum-seg pro" title="Pro Seviye (<3.5°)" />
-                            <div className="spectrum-seg good" title="İyi (3.5°-5.0°)" />
-                            <div className="spectrum-seg normal" title="Normal (5.1°-7.0°)" />
-                            <div className="spectrum-seg poor" title="Geliştirilmeli (>7.0°)" />
-                          </div>
-                          <div className="spectrum-scale">
-                            <span>0° (Kusursuz)</span>
-                            <span>3.5° (Pro)</span>
-                            <span>5.0° (İyi)</span>
-                            <span>7.0° (Normal)</span>
-                            <span>10°+</span>
-                          </div>
-                        </div>
-
-                        <div className="angle-guide-grid">
-                          <div className="guide-item"><span className="pro">PRO</span><small>&lt; 3.5°</small></div>
-                          <div className="guide-item"><span className="good">İYİ</span><small>3.5°-5.0°</small></div>
-                          <div className="guide-item"><span className="normal">NORMAL</span><small>5.1°-7.0°</small></div>
-                          <div className="guide-item"><span className="poor">ZAYIF</span><small>&gt; 7.0°</small></div>
-                        </div>
-                      </div>
-
-                      <div className="dev-bar-wrap">
-                        <div className="dev-bar-label"><span>Kafa Hizası Tutarlılığı</span><b>%{report?.crosshairStats?.preAimScore ?? 0}</b></div>
-                        <div className="dev-bar-track"><i style={{ width: `${report?.crosshairStats?.preAimScore ?? 0}%` }} /></div>
-                      </div>
+                      <p className="data-caveat">Harita geometrisi/raycast bulunmadığı için bu açıdan iyi-kötü, pre-aim veya profesyonel seviye sonucu çıkarılmaz.</p>
                     </>
                   );
                 })()}
@@ -1504,10 +1408,10 @@ export default function Home() {
                   <small>{report?.sprayStats ? `${report.sprayStats.totalShots} Toplam Mermi` : "Demo bekleniyor"}</small>
                 </header>
                 {(() => {
-                  const acc = report?.sprayStats?.accuracyPercent || 0;
-                  const early = report?.sprayStats?.earlyAccuracy || 0;
-                  const late = report?.sprayStats?.lateAccuracy || 0;
-                  const headShare = report?.sprayStats?.hitboxPercents.head || 0;
+                  const acc = report?.sprayStats?.accuracyPercent ?? null;
+                  const early = report?.sprayStats?.earlyAccuracy ?? null;
+                  const late = report?.sprayStats?.lateAccuracy ?? null;
+                  const headShare = report?.sprayStats ? report.sprayStats.hitboxPercents.head : null;
 
                   const accTier = getSprayTier(acc, "overall");
                   const earlyTier = getSprayTier(early, "early");
@@ -1519,36 +1423,31 @@ export default function Home() {
                       <div className="spray-efficiency-box">
                         <div>
                           <span>Genel İsabet</span>
-                          <b>%{acc}</b>
+                          <b>{acc === null ? "—" : `%${acc}`}</b>
                           <em className={`tier-badge ${accTier.tone}`}>{accTier.label}</em>
-                          <small>{report?.sprayStats?.totalHits || 0} isabetli vuruş</small>
+                          <small>{report?.sprayStats ? (report.sprayStats.hitboxSampleCount ?? Object.values(report.sprayStats.hitboxCounts).reduce((sum, count) => sum + count, 0)) : 0} hitgroup örneği</small>
                         </div>
                         <div>
                           <span>İlk 3 Mermi İsabeti</span>
-                          <b>%{early}</b>
+                          <b>{early === null ? "—" : `%${early}`}</b>
                           <em className={`tier-badge ${earlyTier.tone}`}>{earlyTier.label}</em>
                           <small>{earlyTier.hint}</small>
                         </div>
                         <div>
                           <span>4+ Mermi Sprey İsabeti</span>
-                          <b>%{late}</b>
+                          <b>{late === null ? "—" : `%${late}`}</b>
                           <em className={`tier-badge ${lateTier.tone}`}>{lateTier.label}</em>
                           <small>{lateTier.hint}</small>
                         </div>
                         <div>
                           <span>Kafa Vuruş Payı</span>
-                          <b>%{headShare}</b>
+                          <b>{headShare === null ? "—" : `%${headShare}`}</b>
                           <em className={`tier-badge ${headShareTier.tone}`}>{headShareTier.label}</em>
                           <small>{headShareTier.hint}</small>
                         </div>
                       </div>
 
-                      <div className="angle-guide-grid" style={{ marginTop: "8px", marginBottom: "8px" }}>
-                        <div className="guide-item"><span className="pro">PRO</span><small>%50+ Burst / %35+ Sprey</small></div>
-                        <div className="guide-item"><span className="good">İYİ</span><small>%40+ Burst / %25+ Sprey</small></div>
-                        <div className="guide-item"><span className="normal">NORMAL</span><small>%28+ Burst / %16+ Sprey</small></div>
-                        <div className="guide-item"><span className="poor">ZAYIF</span><small>&lt; %28 Burst</small></div>
-                      </div>
+                      <p className="data-caveat">İsabetler bullet_damage saldırı tick’iyle eşleştirilir. Olay yoksa player_hurt zaman yakınlığıyla tahmin yapılmaz.</p>
 
                       <div className="hitbox-bars">
                         <div className="hb-row"><span>Kafa (Head)</span><i><em style={{ width: `${report?.sprayStats?.hitboxPercents.head || 0}%` }} /></i><b>%{report?.sprayStats?.hitboxPercents.head || 0} ({report?.sprayStats?.hitboxCounts.head || 0})</b></div>
@@ -1583,7 +1482,7 @@ export default function Home() {
               <p>Yaklaşık görünür temasın ilk hasara dönüşme hızı ve iki rakibin birbirini gördüğü düelloların sonucu.</p>
             </div>
             <span>
-              {report?.duelStats?.ttdMethod !== "spotted-to-first-damage-v1"
+              {report?.duelStats?.ttdMethod !== "spotted-to-first-damage-v2"
                 ? report?.duelStats ? "Eski analiz · yeniden analiz et" : "Demo bekleniyor"
                 : report.duelStats.reactionRating}
             </span>
@@ -1600,7 +1499,7 @@ export default function Home() {
                 <p>
                   {hasMeasuredTtd(report.duelStats)
                     ? `${report.duelStats?.ttdSampleCount} geçerli görünür temas · ortalama ${report.duelStats?.averageTTD} ms.`
-                    : report.duelStats?.ttdMethod === "spotted-to-first-damage-v1"
+                    : report.duelStats?.ttdMethod === "spotted-to-first-damage-v2"
                       ? "Bu maçta güvenilir TTD üretmeye yetecek görünür temas bulunamadı."
                       : "Bu rapor eski hesaplama yöntemiyle oluşturulmuş; doğru TTD için maçı yeniden analiz et."}
                 </p>
@@ -1613,7 +1512,7 @@ export default function Home() {
                 <p>
                   {hasMeasuredDuels(report.duelStats)
                     ? `${report.duelStats?.duelWins} galibiyet · ${report.duelStats?.duelLosses || 0} mağlubiyet · ${report.duelStats?.duelTotal} sonuçlanan düello`
-                    : report.duelStats?.duelMethod === "mutual-spotted-death-v1"
+                    : report.duelStats?.duelMethod === "mutual-spotted-death-v2"
                       ? "Ölümle sonuçlanan karşılıklı görünür düello bulunamadı."
                       : "Eski kill/death oranı gösterilmiyor; maçı yeniden analiz et."}
                 </p>
@@ -1621,7 +1520,7 @@ export default function Home() {
               </article>
 
               <article className="duel-hero-card">
-                <span>YILDIRIM REAKSİYONLAR (&lt;250ms)</span>
+                <span>250 MS VE ALTI ÖLÇÜMLER</span>
                 <h3>
                   {hasMeasuredTtd(report.duelStats) ? report.duelStats?.fastReactions : "—"}
                   {hasMeasuredTtd(report.duelStats) && <i> kez</i>}
@@ -1638,25 +1537,25 @@ export default function Home() {
           )}
         </section>
 
-        {/* 2. EKONOMİ & HARCAMA DİSİPLİNİ */}
+        {/* EKONOMİ BİLGİ TABLOSU — PUANLANMAZ */}
         <section className="economy-section" id="economy-view">
           <div className="section-title-row">
             <div>
-              <p className="eyebrow">EKONOMİ VE HARCAMA DİSİPLİNİ</p>
-              <h2>Rauntluk Bakiye ve Satın Alma Stratejisi</h2>
-              <p>Eco, Force ve Full Buy rauntlarındaki harcama disiplini ve takım uyumu.</p>
+              <p className="eyebrow">EKONOMİ BİLGİ TABLOSU · PUANLANMAZ</p>
+              <h2>Round Başlangıcı Bakiye ve Harcama</h2>
+              <p>Yalnız demoda ölçülen oyuncu parası gösterilir; takım uyumu veya hero-buy hükmü üretilmez.</p>
             </div>
-            <span>{report?.economyStats ? `$${report.economyStats.totalCashSpent.toLocaleString()} Harcandı` : "Demo bekleniyor"}</span>
+            <span>{report?.economyStats?.totalCashSpent === null || report?.economyStats?.totalCashSpent === undefined ? "Ölçüm bekleniyor" : `$${report.economyStats.totalCashSpent.toLocaleString()} ölçülen harcama`}</span>
           </div>
 
           {report?.economyStats ? (
             <>
               <div className="economy-summary-cards">
-                <article className="eco-card"><span>ORTALAMA BAŞLANGIÇ PARASI</span><b>${report.economyStats.averageStartMoney}</b></article>
-                <article className="eco-card"><span>TOPLAM HARCANAN</span><b>${report.economyStats.totalCashSpent.toLocaleString()}</b></article>
-                <article className="eco-card"><span>ECO RAUNT SAYISI</span><b>{report.economyStats.ecoRounds} Raunt</b></article>
-                <article className="eco-card"><span>FORCE BUY SAYISI</span><b>{report.economyStats.forceRounds} Raunt</b></article>
-                <article className="eco-card"><span>FULL BUY SAYISI</span><b>{report.economyStats.fullBuyRounds} Raunt</b></article>
+                <article className="eco-card"><span>ORTALAMA BAŞLANGIÇ PARASI</span><b>{report.economyStats.averageStartMoney === null ? "—" : `$${report.economyStats.averageStartMoney}`}</b></article>
+                <article className="eco-card"><span>TOPLAM ÖLÇÜLEN HARCAMA</span><b>{report.economyStats.totalCashSpent === null ? "—" : `$${report.economyStats.totalCashSpent.toLocaleString()}`}</b></article>
+                <article className="eco-card"><span>DÜŞÜK HARCAMA (≤$1000)</span><b>{report.economyStats.ecoRounds} Round</b></article>
+                <article className="eco-card"><span>ORTA HARCAMA (≤$2800)</span><b>{report.economyStats.forceRounds} Round</b></article>
+                <article className="eco-card"><span>YÜKSEK HARCAMA</span><b>{report.economyStats.fullBuyRounds} Round</b></article>
               </div>
 
               <div className="economy-rounds-table" role="table" aria-label="Rauntluk Ekonomi">
@@ -1671,11 +1570,11 @@ export default function Home() {
                 {report.economyStats.roundEconomy.map((eco) => (
                   <div className="eco-table-row" role="row" key={`eco-r-${eco.round}`}>
                     <b>R{String(eco.round).padStart(2, "0")}</b>
-                    <span>${eco.startMoney}</span>
-                    <span>${eco.spentMoney}</span>
-                    <span>${eco.endMoney}</span>
+                    <span>{eco.startMoney === null ? "—" : `$${eco.startMoney}`}</span>
+                    <span>{eco.spentMoney === null ? "—" : `$${eco.spentMoney}`}</span>
+                    <span>{eco.endMoney === null ? "—" : `$${eco.endMoney}`}</span>
                     <em className={`buy-pill ${eco.buyType.toLowerCase().replace(/\s+/g, "-")}`}>{eco.buyType}</em>
-                    <span>{eco.heroBuy ? <b className="hero-buy-warning"><IconWarning size={12} /> Hero Buy</b> : "Uyumlu"}</span>
+                    <span>{eco.status === "measured" ? "Ölçüldü" : "Veri yok"}</span>
                   </div>
                 ))}
               </div>

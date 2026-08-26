@@ -63,12 +63,12 @@ export interface ScannedMatchItem {
     kills: number;
     deaths: number;
     assists: number;
-    kd: number;
+    kd: number | null;
     hsPercent: number;
     score?: number;
     ping?: number;
     stars?: string;
-    counterStrafePercent?: number;
+    counterStrafePercent?: number | null;
     adr?: number;
   };
   players?: MatchPlayerSummary[];
@@ -667,8 +667,8 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
                 <div className="match-stats-grid">
                   <div className="stat-box">
                     <span className="stat-label">K/D</span>
-                    <span className={`stat-val ${match.userStats.kd >= 1.2 ? "good" : match.userStats.kd >= 0.9 ? "mid" : "bad"}`}>
-                      {match.userStats.kd}
+                    <span className="stat-val">
+                      {match.userStats.kd ?? "—"}
                     </span>
                   </div>
 
@@ -681,15 +681,15 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
 
                   <div className="stat-box">
                     <span className="stat-label">KAFA (HS)</span>
-                    <span className={`stat-val ${match.userStats.hsPercent >= 50 ? "good" : match.userStats.hsPercent >= 35 ? "mid" : "bad"}`}>
+                    <span className="stat-val">
                       %{match.userStats.hsPercent}
                     </span>
                   </div>
 
-                  {isDownloaded && match.userStats.counterStrafePercent ? (
+                  {isDownloaded && Number.isFinite(match.userStats.counterStrafePercent) ? (
                     <div className="stat-box">
                       <span className="stat-label">DURUŞ</span>
-                      <span className={`stat-val ${match.userStats.counterStrafePercent >= 75 ? "good" : "mid"}`}>
+                      <span className="stat-val">
                         %{match.userStats.counterStrafePercent}
                       </span>
                     </div>

@@ -262,6 +262,7 @@ export function parseGcpdMatchesFromHtml(html, modeLabel = "Competitive", userSt
 
     // 5. Scoreboard & Players
     const scoreMatch = block.match(/class="csgo_scoreboard_score">\s*(\d+)\s*:\s*(\d+)\s*<\/td>/i);
+    if (!scoreMatch) continue;
     const team1Score = scoreMatch ? parseInt(scoreMatch[1], 10) : 0;
     const team2Score = scoreMatch ? parseInt(scoreMatch[2], 10) : 0;
 
@@ -314,15 +315,17 @@ export function parseGcpdMatchesFromHtml(html, modeLabel = "Competitive", userSt
     const team2Players = parsePlayers(team2Html, "Team 2");
     const allPlayers = [...team1Players, ...team2Players];
 
-    let userPlayer = null;
-    if (userSteamId) {
-      userPlayer = allPlayers.find((p) => String(p.steamid) === String(userSteamId) || (p.steamid && userSteamId.includes(p.steamid)));
-    }
-    if (!userPlayer && allPlayers.length > 0) {
-      userPlayer = allPlayers[0];
-    }
+    const normalizedUserSteamId = normalizeSteamId(userSteamId);
+    const userPlayer = normalizedUserSteamId
+      ? allPlayers.find((p) => p.steamid === normalizedUserSteamId)
+      : null;
 
-    const isUserTeam1 = userPlayer ? userPlayer.team === "Team 1" : true;
+    // Oyuncu kimliği doğrulanamıyorsa ilk satırı kullanıcı saymak sessizce yanlış
+    // kişiye skor ve istatistik atıyordu. Bu maç listeye hiç alınmaz; sonraki
+    // taramada SteamID eşleşmesi sağlanınca güvenli biçimde eklenir.
+    if (!userPlayer) continue;
+
+    const isUserTeam1 = userPlayer.team === "Team 1";
     const userScore = isUserTeam1 ? team1Score : team2Score;
     const enemyScore = isUserTeam1 ? team2Score : team1Score;
     const isTie = team1Score === team2Score && team1Score > 0;
@@ -342,7 +345,7 @@ export function parseGcpdMatchesFromHtml(html, modeLabel = "Competitive", userSt
       duration,
       waitTime,
       score: {
-        userTeam: isUserTeam1 ? "CT" : "T",
+        userTeam: isUserTeam1 ? "Takım 1" : "Takım 2",
         userScore,
         enemyScore,
         result,
@@ -350,7 +353,7 @@ export function parseGcpdMatchesFromHtml(html, modeLabel = "Competitive", userSt
         isTie,
         rawScore: `${userScore} - ${enemyScore}`,
       },
-      userStats: userPlayer ? {
+      userStats: {
         name: userPlayer.name,
         steamid: userPlayer.steamid,
         kills: userPlayer.kills,
@@ -361,17 +364,6 @@ export function parseGcpdMatchesFromHtml(html, modeLabel = "Competitive", userSt
         score: userPlayer.score,
         ping: userPlayer.ping,
         stars: userPlayer.stars,
-      } : {
-        name: "Sen",
-        steamid: userSteamId,
-        kills: 0,
-        deaths: 0,
-        assists: 0,
-        kd: 0,
-        hsPercent: 0,
-        score: 0,
-        ping: 0,
-        stars: "",
       },
       players: allPlayers,
     });
@@ -567,45 +559,46 @@ export async function processDownloadedDemo(
 
   const reports = analysis.reports || [];
   const session = getSteamSession();
+  const normalizedSessionSteamId = normalizeSteamId(session.steamId);
 
-  let userReport = null;
-  if (session.steamId) {
-    userReport = reports.find((r) => String(r.player?.steamid) === String(session.steamId));
+  const userReport = normalizedSessionSteamId
+    ? reports.find((r) => normalizeSteamId(r.player?.steamid) === normalizedSessionSteamId)
+    : null;
+  if (!userReport) {
+    throw new Error("Demo içindeki oyuncu SteamID'si aktif Steam oturumuyla eşleşmedi; başka bir oyuncuya ait değerler kullanıcıya atanmadı.");
   }
-  if (!userReport && reports.length > 0) {
-    userReport = [...reports].sort((a, b) => (b.kills || 0) - (a.kills || 0))[0];
-  }
+
+  const scannedMetadata = getScannedMatches().find((item) => item.id === matchId || item.fileName === basename(demPath));
 
   const header = analysis.header || {};
   const mapName = (header.map_name || customMap || userReport?.map || "de_unknown").replace(/^de_/, "");
 
-  let scoreCT = 0;
-  let scoreT = 0;
-  if (userReport?.sideStats && Array.isArray(userReport.sideStats)) {
-    const ctStat = userReport.sideStats.find((s) => s.side === "CT");
-    const tStat = userReport.sideStats.find((s) => s.side === "T");
-    scoreCT = ctStat?.rounds || 0;
-    scoreT = tStat?.rounds || 0;
-  }
-  if (scoreCT === 0 && scoreT === 0 && userReport?.rounds) {
-    scoreCT = Math.ceil(userReport.rounds / 2);
-    scoreT = Math.floor(userReport.rounds / 2);
+  const roundPaths = Array.isArray(userReport.roundPaths) ? userReport.roundPaths : [];
+  const measuredUserScore = roundPaths.filter((round) => round.won).length;
+  const measuredEnemyScore = roundPaths.filter((round) => !round.won).length;
+  const scannedUserScore = Number(scannedMetadata?.score?.userScore);
+  const scannedEnemyScore = Number(scannedMetadata?.score?.enemyScore);
+  const hasScannedScore = Number.isFinite(scannedUserScore) && Number.isFinite(scannedEnemyScore);
+  const hasRoundScore = roundPaths.length > 0;
+  if (!hasScannedScore && !hasRoundScore) {
+    throw new Error("Maç sonucu demo round verisinden veya Steam skor kartından doğrulanamadı.");
   }
 
-  const userTeam = (userReport?.sideStats?.[0]?.side) || "CT";
-  const userScore = userTeam === "CT" ? scoreCT : scoreT;
-  const enemyScore = userTeam === "CT" ? scoreT : scoreCT;
-  const isWin = (userReport?.kills || 0) >= (userReport?.deaths || 0);
-  const isTie = scoreCT === scoreT && scoreCT > 0;
+  const userTeam = hasScannedScore ? String(scannedMetadata.score.userTeam || "Karma") : "Karma";
+  const userScore = hasScannedScore ? scannedUserScore : measuredUserScore;
+  const enemyScore = hasScannedScore ? scannedEnemyScore : measuredEnemyScore;
+  const isWin = userScore > enemyScore;
+  const isTie = userScore === enemyScore;
 
   const kills = userReport?.kills || 0;
-  const deaths = Math.max(1, userReport?.deaths || 0);
+  const deaths = userReport.deaths || 0;
   const assists = userReport?.assists || 0;
-  const kd = Math.round((kills / deaths) * 100) / 100;
+  const kd = deaths > 0 ? Math.round((kills / deaths) * 100) / 100 : null;
   const hsPercent = userReport?.headshotPercent || 0;
-  const counterStrafePercent = userReport?.movementProfile
-    ? Math.max(40, Math.min(99, 100 - (userReport.movementProfile.severityScore || 15)))
-    : Math.max(40, 100 - (userReport?.movingShotPercent || 15));
+  const counterStrafePercent = userReport.movementProfile?.status === "measured"
+    && Number.isFinite(userReport.movementProfile.invalidShotPercent)
+    ? Math.round((100 - userReport.movementProfile.invalidShotPercent) * 10) / 10
+    : null;
   const adr = userReport?.adr || 0;
 
   // Determine actual match timestamp (Real Match Date!)
@@ -644,13 +637,13 @@ export async function processDownloadedDemo(
       result: isTie ? "Beraberlik" : isWin ? "Galibiyet" : "Mağlubiyet",
       isWin,
       isTie,
-      rawScore: `${scoreCT} - ${scoreT}`,
+      rawScore: `${userScore} - ${enemyScore}`,
     },
     userStats: {
       name: userReport?.player?.name || "Sen",
       steamid: userReport?.player?.steamid || session.steamId || "",
       kills,
-      deaths: userReport?.deaths || 0,
+      deaths,
       assists,
       kd,
       hsPercent,
@@ -663,7 +656,6 @@ export async function processDownloadedDemo(
   // Son maç ekranının beş maçlık disk kotasından bağımsız, koordinatsız kompakt
   // takım kanıtını sakla. Böylece demo sonradan temizlense bile aynı beşlinin
   // geçmişi takım koçluğu raporunda kullanılabilir.
-  const scannedMetadata = getScannedMatches().find((item) => item.id === matchId || item.fileName === basename(demPath));
   const squadArchiveResult = squadStore.ingestMatch(newMatchRecord, scannedMetadata || null);
   if (!squadArchiveResult.ok) {
     console.warn(`[TAKIM-KOÇU] ${basename(demPath)} arşivlenemedi: ${squadArchiveResult.reason}`);

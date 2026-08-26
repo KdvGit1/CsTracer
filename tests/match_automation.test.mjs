@@ -72,6 +72,14 @@ test("performans karşılaştırması en az üç geçmiş maç ister ve mevcut m
   assert.deepEqual(result, { kind: "overall", value: 72, baseline: 60, delta: 12, sampleSize: 3, sufficient: true });
 });
 
+test("ölçülemeyen KAST ve sıfır ölümlü K/D sahte sıfıra çevrilmez", () => {
+  assert.equal(performanceComparison({ summary: { overall: null }, progressMatches: [] }), null);
+  assert.equal(performanceComparison({ livePlayer: { kills: 8, deaths: 0 }, progressMatches: [] }), null);
+  const history = [null, 60, 70, 80].map((overall, index) => ({ id: String(index), summary: { overall } }));
+  const result = performanceComparison({ summary: { overall: 75 }, progressMatches: history });
+  assert.deepEqual(result, { kind: "overall", value: 75, baseline: 70, delta: 5, sampleSize: 3, sufficient: true });
+});
+
 test("otomatik telafi yalnızca taramadaki en yeni analiz edilmemiş maçı seçer", () => {
   const scanned = [
     { id: "older", timestamp: 10, replayUrl: "https://replay1.valve.net/730/older.dem.bz2" },
@@ -99,12 +107,16 @@ test("bildirimler maç kimliğiyle tekilleştirilir ve otomatik indirme durumunu
   }
 });
 
-test("companion performans özeti arayüzdeki 0-100 formülüyle uyumludur", () => {
+test("companion performans özeti tek KAST sözleşmesini kullanır", () => {
   const summary = buildCompactSummaryFromReport({
     rounds: 20, kills: 22, deaths: 15, assists: 5, adr: 91, headshotPercent: 55,
     movingShotPercent: 9, utilityDamage: 120, enemyBlindSeconds: 18, tradePercent: 52,
-    topZoneDeaths: 3, openingDeaths: 2, impact: 82, weaponStats: [],
+    topZoneDeaths: 3, openingDeaths: 2, impact: 82, kastPercent: 82,
+    survivalPercent: 25, utilityImpactRoundPercent: 30, utilityImpactRoundSampleCount: 20,
+    movementProfile: { status: "measured", sampleCount: 40, invalidShotPercent: 10 }, weaponStats: [],
   });
-  assert.ok(summary.overall >= 70 && summary.overall <= 100);
+  assert.equal(summary.overall, 82);
+  assert.equal(summary.dimensions.roundImpact, 82);
+  assert.equal(summary.scoreMethod, "kast-round-contribution-v1");
   assert.equal(summary.stats.kills, 22);
 });

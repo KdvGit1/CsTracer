@@ -5,21 +5,20 @@ import "./growth.css";
 import { IconSparkles, IconExternalLink } from "./components/NavIcons";
 
 export type DimensionKey = "aim" | "movement" | "utility" | "teamwork" | "position" | "roundImpact";
-export type AimMetricKey = "preAim" | "headError" | "ttd" | "duelWinrate" | "earlyAccuracy";
+export type AimMetricKey = "headError" | "ttd" | "duelWinrate" | "earlyAccuracy";
 
 export type AimMetrics = {
-  headErrorAngle: number;
-  bodyErrorAngle: number;
-  preAimScore: number;
-  averageTTD: number;
-  medianTTD?: number;
+  headErrorAngle: number | null;
+  bodyErrorAngle: number | null;
+  averageTTD: number | null;
+  medianTTD?: number | null;
   ttdSampleCount?: number;
-  ttdMethod?: "spotted-to-first-damage-v1";
-  duelWinrate: number;
+  ttdMethod?: "spotted-to-first-damage-v2";
+  duelWinrate: number | null;
   duelSampleCount?: number;
-  duelMethod?: "mutual-spotted-death-v1";
-  earlyAccuracy: number;
-  lateAccuracy: number;
+  duelMethod?: "mutual-spotted-death-v2";
+  earlyAccuracy: number | null;
+  lateAccuracy: number | null;
 };
 
 export type CompactCoachVerdict = {
@@ -29,29 +28,30 @@ export type CompactCoachVerdict = {
 };
 
 export type CompactMatchSummary = {
-  overall: number;
-  dimensions: Record<DimensionKey, number>;
-  stats: { kills: number; deaths: number; assists: number; adr: number; headshotPercent: number; tradePercent: number };
-  weapons: Array<{ weapon: string; label: string; score: number; kills: number; shots: number }>;
+  overall: number | null;
+  dimensions: Record<DimensionKey, number | null>;
+  stats: { kills: number; deaths: number; assists: number; adr: number; headshotPercent: number; tradePercent: number | null };
+  weapons: Array<{ weapon: string; label: string; score: number | null; kills: number; shots: number }>;
   aimMetrics?: AimMetrics;
   coachVerdict?: CompactCoachVerdict;
+  scoreMethod?: "kast-round-contribution-v1";
+  scoreSampleCount?: number;
 };
 export type ProgressMatch = {
   id: string; date: number; fileName: string; map: string; playerSteamId: string; playerName: string; summary: CompactMatchSummary;
 };
 
 const DIMENSIONS: Array<{ key: DimensionKey; label: string; color: string }> = [
-  { key: "aim", label: "Aim", color: "#c8f54d" },
-  { key: "movement", label: "Hareket", color: "#68d4ff" },
-  { key: "utility", label: "Utility", color: "#ffb761" },
-  { key: "teamwork", label: "Takım oyunu", color: "#b99cff" },
-  { key: "position", label: "Pozisyon", color: "#ff7e85" },
-  { key: "roundImpact", label: "Round etkisi", color: "#f4e37a" },
+  { key: "aim", label: "Headshot oranı", color: "#c8f54d" },
+  { key: "movement", label: "Geçerli hızda atış", color: "#68d4ff" },
+  { key: "utility", label: "Utility etkili round", color: "#ffb761" },
+  { key: "teamwork", label: "Trade oranı", color: "#b99cff" },
+  { key: "position", label: "Hayatta kalma", color: "#ff7e85" },
+  { key: "roundImpact", label: "KAST", color: "#f4e37a" },
 ];
 
 export const AIM_METRIC_CONFIG: Array<{ key: AimMetricKey; label: string; unit: string; color: string; lowerIsBetter?: boolean; desc: string }> = [
-  { key: "preAim", label: "Pre-Aim Kalitesi", unit: "/100", color: "#c8f54d", desc: "Kafa hizası ve köşe dönme yerleşimi" },
-  { key: "headError", label: "Kafa Sapması", unit: "°", color: "#ff9c4d", lowerIsBetter: true, desc: "Düşman kafasından açı sapması (Düşük = İyi)" },
+  { key: "headError", label: "Kill Anı Kafa Sapması", unit: "°", color: "#ff9c4d", lowerIsBetter: true, desc: "Yalnız öldürme tick'indeki nişangah-hedef açısı; pre-aim ölçümü değildir" },
   { key: "ttd", label: "Medyan Time-to-Damage", unit: "ms", color: "#68d4ff", lowerIsBetter: true, desc: "Yaklaşık görünür temastan ilk hasara medyan süre (Düşük = Hızlı)" },
   { key: "duelWinrate", label: "Karşılıklı Düello Kazanma", unit: "%", color: "#b99cff", desc: "İki rakibin birbirini gördüğü ve ölümle sonuçlanan temasların kazanma yüzdesi" },
   { key: "earlyAccuracy", label: "İlk 3 Mermi İsabeti", unit: "%", color: "#f4e37a", desc: "Burst ve ilk mermi isabet başarısı" },
@@ -122,7 +122,7 @@ function ScoreChart({
   const step = range / 3;
   const ticks = [Math.round(calculatedMin), Math.round(calculatedMin + step), Math.round(calculatedMin + step * 2), Math.round(calculatedMax)];
 
-  return <div className="growth-chart" aria-label={`${label} puan grafiği`}>
+  return <div className="growth-chart" aria-label={`${label} metrik grafiği`}>
     <svg viewBox={`0 0 ${width} ${height}`} role="img">
       {ticks.map((tick) => (
         <g key={tick}>
@@ -143,14 +143,15 @@ function ScoreChart({
 
 export function GrowthView({ matches, loading, playerName, onBack }: { matches: ProgressMatch[]; loading: boolean; playerName?: string; onBack: () => void }) {
   const [dimension, setDimension] = useState<DimensionKey>("aim");
-  const [aimMetric, setAimMetric] = useState<AimMetricKey>("preAim");
+  const [aimMetric, setAimMetric] = useState<AimMetricKey>("headError");
   const [weapon, setWeapon] = useState("");
   const ordered = useMemo(() => [...matches].sort((a, b) => a.date - b.date), [matches]);
   const latest = ordered[ordered.length - 1];
   const previous = ordered[ordered.length - 2];
-  const overallValues = ordered.map((match) => match.summary.overall);
+  const scoredMatches = ordered.filter((match) => Number.isFinite(match.summary.overall));
+  const overallValues = scoredMatches.map((match) => Number(match.summary.overall));
   const overallMomentum = momentum(overallValues);
-  const careerAverage = average(overallValues);
+  const careerAverage = overallValues.length ? average(overallValues) : null;
   const storageKb = Math.max(0, Math.round(new Blob([JSON.stringify(matches)]).size / 102.4) / 10);
   const weaponNames = useMemo(() => {
     const labels = new Map<string, string>();
@@ -158,27 +159,26 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
     return [...labels.entries()].map(([id, label]) => ({ id, label }));
   }, [ordered]);
   const selectedWeapon = weapon || weaponNames[0]?.id || "";
-  const weaponMatches = ordered.filter((match) => match.summary.weapons.some((item) => item.weapon === selectedWeapon));
+  const weaponMatches = ordered.filter((match) => match.summary.weapons.some((item) => item.weapon === selectedWeapon && Number.isFinite(item.score)));
   const selectedDimension = DIMENSIONS.find((item) => item.key === dimension) || DIMENSIONS[0];
   const selectedAimConfig = AIM_METRIC_CONFIG.find((item) => item.key === aimMetric) || AIM_METRIC_CONFIG[0];
 
   const hasAimMetricValue = (match: ProgressMatch, key: AimMetricKey): boolean => {
     const aim = match.summary.aimMetrics;
     if (!aim) return false;
-    if (key === "ttd") return aim.ttdMethod === "spotted-to-first-damage-v1" && (aim.ttdSampleCount || 0) > 0;
-    if (key === "duelWinrate") return aim.duelMethod === "mutual-spotted-death-v1" && (aim.duelSampleCount || 0) > 0;
-    return true;
+    if (key === "ttd") return aim.ttdMethod === "spotted-to-first-damage-v2" && (aim.ttdSampleCount || 0) > 0 && Number.isFinite(aim.medianTTD);
+    if (key === "duelWinrate") return aim.duelMethod === "mutual-spotted-death-v2" && (aim.duelSampleCount || 0) > 0 && Number.isFinite(aim.duelWinrate);
+    return Number.isFinite(key === "headError" ? aim.headErrorAngle : aim.earlyAccuracy);
   };
 
   const getAimMetricValue = (match: ProgressMatch, key: AimMetricKey): number => {
     const aim = match.summary.aimMetrics;
     if (!aim) return 0;
     switch (key) {
-      case "preAim": return aim.preAimScore;
-      case "headError": return aim.headErrorAngle;
-      case "ttd": return aim.medianTTD || 0;
-      case "duelWinrate": return aim.duelWinrate;
-      case "earlyAccuracy": return aim.earlyAccuracy;
+      case "headError": return Number(aim.headErrorAngle);
+      case "ttd": return Number(aim.medianTTD);
+      case "duelWinrate": return Number(aim.duelWinrate);
+      case "earlyAccuracy": return Number(aim.earlyAccuracy);
       default: return 0;
     }
   };
@@ -193,15 +193,15 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
 
     {!matches.length ? <div className="growth-empty"><span><IconExternalLink size={20} /></span><b>Henüz kaydedilmiş maç yok</b><p>Bir demo analiz et ve demodaki kendi oyuncunu seç. Gerçek maç özeti otomatik olarak burada saklanacak; örnek veri gösterilmiyor.</p><button onClick={onBack}>İlk demoyu analiz et</button></div> : <>
       <div className="growth-score-grid">
-        <article className="overall-score"><span>KARİYER ORTALAMA PUANI</span><strong>{careerAverage}</strong><small>/100 · {matches.length} maç ortalaması</small><div><b>Son maç {latest.summary.overall}</b><em className={(latest.summary.overall - (previous?.summary.overall || latest.summary.overall)) >= 0 ? "up" : "down"}>{previous ? deltaLabel(latest.summary.overall - previous.summary.overall) : "Başlangıç"}</em></div></article>
-        <article><span>SON 5 MAÇ EĞİMİ</span><strong>{deltaLabel(overallMomentum.trend, " puan/maç")}</strong><small>Doğrusal form yönü</small></article>
-        <article><span>İVME DEĞİŞİMİ</span><strong>{deltaLabel(overallMomentum.acceleration, " puan/maç")}</strong><small>Son 5 eğim − önceki 5 eğim</small></article>
+        <article className="overall-score"><span>ORTALAMA KAST</span><strong>{careerAverage ?? "—"}</strong><small>% · {overallValues.length} ölçülen maç</small><div><b>Son maç {latest.summary.overall ?? "—"}{latest.summary.overall === null ? "" : "%"}</b><em>{previous && latest.summary.overall !== null && previous.summary.overall !== null ? deltaLabel(latest.summary.overall - previous.summary.overall, "%") : "Karşılaştırma yok"}</em></div></article>
+        <article><span>SON 5 MAÇ EĞİMİ</span><strong>{deltaLabel(overallMomentum.trend, " yüzde puanı/maç")}</strong><small>Doğrusal KAST yönü</small></article>
+        <article><span>İVME DEĞİŞİMİ</span><strong>{deltaLabel(overallMomentum.acceleration, " yüzde puanı/maç")}</strong><small>Son 5 eğim − önceki 5 eğim</small></article>
         <article><span>SON MAÇ</span><strong>{latest.summary.stats.kills} / {latest.summary.stats.deaths}</strong><small>{latest.map} · {dateLabel(latest.date)}</small></article>
       </div>
 
       <article className="growth-panel">
-        <header><div><p className="eyebrow">GENEL PUAN</p><h2>Maçtan maça performans çizgisi</h2></div><span>Gerçek özetler · kronolojik</span></header>
-        <ScoreChart matches={matches} value={(match) => match.summary.overall} color="#c8f54d" label="Genel" />
+        <header><div><p className="eyebrow">KAST</p><h2>Maçtan maça round katkısı</h2></div><span>Kill · asist · hayatta kalma · trade</span></header>
+        <ScoreChart matches={scoredMatches} value={(match) => Number(match.summary.overall)} color="#c8f54d" label="KAST" unit="%" />
       </article>
 
       {/* NİŞANGAH, DÜELLO & REAKSİYON GELİŞİMİ */}
@@ -230,10 +230,6 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
             const current = values[values.length - 1];
             const prior = values[values.length - 2];
             const form = momentum(values);
-            const isGoodTrend = item.lowerIsBetter
-              ? (form.trend !== null && form.trend <= 0)
-              : (form.trend !== null && form.trend >= 0);
-
             return (
               <button
                 className={`aim-btn-card ${aimMetric === item.key ? "selected" : ""}`}
@@ -244,7 +240,7 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
                 <span>{item.label}</span>
                 <strong>{current === undefined ? "—" : `${current} ${item.unit}`}</strong>
                 <em>{current === undefined ? "Geçerli ölçüm yok" : prior === undefined ? "Başlangıç" : `${deltaLabel(Math.round((current - prior) * 10) / 10, item.unit)} son maç`}</em>
-                <small className={isGoodTrend ? "trend-good" : "trend-bad"}>
+                <small>
                   {form.trend === null ? "Eğim için 2 maç" : `Eğim ${deltaLabel(form.trend, item.unit)}`}
                 </small>
               </button>
@@ -265,36 +261,36 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
 
       <section className="dimension-score-grid">
         {DIMENSIONS.map((item) => {
-          const values = ordered.map((match) => match.summary.dimensions[item.key]);
+          const values = ordered.map((match) => match.summary.dimensions[item.key]).filter((value): value is number => Number.isFinite(value));
           const current = values[values.length - 1];
           const prior = values[values.length - 2];
           const form = momentum(values);
           return <button className={dimension === item.key ? "selected" : ""} onClick={() => setDimension(item.key)} key={item.key} style={{ "--dimension-color": item.color } as React.CSSProperties}>
-            <span>{item.label}</span><strong>{current}</strong><em>{prior === undefined ? "Başlangıç" : `${deltaLabel(current - prior)} son maç`}</em><small>{form.trend === null ? "Eğim için 2 maç gerekli" : `Eğim ${deltaLabel(form.trend)} · ivme ${deltaLabel(form.acceleration)}`}</small>
+            <span>{item.label}</span><strong>{current ?? "—"}</strong><em>{current === undefined ? "Ölçüm yok" : prior === undefined ? "Başlangıç" : `${deltaLabel(current - prior)} son maç`}</em><small>{form.trend === null ? "Eğim için 2 ölçüm gerekli" : `Eğim ${deltaLabel(form.trend)} · ivme ${deltaLabel(form.acceleration)}`}</small>
           </button>;
         })}
       </section>
 
       <details className="score-method">
-        <summary>Puanlar ve aim metrikleri nasıl hesaplanıyor?</summary>
-        <p>Pre-Aim & Kafa Sapması (°): Düşmanla temas anındaki 3D açı sapmasıdır. Time-to-Damage (ms): Rakibin approximate spotted verisinde görünmesinden ilk silahlı hasara kadar geçen medyan süredir; örnek yoksa tahmin üretilmez. Karşılıklı düello: iki oyuncunun birbirini gördüğü ve ölümle sonuçlanan temaslardır. Aim: HS, ADR ve K/D; hareket: hız ağırlıklı hata; utility: round başına utility hasarı ve rakip körlük süresi; takım oyunu: trade ve asist; pozisyon: ölüm kümesi ve opening kaybı; round etkisi: maç etki skoru.</p>
+        <summary>Yüzdeler ve aim metrikleri nasıl hesaplanıyor?</summary>
+        <p>Genel gösterge KAST’tır: kill, asist, hayatta kalma veya trade edilen ölüm bulunan roundların yüzdesi. Alt boyutlar sırasıyla HS, silahın max hızının %34’ü altında atış, utility etkili round, trade, hayatta kalma ve KAST yüzdeleridir; birbirine ağırlıkla karıştırılmaz. Kafa sapması yalnız kill tick’ini gösterir ve pre-aim diye yorumlanmaz. TTD approximate spotted verisine dayanır; örnek yoksa değer üretilmez.</p>
       </details>
 
       <article className="growth-panel">
-        <header><div><p className="eyebrow">DAL GELİŞİMİ</p><h2>{selectedDimension.label} puanı</h2></div><select aria-label="Grafiği gösterilecek gelişim alanı" value={dimension} onChange={(event) => setDimension(event.target.value as DimensionKey)}>{DIMENSIONS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></header>
-        <ScoreChart matches={matches} value={(match) => match.summary.dimensions[dimension]} color={selectedDimension.color} label={selectedDimension.label} />
+        <header><div><p className="eyebrow">DOĞRUDAN METRİK</p><h2>{selectedDimension.label} yüzdesi</h2></div><select aria-label="Grafiği gösterilecek gelişim alanı" value={dimension} onChange={(event) => setDimension(event.target.value as DimensionKey)}>{DIMENSIONS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}</select></header>
+        <ScoreChart matches={matches.filter((match) => Number.isFinite(match.summary.dimensions[dimension]))} value={(match) => Number(match.summary.dimensions[dimension])} color={selectedDimension.color} label={selectedDimension.label} unit="%" />
       </article>
 
       <article className="growth-panel weapon-growth">
-        <header><div><p className="eyebrow">SİLAH GELİŞİMİ</p><h2>Silah puanı ve form yönü</h2></div>{weaponNames.length ? <select aria-label="Grafiği gösterilecek silah" value={selectedWeapon} onChange={(event) => setWeapon(event.target.value)}>{weaponNames.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select> : <span>Silah özeti yok</span>}</header>
+        <header><div><p className="eyebrow">SİLAH GELİŞİMİ</p><h2>Hasar/atış verimi ve form yönü</h2></div>{weaponNames.length ? <select aria-label="Grafiği gösterilecek silah" value={selectedWeapon} onChange={(event) => setWeapon(event.target.value)}>{weaponNames.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select> : <span>Silah özeti yok</span>}</header>
         {weaponNames.length > 0 && <div className="weapon-form-grid">{weaponNames.slice(0, 6).map((item) => {
-          const observations = ordered.map((match) => match.summary.weapons.find((candidate) => candidate.weapon === item.id)?.score).filter((score): score is number => score !== undefined);
+          const observations = ordered.map((match) => match.summary.weapons.find((candidate) => candidate.weapon === item.id)?.score).filter((score): score is number => typeof score === "number" && Number.isFinite(score));
           const form = momentum(observations);
           const current = observations[observations.length - 1];
           const prior = observations[observations.length - 2];
           return <button className={selectedWeapon === item.id ? "selected" : ""} onClick={() => setWeapon(item.id)} key={item.id}><span>{item.label}</span><strong>{current}</strong><em>{prior === undefined ? "Başlangıç" : `${deltaLabel(current - prior)} son maç`}</em><small>Eğim {deltaLabel(form.trend)} · ivme {deltaLabel(form.acceleration)}</small></button>;
         })}</div>}
-        {selectedWeapon && weaponMatches.length ? <ScoreChart matches={weaponMatches} value={(match) => match.summary.weapons.find((item) => item.weapon === selectedWeapon)?.score || 0} color="#ffb761" label={weaponNames.find((item) => item.id === selectedWeapon)?.label || selectedWeapon} /> : <div className="growth-chart-empty"><b>Silah grafiği için veri yok</b><span>Silah olayı çıkarılan maçlar burada görünür.</span></div>}
+        {selectedWeapon && weaponMatches.length ? <ScoreChart matches={weaponMatches} value={(match) => Number(match.summary.weapons.find((item) => item.weapon === selectedWeapon)?.score)} color="#ffb761" label={weaponNames.find((item) => item.id === selectedWeapon)?.label || selectedWeapon} unit=" dmg/atış" maxVal={0} /> : <div className="growth-chart-empty"><b>Silah grafiği için veri yok</b><span>Atış ve hasar olayı birlikte çıkarılan maçlar burada görünür.</span></div>}
       </article>
 
       <article className="growth-history">
@@ -305,10 +301,10 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
           <span>Skor</span>
           <span>ADR</span>
           <span>HS</span>
-          <span>Pre-Aim</span>
+          <span>Kill Anı Hizası</span>
           <span>Kafa Sapması</span>
           <span>TTD</span>
-          <span>Puan</span>
+          <span>KAST</span>
         </div>
         {[...matches].sort((a, b) => b.date - a.date).map((match) => (
           <div className="growth-history-row" key={match.id}>
@@ -325,10 +321,10 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
             <span>{match.summary.stats.kills}/{match.summary.stats.deaths}</span>
             <span>{match.summary.stats.adr}</span>
             <span>%{match.summary.stats.headshotPercent}</span>
-            <span>{match.summary.aimMetrics ? `${match.summary.aimMetrics.preAimScore}/100` : "—"}</span>
-            <span>{match.summary.aimMetrics ? `${match.summary.aimMetrics.headErrorAngle}°` : "—"}</span>
+            <span>{match.summary.aimMetrics && Number.isFinite(match.summary.aimMetrics.headErrorAngle) ? "Ölçüldü" : "—"}</span>
+            <span>{match.summary.aimMetrics && Number.isFinite(match.summary.aimMetrics.headErrorAngle) ? `${match.summary.aimMetrics.headErrorAngle}°` : "—"}</span>
             <span>{hasAimMetricValue(match, "ttd") ? `${match.summary.aimMetrics?.medianTTD}ms` : "—"}</span>
-            <strong>{match.summary.overall}</strong>
+            <strong>{match.summary.overall === null ? "—" : `%${match.summary.overall}`}</strong>
           </div>
         ))}
       </article>

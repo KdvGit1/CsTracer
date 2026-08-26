@@ -1,6 +1,5 @@
 import React, { useState } from "react";
 import type { CoachEngine, CoachState, PlayerReport } from "../lib/types";
-import { COACH_THRESHOLDS } from "../lib/coaching";
 import { IconSparkles } from "./NavIcons";
 
 export interface AimCoachDiagnosis {
@@ -19,7 +18,7 @@ export interface AimCoachDiagnosis {
 }
 
 export function evaluateAimMechanics(report: PlayerReport): {
-  score: number;
+  score: number | null;
   rating: string;
   diagnoses: AimCoachDiagnosis[];
   routine: Array<{ step: number; title: string; duration: string; drill: string; goal: string }>;
@@ -32,155 +31,91 @@ export function evaluateAimMechanics(report: PlayerReport): {
   const spray = report.sprayStats;
   const duel = report.duelStats;
   const movement = report.movementProfile;
-  const hasReliableTtd = duel?.ttdMethod === "spotted-to-first-damage-v1" && (duel.ttdSampleCount || 0) >= 5;
-  const measuredTtd = duel?.medianTTD || 0;
 
-  // 1. Kafa Sapması & Pre-Aim Analizi
-  if (crosshair) {
-    if (crosshair.headErrorAngle > COACH_THRESHOLDS.headshotAngle.warnDeg || crosshair.preAimScore < COACH_THRESHOLDS.preAimScoreMin) {
-      diagnoses.push({
-        id: "head_angle_high",
-        category: "preaim",
-        title: "Kafa Sapması Yüksek (Zayıf Pre-Aim)",
-        severity: crosshair.headErrorAngle > COACH_THRESHOLDS.headshotAngle.highDeg ? "high" : "moderate",
-        evidence: `Düşman kafasından ortalama sapma ${crosshair.headErrorAngle}° (Pre-Aim skoru %${crosshair.preAimScore}).`,
-        rootCause: "Açılardan çıkarken (peek) crosshair doğrudan düşman kafasının bulunacağı noktada değil; temas anında büyük mikro-düzeltme (flick) gerekiyor.",
-        drill: {
-          name: "Refrag / YPrac Pre-Aim & Prefire",
-          duration: "15 dk",
-          target: "Kafa sapmasını 4.0° altına düşürmek",
-          instructions: `${report.map || "Oynanan harita"} haritasında pre-aim modunu aç. Açıyı görmeden önce nişangahı duvardan kafanın çıkacağı köşeye sabitleyerek tek tek peek at.`,
-        },
-      });
-    } else if (crosshair.headErrorAngle <= COACH_THRESHOLDS.headshotAngle.strongDeg) {
-      strengths.push(`Kusursuz kafa hizası (${crosshair.headErrorAngle}° sapma, %${crosshair.preAimScore} Pre-Aim)`);
-    }
-  }
+  // Kill tick'indeki hizalama ve approximate-spotted TTD yalnız bilgi olarak
+  // taşınır. Harita raycast'i olmadığı için bu ikisinden pre-aim veya reaksiyon
+  // seviyesi hükmü üretilmez.
+  void crosshair;
+  void duel;
 
-  // 2. Hareketli Tüfek Atışları (Counter-Strafe Hatası)
+  // Silahın demo içindeki max_speed değerinin %34 doğruluk sınırı kullanılır.
   const rifleStats = movement?.byCategory?.rifle;
-  if (rifleStats && rifleStats.movingPercent >= COACH_THRESHOLDS.movingShotPercent.rifle.warn) {
+  if (movement?.status === "measured" && rifleStats && rifleStats.shots >= 15 && rifleStats.movingPercent >= 20) {
     diagnoses.push({
       id: "rifle_counter_strafe",
       category: "movement",
-      title: "Tüfeklerle Hareketli Atış Hatası (Eksik Counter-Strafe)",
-        severity: rifleStats.movingPercent >= COACH_THRESHOLDS.movingShotPercent.rifle.high ? "high" : "moderate",
-      evidence: `AK-47 / M4 ile yapılan atışların %${rifleStats.movingPercent}'inde duruş hız sınırı (75 u/s) aşıldı.`,
-      rootCause: "Tetiğe basılmadan önce ters hareket tuşuna (A basılıyken D'ye) dokunarak tam sıfırlama (counter-strafe) yapılmıyor; mermiler rastgele dağılıyor.",
+      title: "Tüfek atışlarında doğruluk hız sınırı sık aşılıyor",
+      severity: rifleStats.movingPercent >= 35 ? "high" : "moderate",
+      evidence: `${rifleStats.shots} ölçülen tüfek atışının %${rifleStats.movingPercent}'inde hız, silahın max_speed değerinin %34'ünü aştı veya oyuncu havadaydı.`,
+      rootCause: "Atış tick'indeki hareket, oyunun silah doğruluğunu geri kazandığı hız bandının üzerinde kalıyor.",
       drill: {
         name: "A-D Counter-Strafe Senkronizasyon Drill'i",
         duration: "10 dk (Aim Botz veya DM)",
-        target: "Hareketli tüfek atış oranını %8'in altına indirmek",
+        target: "Sonraki demoda geçersiz hızlı tüfek atışı sayısını azaltmak",
         instructions: "Aim Botz'da sağa koşarken tam durmak için anında A tuşuna tek tık yap, hız sıfırlandığı milisaniyede 2 mermi burst sık. Ritim: D -> A-tık -> Ateş.",
       },
     });
-  } else if (rifleStats && rifleStats.movingPercent < COACH_THRESHOLDS.movingShotPercent.rifle.strong && (rifleStats.shots || 0) > COACH_THRESHOLDS.movingShotPercent.rifle.strongMinShots) {
-    strengths.push(`Disiplinli counter-strafe (Tüfekte yalnızca %${rifleStats.movingPercent} hareketli atış)`);
   }
 
-  // 3. Keskin Nişancı (AWP) Hareket Hatası
   const sniperStats = movement?.byCategory?.sniper;
-  if (sniperStats && sniperStats.movingPercent >= COACH_THRESHOLDS.movingShotPercent.sniper.warn) {
+  if (movement?.status === "measured" && sniperStats && sniperStats.shots >= 8 && sniperStats.movingPercent >= 20) {
     diagnoses.push({
       id: "sniper_moving",
       category: "movement",
-      title: "AWP / Sniper ile Hareket Halinde Atış",
-        severity: sniperStats.movingPercent >= COACH_THRESHOLDS.movingShotPercent.sniper.high ? "high" : "moderate",
-      evidence: `Sniper atışlarının %${sniperStats.movingPercent}'inde tam durmadan tetiğe basıldı.`,
-      rootCause: "AWP ile peek atarken ayaklar yere tam basmadan önce atış yapılıyor; en ufak hız bile AWP mermisini saptırır.",
+      title: "Sniper atışlarında doğruluk hız sınırı aşılıyor",
+      severity: sniperStats.movingPercent >= 40 ? "high" : "moderate",
+      evidence: `${sniperStats.shots} ölçülen sniper atışının %${sniperStats.movingPercent}'inde max_speed tabanlı doğruluk sınırı aşıldı.`,
+      rootCause: "Atış, silahın demo içinde bildirdiği doğruluk hızına dönmeden yapılıyor.",
       drill: {
         name: "AWP Stop-and-Shoot Disiplini",
         duration: "10 dk",
-        target: "AWP hareketli atış oranını %0 yapmak",
+        target: "Sonraki demoda sınır üstü sniper atışlarını azaltmak",
         instructions: "Açıdan çıkış anında zıt tuşla sert fren yap, scope içindeki kırmızı nokta netleştiği an ateş et ve hemen geriye un-peek yap.",
       },
     });
   }
 
-  // 4. İlk 3 Mermi vs Uzun Sprey Kontrolü
-  if (spray) {
-    if (spray.earlyAccuracy >= COACH_THRESHOLDS.spray.decayEarlyMin && spray.lateAccuracy < COACH_THRESHOLDS.spray.decayLateMax && spray.totalShots > COACH_THRESHOLDS.spray.decayMinShots) {
+  // Aynı oyuncunun ilk 3 ve 4+ mermileri birbiriyle kıyaslanır; dışarıdan
+  // "pro" eşiği uygulanmaz.
+  if (spray?.status === "measured") {
+    if (spray.earlyAccuracy !== null && spray.lateAccuracy !== null && spray.earlyShots >= 10 && spray.lateShots >= 10 && spray.lateAccuracy < spray.earlyAccuracy * 0.5) {
       diagnoses.push({
         id: "spray_control_decay",
         category: "recoil",
-        title: "4+ Mermi Sonrası Sprey Recoil Dağılması",
-        severity: spray.lateAccuracy < COACH_THRESHOLDS.spray.decayHighLateMax ? "high" : "moderate",
-        evidence: `İlk 3 mermideki isabet %${spray.earlyAccuracy} iken, 4. mermiden sonra %${spray.lateAccuracy}'ye düşüyor.`,
-        rootCause: "İlk 3 mermi hedefi vurmadığında panikle sprey uzatılıyor ancak yatay recoil telafisi (sağa-sola çekiş) kaçırılıyor.",
+        title: "Uzayan spreyde kişisel isabet belirgin düşüyor",
+        severity: spray.lateAccuracy < spray.earlyAccuracy * 0.3 ? "high" : "moderate",
+        evidence: `${spray.earlyShots} ilk-3 örneğinde isabet %${spray.earlyAccuracy}; ${spray.lateShots} adet 4+ mermi örneğinde %${spray.lateAccuracy}.`,
+        rootCause: "Aynı maç içinde uzun sprey isabeti kısa burst isabetinin yarısından az kaldı.",
         drill: {
           name: "Recoil Master & 3-Mermi Reset Drill'i",
           duration: "12 dk",
-          target: "4+ mermi sprey isabetini %28 üzerine çıkarmak",
+          target: "Sonraki demoda kısa/uzun seri isabet farkını azaltmak",
           instructions: "Recoil Master haritasında AK-47 ilk 15 mermi desenini çalış. Maç içinde 3 mermide vuramazsan spreyi sürdürme; strafe atıp recoil sıfırla.",
         },
       });
-    } else if (spray.earlyAccuracy < COACH_THRESHOLDS.spray.weakEarlyMax && spray.totalShots > COACH_THRESHOLDS.spray.weakMinShots) {
-      diagnoses.push({
-        id: "early_burst_inaccurate",
-        category: "burst",
-        title: "Düşük İlk 3 Mermi İsabeti (Panik Taraması)",
-        severity: "high",
-        evidence: `İlk 3 mermi isabet oranı yalnızca %${spray.earlyAccuracy}.`,
-        rootCause: "Düşman görüldüğünde crosshair tam oturtulmadan erken tetiğe basılıyor (Trigger Discipline eksikliği).",
-        drill: {
-          name: "1-Tap & 2-Shot Burst Deathmatch",
-          duration: "15 dk FFA DM",
-          target: "İlk 3 mermi isabetini %45 üzerine çıkarmak",
-          instructions: "Ölüm maçında sprey atmayı tamamen bırak. Yalnızca kafa seviyesinde 2 mermilik burst atışları yap, vuramasan dahi sprey açma.",
-        },
-      });
-    } else if (spray.earlyAccuracy >= COACH_THRESHOLDS.spray.earlyStrong) {
-      strengths.push(`Ölümcül ilk temas burst isabeti (%${spray.earlyAccuracy})`);
     }
 
-    // 5. Bacak / Alt Gövde İsabet Kayması
-    if (spray.hitboxPercents.legs > COACH_THRESHOLDS.hitboxLegsPercent.warn) {
+    const hitboxSamples = spray.hitboxSampleCount ?? Object.values(spray.hitboxCounts).reduce((sum, count) => sum + count, 0);
+    if (hitboxSamples >= 10 && spray.hitboxPercents.legs > spray.hitboxPercents.head + spray.hitboxPercents.chest) {
       diagnoses.push({
         id: "lazy_crosshair_legs",
         category: "hitbox",
-        title: "Nişangah Yere Sarkıyor (Bacak İsabetleri Fazla)",
-        severity: spray.hitboxPercents.legs > COACH_THRESHOLDS.hitboxLegsPercent.high ? "high" : "moderate",
+        title: "Bacak isabetleri kafa ve göğüs isabetlerinin toplamını aşıyor",
+        severity: "moderate",
         evidence: `İsabet eden mermilerin %${spray.hitboxPercents.legs}'i bacaklara vurdu.`,
-        rootCause: "Dikey eksende crosshair yere doğru sarkık taşınıyor; düşman çıktığında göğüs/kafa yerine bacaklara isabet alınıyor.",
+        rootCause: "Hitgroup dağılımı bu maçta alt gövdeye yoğunlaşıyor; bunun mesafe veya hedef duruşundan kaynaklanıp kaynaklanmadığı roundda doğrulanmalı.",
         drill: {
           name: "Dikey Kafa Hizası Kilitleme Drill'i",
           duration: "10 dk",
-          target: "Bacak vuruş oranını %6 altına indirmek",
+          target: "Sonraki demoda bacak yoğunluğunu kafa+göğüs toplamının altına indirmek",
           instructions: "Harita üzerindeki kutu kenarları ve kapı çizgilerini referans alarak nişangahı daima göz hizasında taşıma alışkanlığı kazan.",
         },
       });
     }
   }
 
-  // 6. Time-to-Damage & Reaksiyon Gecikmesi
-  if (duel && hasReliableTtd && measuredTtd > COACH_THRESHOLDS.ttd.warnMs) {
-    diagnoses.push({
-      id: "ttd_delay",
-      category: "ttd",
-      title: "Time-to-Damage (İlk Hasar Gecikmesi)",
-        severity: measuredTtd > COACH_THRESHOLDS.ttd.highMs ? "high" : "moderate",
-      evidence: `Yaklaşık görünür temastan ilk hasara medyan ${measuredTtd} ms, ortalama ${duel.averageTTD} ms (${duel.ttdSampleCount} geçerli temas; ${duel.reactionRating}).`,
-      rootCause: "Görsel temas sonrası karar verme ve nişangahı hedefe kilitleme (micro-flick) süresi gecikiyor.",
-      drill: {
-        name: "Fast Aim / Microshot Reaksiyon Drill'i",
-        duration: "10 dk (Aimlabs Microshot veya CS2 Reflex Bots)",
-        target: "Medyan TTD süresini 320 ms altına indirmek",
-        instructions: "Hızlı hareket eden botlara karşı mikro-düzeltme atışları çalış. Açıyı tutarken odaklanma noktanı daralt.",
-      },
-    });
-  } else if (duel && hasReliableTtd && measuredTtd <= COACH_THRESHOLDS.ttd.strongMs && (duel.ttdSampleCount || 0) > COACH_THRESHOLDS.ttd.strongMinDuels) {
-    strengths.push(`Hızlı ilk hasar (${measuredTtd} ms medyan TTD, ${duel.ttdSampleCount} temas)`);
-  }
-
-  // Genel Puan Hesaplama
-  let score = 75;
-  if (crosshair) score += (crosshair.preAimScore - 60) * 0.25;
-  if (spray) score += (spray.accuracyPercent - 20) * 0.6;
-  if (rifleStats) score -= (rifleStats.movingPercent - 10) * 0.8;
-  if (duel && hasReliableTtd) score -= (measuredTtd - 300) * 0.05;
-  score = Math.max(25, Math.min(98, Math.round(score)));
-
-  const rating = score >= 85 ? "Tier 1 Pro Standardı" : score >= 72 ? "İleri Düzey Rekabetçi" : score >= 58 ? "Ortalama / Gelişime Açık" : "Temel Mekanik Hatalar";
+  const score = null;
+  const rating = "Puanlama kaldırıldı · doğrudan demo metrikleri";
 
   // 3 Adımlı Kişiselleştirilmiş Drill Rutini
   const routine: Array<{ step: number; title: string; duration: string; drill: string; goal: string }> = [];
@@ -197,9 +132,9 @@ export function evaluateAimMechanics(report: PlayerReport): {
     });
   } else {
     routine.push(
-      { step: 1, title: "Pre-Aim & Köşe Temizliği", duration: "10 dk", drill: "Refrag veya YPrac prefire modunda harita açılarını kafa hizasında dön.", goal: "Kafa sapmasını < 3.5° koru." },
-      { step: 2, title: "A-D Counter-Strafe Senkronizasyonu", duration: "10 dk", drill: "Aim Botz'da A-D zıt frenleme ile 2 mermi burst çalış.", goal: "Tüfek hareket oranını < %5 tut." },
-      { step: 3, title: "Recoil Master İlk 15 Mermi", duration: "10 dk", drill: "AK-47 ve M4 için sprey kontrol kalıbını tazele.", goal: "Sprey isabetini %35 üzerine çıkar." }
+      { step: 1, title: "Pre-Aim & Köşe Temizliği", duration: "10 dk", drill: "Refrag veya YPrac prefire modunda harita açılarını kafa hizasında dön.", goal: "Bir sonraki demoda aynı açılardaki kill anı hizasını karşılaştır." },
+      { step: 2, title: "A-D Counter-Strafe Senkronizasyonu", duration: "10 dk", drill: "Aim Botz'da A-D zıt frenleme ile 2 mermi burst çalış.", goal: "Max-speed sınırı üstündeki atış sayısını azalt." },
+      { step: 3, title: "Recoil Master İlk 15 Mermi", duration: "10 dk", drill: "AK-47 ve M4 için sprey kontrol kalıbını tazele.", goal: "İlk-3 ve 4+ mermi isabet farkını azalt." }
     );
   }
 
@@ -221,13 +156,13 @@ export const AimCoachCard: React.FC<{
     <article className="aim-coach-card">
       <header className="aim-coach-header">
         <div>
-          <span className="aim-coach-badge">NİŞANGAH & AİM UZMAN KOÇU</span>
+          <span className="aim-coach-badge">NİŞANGAH & MEKANİK KANITLARI</span>
           <h3>Mekanik Hata Teşhisi ve Antrenman Reçetesi</h3>
-          <p>Kural motoru; nişangah kafa sapmanı, tüfek counter-strafe duruşunu, sprey dağılımını ve TTD temas hızını inceleyerek kişisel antrenman programını çıkardı.</p>
+          <p>Kural motoru yalnız doğrudan ölçülen max-speed, bullet_damage ve hitgroup verilerini kullanır. Kill anı hizası ve yaklaşık TTD bilgi amaçlıdır; pre-aim ya da profesyonel seviye hükmüne çevrilmez.</p>
         </div>
         <div className="aim-coach-score-box">
           <span>AİM PUANI</span>
-          <b>{evaluation.score}<i>/100</i></b>
+          <b>{evaluation.score ?? "—"}</b>
           <small>{evaluation.rating}</small>
         </div>
       </header>
@@ -251,8 +186,8 @@ export const AimCoachCard: React.FC<{
         </div>
         {evaluation.diagnoses.length === 0 ? (
           <div className="aim-clean-slate">
-            <b>Tebrikler! Bu maçta belirgin mekanik ve aim hatası tespit edilmedi.</b>
-            <p>Kafa sapması, duruş hızı ve sprey dengen espor standartlarında. Mevcut antrenman disiplinini koru.</p>
+            <b>Ölçülen doğrudan metriklerde güçlü bir tekrar bulunmadı.</b>
+            <p>Bu sonuç profesyonel seviye hükmü değildir; örnek sayısını büyütüp aynı metrikleri maçtan maça karşılaştır.</p>
           </div>
         ) : (
           evaluation.diagnoses.map((diag) => (
@@ -316,32 +251,32 @@ export const AimCoachCard: React.FC<{
         {rulebookOpen && (
           <div className="aim-rulebook-content">
             <p className="rulebook-intro">
-              TRACER Aim Koçu, CS2 espor mekanik standartlarını ve profesyonel drill metodolojilerini esas alır. Koçun kararlarını dayandırdığı temel kurallar:
+              Bu rehber yalnız hesaplanabilen demo kanıtlarını ve ölçüm sınırlarını açıklar:
             </p>
             <div className="rulebook-grid">
               <article>
-                <b>1. Kafa Sapması & Pre-Aim Kuralı</b>
-                <p>Açı sapması <code>&gt; 4.5°</code> olduğunda oyuncunun köşe çıkışlarında mikro-flick ihtiyacı artar. Refrag/YPrac prefire ile açıyı görmeden önce nişangahı kilitleme zorunluluğu koyulur.</p>
+                <b>1. Kill Anı Hizası</b>
+                <p>Nişangah ile hedef kafa/gövde açısı yalnız öldürme tick’inde ölçülür. Harita geometrisi ve görüş hattı raycast’i olmadığı için bu değer pre-aim sayılmaz ve puanlanmaz.</p>
               </article>
               <article>
                 <b>2. Tüfek Counter-Strafe Hız Sınırı Kuralı</b>
-                <p>CS2’de AK-47/M4 için hareket hızı <code>75 u/s</code> üzerindeyken ilk mermi sapması devasa boyuta ulaşır. Tüfek hareketli atış oranı <code>&gt; %16</code> ise acil A-D zıt frenleme drill’i verilir.</p>
+                <p>Her atışta demonun verdiği silah <code>max_speed</code> alanı okunur. Yatay hız bunun <code>%34</code>’ünü aşıyorsa veya oyuncu havadaysa atış sınır üstü sayılır; veri yoksa temiz kabul edilmez.</p>
               </article>
               <article>
                 <b>3. 3-Mermi Burst vs Sprey Dağılım Kuralı</b>
-                <p>İlk 3 mermi isabeti <code>&gt; %40</code> olup 4+ mermi isabeti <code>&lt; %20</code> ise oyuncuya uzun sprey yerine 2-3 mermiden sonra strafe ile recoil sıfırlama (Recoil Reset) disiplini önerilir.</p>
+                <p>Mermi ile hasar <code>bullet_damage.attack_tick_count</code> üzerinden eşleştirilir. İlk 3 ile 4+ mermi grubu yalnız yeterli örnek varsa aynı oyuncunun kendi içindeki farkla kıyaslanır.</p>
               </article>
               <article>
                 <b>4. Time-to-Damage (TTD) Eşik Kuralı</b>
-                <p>Görsel temas ile hasar arasındaki süre <code>&gt; 380 ms</code> ise oyuncu düellolarda geç kalıyor demektir. Fast Aim Reflex ve Microshot çalışmaları atanır.</p>
+                <p>TTD, <code>approximate_spotted_by</code> başlangıcından ilk silahlı hasara kadar ölçülür. Bu görünürlük yaklaşık olduğundan profesyonel reaksiyon eşiği veya aim puanı üretmez.</p>
               </article>
               <article>
                 <b>5. Dikey Hitbox (Lazy Crosshair) Kuralı</b>
-                <p>İsabet eden mermilerin <code>&gt; %12</code>’si bacaklara vuruyorsa nişangahın dikey eksende sarkık taşındığı teşhis edilir; kapı/kutu göz hizası kilitleme çalışması verilir.</p>
+                <p>Hitgroup dağılımı doğrudan gösterilir. Bacak isabetleri kafa ve göğüs toplamını aşarsa video incelemesi önerilir; tek başına kök sebep ilan edilmez.</p>
               </article>
               <article>
                 <b>6. Keskin Nişancı (AWP) Sıfır Hız Kuralı</b>
-                <p>AWP hareketli atış payı <code>&gt; %10</code> ise durmadan tetiğe basıldığı tespit edilir; scope içi kırmızı nokta netleşmeden ateş etmeme kuralı uygulanır.</p>
+                <p>Sniper atışlarında da aynı max-speed oranı kullanılır. Sabit silah adı eşiği veya eksik veride varsayılan hız kullanılmaz.</p>
               </article>
             </div>
           </div>

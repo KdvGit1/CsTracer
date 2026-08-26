@@ -4,11 +4,12 @@ const CORE_EVENTS = [
   "round_start", "round_end", "round_freeze_end", "player_death", "player_hurt", "weapon_fire",
   "player_blind", "flashbang_detonate", "smokegrenade_detonate",
   "hegrenade_detonate", "molotov_detonate", "inferno_startburn",
-  "bomb_planted", "bomb_defused", "player_bullet_hit", "item_pickup",
+  "bomb_planted", "bomb_defused", "bullet_damage", "bullet_impact", "item_pickup",
 ];
 
 const PLAYER_PROPS = [
-  "X", "Y", "Z", "pitch", "yaw", "velocity_X", "velocity_Y", "team_num",
+  "X", "Y", "Z", "pitch", "yaw", "velocity_X", "velocity_Y", "team_num", "max_speed",
+  "duck_amount", "is_airborne", "round_start_equip_value",
   "last_place_name", "active_weapon", "health", "armor_value", "inventory",
   "CCSPlayerPawn.m_iShotsFired",
   "CCSPlayerController.CCSPlayerController_InGameMoneyServices.m_iAccount",
@@ -18,8 +19,8 @@ const PLAYER_PROPS = [
 
 const OTHER_PROPS = ["total_rounds_played", "game_time", "is_warmup_period"];
 
-export const TTD_METHOD = "spotted-to-first-damage-v1";
-export const DUEL_METHOD = "mutual-spotted-death-v1";
+export const TTD_METHOD = "spotted-to-first-damage-v2";
+export const DUEL_METHOD = "mutual-spotted-death-v2";
 const CONTACT_WINDOW_MS = 2000;
 const MAX_REACTION_TTD_MS = 1500;
 const MIN_REACTION_TTD_MS = 50;
@@ -51,6 +52,13 @@ function text(record, candidates) {
 function number(record, candidates, fallback = 0) {
   const found = Number(value(record, candidates, fallback));
   return Number.isFinite(found) ? found : fallback;
+}
+
+function finiteNumber(record, candidates) {
+  const raw = value(record, candidates, undefined);
+  if (raw === undefined || raw === null || raw === "") return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function role(record, prefix, property) {
@@ -255,6 +263,52 @@ function sameKnownTeam(ticks, tick, first, second) {
   return firstTeam > 1 && secondTeam > 1 && firstTeam === secondTeam;
 }
 
+function teamForRole(record, prefix, ticks, tick) {
+  const fromEvent = finiteNumber({ value: role(record, prefix, "team_num") }, ["value"]);
+  if (fromEvent !== null && fromEvent > 1) return fromEvent;
+  const identity = { name: playerName(record, prefix), steamid: steamId(record, prefix) };
+  return number(rowForPlayerAtTick(ticks, tick, identity), ["team_num"], 0);
+}
+
+function isKnownEnemyInteraction(record, attackerPrefix, victimPrefix, ticks) {
+  const tick = number(record, ["tick"], 0);
+  const attackerTeam = teamForRole(record, attackerPrefix, ticks, tick);
+  const victimTeam = teamForRole(record, victimPrefix, ticks, tick);
+  return attackerTeam > 1 && victimTeam > 1 && attackerTeam !== victimTeam;
+}
+
+function sameRoleIdentity(firstRecord, firstPrefix, secondRecord, secondPrefix) {
+  const firstId = steamId(firstRecord, firstPrefix);
+  const secondId = steamId(secondRecord, secondPrefix);
+  if (firstId && secondId) return firstId === secondId;
+  const firstName = playerName(firstRecord, firstPrefix);
+  const secondName = playerName(secondRecord, secondPrefix);
+  return Boolean(firstName && secondName && firstName === secondName);
+}
+
+export function isDeathTraded(death, allDeaths, ticksOrRows, tickRate) {
+  const ticks = ticksOrRows?.byPlayerTick ? ticksOrRows : buildTickIndex(ticksOrRows);
+  const deathTick = number(death, ["tick"], 0);
+  const deathTime = finiteNumber(death, ["game_time"]);
+  const deathRound = roundNumber(death);
+  const victimTeam = teamForRole(death, "user", ticks, deathTick);
+  if (!deathTick || victimTeam <= 1 || !playerName(death, "attacker")) return false;
+
+  return (Array.isArray(allDeaths) ? allDeaths : []).some((later) => {
+    const laterTick = number(later, ["tick"], 0);
+    if (laterTick <= deathTick || roundNumber(later) !== deathRound) return false;
+    const laterTime = finiteNumber(later, ["game_time"]);
+    const elapsedSeconds = deathTime !== null && laterTime !== null
+      ? laterTime - deathTime
+      : Number.isFinite(tickRate) && tickRate > 0 ? (laterTick - deathTick) / tickRate : Number.POSITIVE_INFINITY;
+    if (elapsedSeconds <= 0 || elapsedSeconds > 5) return false;
+    if (!sameRoleIdentity(death, "attacker", later, "user")) return false;
+    if (sameRoleIdentity(death, "user", later, "attacker")) return false;
+    const laterAttackerTeam = teamForRole(later, "attacker", ticks, laterTick);
+    return laterAttackerTeam === victimTeam && isKnownEnemyInteraction(later, "attacker", "user", ticks);
+  });
+}
+
 function findVisibilitySegment({ ticks, observer, target, eventRecord, tickRate, requireMutual, endGraceMs }) {
   const endTick = number(eventRecord, ["tick"], 0);
   if (!endTick || !observer?.steamid || !target?.steamid) return null;
@@ -302,7 +356,7 @@ function findVisibilitySegment({ ticks, observer, target, eventRecord, tickRate,
   return { censored: false, onsetTick, delayMs };
 }
 
-export function estimateDemoTickRate(eventRows, fallback = 64) {
+export function estimateDemoTickRate(eventRows, fallback = null) {
   const samples = (Array.isArray(eventRows) ? eventRows : [])
     .map((row) => ({ tick: number(row, ["tick"], 0), time: number(row, ["game_time"], Number.NaN) }))
     .filter((row) => row.tick > 0 && Number.isFinite(row.time))
@@ -319,8 +373,17 @@ export function estimateDemoTickRate(eventRows, fallback = 64) {
   return rates.length ? Math.round(percentile(rates, 0.5) * 1000) / 1000 : fallback;
 }
 
-export function calculateDuelStatsForPlayer(player, grouped, ticksOrRows, tickRate = 64) {
+export function calculateDuelStatsForPlayer(player, grouped, ticksOrRows, tickRate = null) {
   const ticks = ticksOrRows?.byPlayerTick ? ticksOrRows : buildTickIndex(ticksOrRows);
+  if (!Number.isFinite(tickRate) || tickRate <= 0) {
+    return {
+      averageTTD: null, medianTTD: null, ttdSampleCount: 0, preparedContacts: 0, unseenHits: 0,
+      censoredContacts: 0, ttdMethod: TTD_METHOD, ttdStatus: "unavailable",
+      ttdReason: "Demo tick hızı çıkarılamadı.", duelWinrate: null, duelWins: 0, duelLosses: 0,
+      duelTotal: 0, duelMethod: DUEL_METHOD, duelStatus: "unavailable",
+      duelReason: "Demo tick hızı çıkarılamadı.", fastReactions: 0, reactionRating: "Ölçülemedi",
+    };
+  }
   const ttdContacts = new Map();
   let preparedContacts = 0;
   let unseenHits = 0;
@@ -359,8 +422,8 @@ export function calculateDuelStatsForPlayer(player, grouped, ticksOrRows, tickRa
   }
   const averageTTD = reactionValues.length
     ? Math.round(reactionValues.reduce((sum, delay) => sum + delay, 0) / reactionValues.length)
-    : 0;
-  const medianTTD = percentile(reactionValues, 0.5);
+    : null;
+  const medianTTD = reactionValues.length ? percentile(reactionValues, 0.5) : null;
 
   let duelWins = 0;
   let duelLosses = 0;
@@ -383,14 +446,8 @@ export function calculateDuelStatsForPlayer(player, grouped, ticksOrRows, tickRa
   }
 
   const duelTotal = duelWins + duelLosses;
-  const duelWinrate = duelTotal ? Math.round((duelWins / duelTotal) * 100) : 0;
-  const reactionRating = !reactionValues.length
-    ? "Ölçülemedi"
-    : medianTTD <= 240
-      ? "Çok Hızlı (<240ms)"
-      : medianTTD <= 360
-        ? "Normal (240-360ms)"
-        : "Yavaş (>360ms)";
+  const duelWinrate = duelTotal ? Math.round((duelWins / duelTotal) * 100) : null;
+  const reactionRating = reactionValues.length ? `${reactionValues.length} temas ölçüldü` : "Ölçülemedi";
 
   return {
     averageTTD,
@@ -400,11 +457,15 @@ export function calculateDuelStatsForPlayer(player, grouped, ticksOrRows, tickRa
     unseenHits,
     censoredContacts,
     ttdMethod: TTD_METHOD,
+    ttdStatus: reactionValues.length ? "measured" : "insufficient-sample",
+    ttdReason: reactionValues.length ? undefined : "Geçerli görünür temas örneği bulunamadı.",
     duelWinrate,
     duelWins,
     duelLosses,
     duelTotal,
     duelMethod: DUEL_METHOD,
+    duelStatus: duelTotal ? "measured" : "insufficient-sample",
+    duelReason: duelTotal ? undefined : "Ölümle sonuçlanan karşılıklı görünür düello bulunamadı.",
     fastReactions: reactionValues.filter((delay) => delay <= 250).length,
     reactionRating,
   };
@@ -421,32 +482,35 @@ function weaponCategory(weapon) {
 }
 
 function shotSpeed(record, tickRow) {
-  const vx = Number(role(record, "user", "velocity_X") ?? role(record, "player", "velocity_X") ?? value(tickRow, ["velocity_X"], 0));
-  const vy = Number(role(record, "user", "velocity_Y") ?? role(record, "player", "velocity_Y") ?? value(tickRow, ["velocity_Y"], 0));
+  const vx = Number(role(record, "user", "velocity_X") ?? role(record, "player", "velocity_X") ?? value(tickRow, ["velocity_X"], Number.NaN));
+  const vy = Number(role(record, "user", "velocity_Y") ?? role(record, "player", "velocity_Y") ?? value(tickRow, ["velocity_Y"], Number.NaN));
+  if (!Number.isFinite(vx) || !Number.isFinite(vy)) return null;
   return Math.hypot(vx, vy);
 }
 
 function movingShot(record, tickRow) {
   const speed = shotSpeed(record, tickRow);
-  const weapon = eventWeapon(record);
-  const cat = weaponCategory(weapon);
-  if (cat === "sniper") return speed > 15;
-  if (cat === "rifle") return speed > 34;
-  if (cat === "pistol") return speed > 75;
-  if (cat === "smg") return speed > 130;
-  return speed > 50;
+  const maxSpeed = finiteNumber(tickRow, ["max_speed"]);
+  if (speed === null || maxSpeed === null || maxSpeed <= 0) return null;
+  const airborneRaw = value(tickRow, ["is_airborne"], false);
+  const airborne = airborneRaw === true || airborneRaw === 1 || airborneRaw === "true";
+  return airborne || speed > maxSpeed * 0.34;
 }
 
 function buildWeaponAwareMovementProfile(shotEntries) {
-  if (!shotEntries.length) {
+  const measuredEntries = shotEntries.filter((entry) => Number.isFinite(entry.speed) && Number.isFinite(entry.maxSpeed) && entry.maxSpeed > 0);
+  if (!measuredEntries.length) {
     return {
       averageSpeed: 0, p90Speed: 0, stableShots: 0, microMoveShots: 0, movingShots: 0, fastMoveShots: 0,
-      stablePercent: 0, microPercent: 0, movingPercent: 0, fastPercent: 0, severityScore: 0, severity: "clean",
+      stablePercent: 0, microPercent: 0, movingPercent: 0, fastPercent: 0, invalidShotPercent: 0,
+      severityScore: 0, severity: "unavailable", status: "unavailable", sampleCount: 0,
+      unmeasuredShots: shotEntries.length, method: "weapon-max-speed-34pct-v1",
+      reason: "Atış ticklerinde hız veya max_speed verisi bulunamadı.",
       byCategory: { sniper: { shots: 0, movingPercent: 0 }, rifle: { shots: 0, movingPercent: 0 }, pistol: { shots: 0, movingPercent: 0 }, smg: { shots: 0, movingPercent: 0 } },
     };
   }
 
-  const speeds = shotEntries.map((e) => e.speed).sort((a, b) => a - b);
+  const speeds = measuredEntries.map((e) => e.speed).sort((a, b) => a - b);
   const total = speeds.length;
   const count = (minimum, maximum = Infinity) => speeds.filter((speed) => speed > minimum && speed <= maximum).length;
   const stableShots = speeds.filter((speed) => speed <= 15).length;
@@ -455,7 +519,6 @@ function buildWeaponAwareMovementProfile(shotEntries) {
   const fastMoveShots = count(120);
   const percent = (amount) => total ? Math.round((amount / total) * 100) : 0;
 
-  let weightedPenalties = 0;
   const catStats = {
     sniper: { shots: 0, moving: 0 },
     rifle: { shots: 0, moving: 0 },
@@ -464,29 +527,21 @@ function buildWeaponAwareMovementProfile(shotEntries) {
     other: { shots: 0, moving: 0 },
   };
 
-  for (const entry of shotEntries) {
-    const { speed, weapon } = entry;
+  let invalidShots = 0;
+  for (const entry of measuredEntries) {
+    const { speed, weapon, maxSpeed, airborne } = entry;
     const cat = weaponCategory(weapon);
     if (!catStats[cat]) catStats[cat] = { shots: 0, moving: 0 };
     catStats[cat].shots++;
 
-    if (cat === "sniper") {
-      if (speed > 15 && speed <= 50) { weightedPenalties += 0.8; catStats[cat].moving++; }
-      else if (speed > 50) { weightedPenalties += 1.8; catStats[cat].moving++; }
-    } else if (cat === "rifle") {
-      if (speed > 34 && speed <= 70) { weightedPenalties += 0.4; catStats[cat].moving++; }
-      else if (speed > 70) { weightedPenalties += 1.2; catStats[cat].moving++; }
-    } else if (cat === "pistol") {
-      if (speed > 80 && speed <= 150) { weightedPenalties += 0.15; catStats[cat].moving++; }
-      else if (speed > 150) { weightedPenalties += 0.5; catStats[cat].moving++; }
-    } else if (cat === "smg") {
-      if (speed > 140) { weightedPenalties += 0.2; catStats[cat].moving++; }
-    } else {
-      if (speed > 50) { weightedPenalties += 0.5; catStats[cat].moving++; }
+    if (airborne || speed > maxSpeed * 0.34) {
+      invalidShots++;
+      catStats[cat].moving++;
     }
   }
 
-  const severityScore = Math.min(100, Math.round((weightedPenalties / total) * 100));
+  const invalidShotPercent = Math.round((invalidShots / total) * 100);
+  const severityScore = invalidShotPercent;
   const severity = severityScore >= 35 ? "severe" : severityScore >= 20 ? "moderate" : severityScore >= 8 ? "minor" : "clean";
 
   const byCategory = {};
@@ -503,7 +558,9 @@ function buildWeaponAwareMovementProfile(shotEntries) {
     stableShots, microMoveShots, movingShots, fastMoveShots,
     stablePercent: percent(stableShots), microPercent: percent(microMoveShots),
     movingPercent: percent(movingShots), fastPercent: percent(fastMoveShots),
-    severityScore, severity, byCategory,
+    invalidShotPercent, severityScore, severity, byCategory,
+    status: "measured", sampleCount: total, unmeasuredShots: shotEntries.length - total,
+    method: "weapon-max-speed-34pct-v1",
   };
 }
 
@@ -526,20 +583,22 @@ function calculateAngleDeviation(attackerPos, targetPos) {
 function buildPlayerReport(player, grouped, ticks, header, tickRate) {
   const deathsAll = grouped.player_death.filter((record) => !isWarmup(record));
   const deaths = deathsAll.filter((record) => matchesPlayer(record, "user", player));
-  const kills = deathsAll.filter((record) => matchesPlayer(record, "attacker", player) && !matchesPlayer(record, "user", player));
+  const combatDeaths = deathsAll.filter((record) => isKnownEnemyInteraction(record, "attacker", "user", ticks));
+  const kills = combatDeaths.filter((record) => matchesPlayer(record, "attacker", player) && !matchesPlayer(record, "user", player));
   const assists = deathsAll.filter((record) => matchesPlayer(record, "assister", player));
-  const hurts = grouped.player_hurt.filter((record) => matchesPlayer(record, "attacker", player) && !matchesPlayer(record, "user", player));
-  const shots = grouped.weapon_fire.filter((record) => matchesPlayer(record, "user", player) || matchesPlayer(record, "player", player));
-  const blinds = grouped.player_blind.filter((record) => matchesPlayer(record, "attacker", player));
+  const hurts = grouped.player_hurt.filter((record) => matchesPlayer(record, "attacker", player) && !matchesPlayer(record, "user", player) && isKnownEnemyInteraction(record, "attacker", "user", ticks));
+  const shots = grouped.weapon_fire.filter((record) => !isWarmup(record) && (matchesPlayer(record, "user", player) || matchesPlayer(record, "player", player)));
+  const gunShots = shots.filter((record) => isGun(eventWeapon(record)));
+  const blinds = grouped.player_blind.filter((record) => matchesPlayer(record, "attacker", player) && isKnownEnemyInteraction(record, "attacker", "user", ticks));
   const blindedEvents = grouped.player_blind.filter((record) => matchesPlayer(record, "user", player));
   const flashes = grouped.flashbang_detonate.filter((record) => matchesPlayer(record, "user", player) || matchesPlayer(record, "player", player));
   const roundEnds = grouped.round_end.filter((record) => !isWarmup(record));
-  const rounds = Math.max(roundEnds.length, ...deathsAll.map(roundNumber), 1);
+  const rounds = Math.max(roundEnds.length, ...deathsAll.map(roundNumber), 0);
   const damage = hurts.reduce((sum, record) => sum + number(record, ["dmg_health", "health_damage", "damage"], 0), 0);
   const headshots = kills.filter((record) => value(record, ["headshot"], false) === true || value(record, ["headshot"]) === 1).length;
 
   const firstDeaths = new Map();
-  for (const record of [...deathsAll].sort((a, b) => number(a, ["tick"]) - number(b, ["tick"]))) {
+  for (const record of [...combatDeaths].sort((a, b) => number(a, ["tick"]) - number(b, ["tick"]))) {
     const round = roundNumber(record);
     if (!firstDeaths.has(round)) firstDeaths.set(round, record);
   }
@@ -547,22 +606,32 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
   const openingDeaths = Array.from(firstDeaths.values()).filter((record) => matchesPlayer(record, "user", player)).length;
 
   // 1. Silaha Duyarlı Hareket Analizi (Weapon-Aware Movement Profile)
-  const shotEntries = shots.map((record) => {
+  const shotEntries = gunShots.map((record) => {
     const tick = number(record, ["tick"]);
     const tickRow = rowForPlayerAtTick(ticks, tick, player);
     const speed = shotSpeed(record, tickRow);
+    const maxSpeed = finiteNumber(tickRow, ["max_speed"]);
+    const airborneRaw = value(tickRow, ["is_airborne"], false);
+    const airborne = airborneRaw === true || airborneRaw === 1 || airborneRaw === "true";
     const weapon = eventWeapon(record);
-    return { speed, weapon, tick };
+    return { speed, maxSpeed, airborne, weapon, tick };
   });
   const movementProfile = buildWeaponAwareMovementProfile(shotEntries);
-  const movingShots = movementProfile.movingShots + movementProfile.fastMoveShots;
+  const movingShots = movementProfile.status === "measured"
+    ? shotEntries.filter((entry) => Number.isFinite(entry.speed) && Number.isFinite(entry.maxSpeed) && entry.maxSpeed > 0 && (entry.airborne || entry.speed > entry.maxSpeed * 0.34)).length
+    : 0;
 
   // 2. Sprey & Hitbox Dağılımı (Hitbox & Spray Stats)
-  const gunShots = shots.filter((s) => isGun(eventWeapon(s)));
   const gunHurts = hurts.filter((h) => isGun(eventWeapon(h)));
   const totalGunShots = gunShots.length;
-  const totalGunHits = gunHurts.length;
-  const accuracyPercent = totalGunShots ? Math.round((totalGunHits / totalGunShots) * 1000) / 10 : 0;
+  const bulletDamageAvailable = Array.isArray(grouped.bullet_damage) && grouped.bullet_damage.length > 0;
+  const playerBulletDamage = bulletDamageAvailable ? grouped.bullet_damage.filter((record) =>
+    matchesPlayer(record, "attacker", player) && isKnownEnemyInteraction(record, "attacker", "user", ticks)) : [];
+  const hitAttackTicks = new Set(playerBulletDamage.map((record) => number(record, ["attack_tick_count", "attack_tick", "tick"], 0)).filter(Boolean));
+  const totalGunHits = hitAttackTicks.size;
+  const accuracyPercent = bulletDamageAvailable && totalGunShots
+    ? Math.round((totalGunHits / totalGunShots) * 1000) / 10
+    : null;
 
   const hitboxCounts = { head: 0, chest: 0, stomach: 0, arms: 0, legs: 0 };
   gunHurts.forEach((h) => {
@@ -572,15 +641,16 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     else if (hg === "stomach" || hg === "3") hitboxCounts.stomach++;
     else if (/arm|4|5/.test(hg)) hitboxCounts.arms++;
     else if (/leg|6|7/.test(hg)) hitboxCounts.legs++;
-    else hitboxCounts.chest++;
   });
 
+  const hitboxSampleCount = Object.values(hitboxCounts).reduce((sum, count) => sum + count, 0);
+
   const hitboxPercents = {
-    head: totalGunHits ? Math.round((hitboxCounts.head / totalGunHits) * 100) : 0,
-    chest: totalGunHits ? Math.round((hitboxCounts.chest / totalGunHits) * 100) : 0,
-    stomach: totalGunHits ? Math.round((hitboxCounts.stomach / totalGunHits) * 100) : 0,
-    arms: totalGunHits ? Math.round((hitboxCounts.arms / totalGunHits) * 100) : 0,
-    legs: totalGunHits ? Math.round((hitboxCounts.legs / totalGunHits) * 100) : 0,
+    head: hitboxSampleCount ? Math.round((hitboxCounts.head / hitboxSampleCount) * 100) : 0,
+    chest: hitboxSampleCount ? Math.round((hitboxCounts.chest / hitboxSampleCount) * 100) : 0,
+    stomach: hitboxSampleCount ? Math.round((hitboxCounts.stomach / hitboxSampleCount) * 100) : 0,
+    arms: hitboxSampleCount ? Math.round((hitboxCounts.arms / hitboxSampleCount) * 100) : 0,
+    legs: hitboxSampleCount ? Math.round((hitboxCounts.legs / hitboxSampleCount) * 100) : 0,
   };
 
   // Sprey analizi: ilk 3 mermi vs 4+ mermiler
@@ -591,8 +661,9 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
   gunShots.forEach((s) => {
     const tick = number(s, ["tick"]);
     const tickRow = rowForPlayerAtTick(ticks, tick, player);
-    const shotsFired = number(tickRow, ["CCSPlayerPawn.m_iShotsFired", "m_iShotsFired"], 1);
-    const isHit = gunHurts.some((h) => Math.abs(number(h, ["tick"]) - tick) <= 4);
+    const shotsFired = finiteNumber(tickRow, ["CCSPlayerPawn.m_iShotsFired", "m_iShotsFired"]);
+    if (shotsFired === null || !bulletDamageAvailable) return;
+    const isHit = hitAttackTicks.has(tick);
     if (shotsFired <= 3) {
       earlyShots++;
       if (isHit) earlyHits++;
@@ -606,8 +677,14 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     totalShots: totalGunShots,
     totalHits: totalGunHits,
     accuracyPercent,
-    earlyAccuracy: earlyShots ? Math.round((earlyHits / earlyShots) * 100) : 0,
-    lateAccuracy: lateShots ? Math.round((lateHits / lateShots) * 100) : 0,
+    earlyAccuracy: earlyShots ? Math.round((earlyHits / earlyShots) * 100) : null,
+    lateAccuracy: lateShots ? Math.round((lateHits / lateShots) * 100) : null,
+    earlyShots,
+    lateShots,
+    status: bulletDamageAvailable ? (totalGunShots ? "measured" : "insufficient-sample") : "unavailable",
+    method: "bullet-damage-attack-tick-v1",
+    reason: bulletDamageAvailable ? (totalGunShots ? undefined : "Silahlı atış örneği bulunamadı.") : "Demo bullet_damage olayı sağlamadı; player_hurt zaman yakınlığıyla tahmin yapılmadı.",
+    hitboxSampleCount,
     hitboxCounts,
     hitboxPercents,
   };
@@ -623,16 +700,19 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     const victimRow = rowForPlayerAtTick(ticks, tick, { name: victimName, steamid: steamId(record, "user") });
 
     if (attackerRow && victimRow) {
+      const requiredValues = [
+        finiteNumber(attackerRow, ["X", "x"]), finiteNumber(attackerRow, ["Y", "y"]), finiteNumber(attackerRow, ["Z", "z"]),
+        finiteNumber(attackerRow, ["pitch"]), finiteNumber(attackerRow, ["yaw"]),
+        finiteNumber(victimRow, ["X", "x"]), finiteNumber(victimRow, ["Y", "y"]), finiteNumber(victimRow, ["Z", "z"]),
+      ];
+      if (requiredValues.some((item) => item === null)) return;
       const attPos = {
-        x: Number(value(attackerRow, ["X", "x"], 0)),
-        y: Number(value(attackerRow, ["Y", "y"], 0)),
-        z: Number(value(attackerRow, ["Z", "z"], 0)) + 64,
-        pitch: Number(value(attackerRow, ["pitch"], 0)),
-        yaw: Number(value(attackerRow, ["yaw"], 0)),
+        x: requiredValues[0], y: requiredValues[1], z: requiredValues[2] + 64,
+        pitch: requiredValues[3], yaw: requiredValues[4],
       };
-      const vicX = Number(value(victimRow, ["X", "x"], 0));
-      const vicY = Number(value(victimRow, ["Y", "y"], 0));
-      const vicZ = Number(value(victimRow, ["Z", "z"], 0));
+      const vicX = requiredValues[5];
+      const vicY = requiredValues[6];
+      const vicZ = requiredValues[7];
 
       const headPos = { x: vicX, y: vicY, z: vicZ + 62 };
       const bodyPos = { x: vicX, y: vicY, z: vicZ + 40 };
@@ -645,15 +725,17 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     }
   });
 
-  const avgHeadError = headDeviations.length ? Math.round((headDeviations.reduce((s, v) => s + v, 0) / headDeviations.length) * 10) / 10 : 4.8;
-  const avgBodyError = bodyDeviations.length ? Math.round((bodyDeviations.reduce((s, v) => s + v, 0) / bodyDeviations.length) * 10) / 10 : 3.2;
-  const preAimScore = Math.max(10, Math.min(100, Math.round(100 - avgHeadError * 9)));
+  const avgHeadError = headDeviations.length ? Math.round(percentile(headDeviations, 0.5) * 10) / 10 : null;
+  const avgBodyError = bodyDeviations.length ? Math.round(percentile(bodyDeviations, 0.5) * 10) / 10 : null;
 
   const crosshairStats = {
     headErrorAngle: avgHeadError,
     bodyErrorAngle: avgBodyError,
-    preAimScore,
-    headLevelRating: avgHeadError <= 3.5 ? "Mükemmel (Pro Seviye)" : avgHeadError <= 6.0 ? "İyi (Hizalı)" : "Geliştirilmeli (Aşağı/Yukarı Sapma)",
+    headLevelRating: headDeviations.length ? "Kill anı hizası · pre-aim değildir" : "Ölçülemedi",
+    status: headDeviations.length ? "measured" : "insufficient-sample",
+    sampleCount: headDeviations.length,
+    method: "kill-tick-alignment-v2",
+    reason: headDeviations.length ? undefined : "Geçerli saldırgan ve hedef tick konumu bulunan kill yok.",
   };
 
   // 4. Yaklaşık Time-to-Damage (TTD) ve gerçek karşılıklı görünür düello analizi.
@@ -666,35 +748,23 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
   const roundEconomy = [];
   const startMoneyList = [];
   const spentMoneyList = [];
+  const freezeEndsForEconomy = (grouped.round_freeze_end || []).filter((record) => !isWarmup(record));
 
   for (let r = 1; r <= rounds; r++) {
-    const roundDeaths = deathsAll.filter((d) => roundNumber(d) === r);
-    const sampleTick = roundDeaths[0] ? number(roundDeaths[0], ["tick"]) : null;
-    let startMoney = 800;
-    let spentMoney = 0;
-    let endMoney = 0;
+    const freezeEvent = freezeEndsForEconomy[r - 1];
+    const sampleTick = freezeEvent ? number(freezeEvent, ["tick"], 0) : 0;
+    const row = sampleTick ? rowForPlayerAtTick(ticks, sampleTick, player) : null;
+    const startMoney = finiteNumber(row, ["CCSPlayerController.CCSPlayerController_InGameMoneyServices.m_iStartAccount", "m_iStartAccount"]);
+    const spentMoney = finiteNumber(row, ["CCSPlayerController.CCSPlayerController_InGameMoneyServices.m_iCashSpentThisRound", "m_iCashSpentThisRound"]);
+    const endMoney = finiteNumber(row, ["CCSPlayerController.CCSPlayerController_InGameMoneyServices.m_iAccount", "m_iAccount"]);
+    const measured = startMoney !== null && spentMoney !== null && endMoney !== null;
 
-    if (sampleTick) {
-      const row = rowForPlayerAtTick(ticks, sampleTick, player);
-      if (row) {
-        startMoney = number(row, ["CCSPlayerController.CCSPlayerController_InGameMoneyServices.m_iStartAccount", "m_iStartAccount"], 800);
-        spentMoney = number(row, ["CCSPlayerController.CCSPlayerController_InGameMoneyServices.m_iCashSpentThisRound", "m_iCashSpentThisRound"], 0);
-        endMoney = number(row, ["CCSPlayerController.CCSPlayerController_InGameMoneyServices.m_iAccount", "m_iAccount"], Math.max(0, startMoney - spentMoney));
-      }
+    let buyType = "Veri yok";
+    if (measured) {
+      buyType = spentMoney <= 1000 ? "Düşük harcama" : spentMoney <= 2800 ? "Orta harcama" : "Yüksek harcama";
+      startMoneyList.push(startMoney);
+      spentMoneyList.push(spentMoney);
     }
-
-    let buyType = "Full Buy";
-    if (spentMoney <= 1000 && startMoney <= 2500) buyType = "Eco";
-    else if (spentMoney <= 2800) buyType = "Force Buy";
-
-    startMoneyList.push(startMoney);
-    spentMoneyList.push(spentMoney);
-
-    // Hero Buy: takım eko/force yaparken oyuncunun tek başına büyük alım yapması.
-    // Takım ortalaması demodan round bazında okunamadığı için yaklaşık tespit:
-    // kasa tam alıma zor yetiyorken (≤5200) büyük harcama (≥3000) yapılması.
-    // (Önceki sürümdeki `r % 3 === 0` koşulu anlamsızdı: sadece round numarasına bakıyordu.)
-    const heroBuy = spentMoney >= 3000 && startMoney <= 5200 && startMoney - spentMoney < 1000;
 
     roundEconomy.push({
       round: r,
@@ -702,17 +772,21 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
       spentMoney,
       endMoney,
       buyType,
-      heroBuy,
+      status: measured ? "measured" : "unavailable",
     });
   }
 
   const economyStats = {
-    averageStartMoney: startMoneyList.length ? Math.round(startMoneyList.reduce((s, v) => s + v, 0) / startMoneyList.length) : 3200,
-    totalCashSpent: spentMoneyList.reduce((s, v) => s + v, 0),
+    averageStartMoney: startMoneyList.length ? Math.round(startMoneyList.reduce((s, v) => s + v, 0) / startMoneyList.length) : null,
+    totalCashSpent: spentMoneyList.length ? spentMoneyList.reduce((s, v) => s + v, 0) : null,
     roundEconomy,
-    ecoRounds: roundEconomy.filter((e) => e.buyType === "Eco").length,
-    forceRounds: roundEconomy.filter((e) => e.buyType === "Force Buy").length,
-    fullBuyRounds: roundEconomy.filter((e) => e.buyType === "Full Buy").length,
+    ecoRounds: roundEconomy.filter((e) => e.buyType === "Düşük harcama").length,
+    forceRounds: roundEconomy.filter((e) => e.buyType === "Orta harcama").length,
+    fullBuyRounds: roundEconomy.filter((e) => e.buyType === "Yüksek harcama").length,
+    status: startMoneyList.length ? "measured" : "unavailable",
+    sampleCount: startMoneyList.length,
+    method: "round-freeze-money-v1",
+    reason: startMoneyList.length ? undefined : "Round freeze ticklerinde para alanları bulunamadı.",
   };
 
   const utilityDamage = hurts.filter((record) => /grenade|inferno|molotov|incendiary/i.test(text(record, ["weapon", "weapon_name"])))
@@ -726,7 +800,8 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     const x = Number(role(record, "user", "X") ?? value(tickRow, ["X", "x"], 0));
     const y = Number(role(record, "user", "Y") ?? value(tickRow, ["Y", "y"], 0));
     const z = Number(role(record, "user", "Z") ?? value(tickRow, ["Z", "z"], 0));
-    const speed = Math.round(shotSpeed(record, tickRow) * 10) / 10;
+    const rawSpeed = shotSpeed(record, tickRow);
+    const speed = rawSpeed === null ? undefined : Math.round(rawSpeed * 10) / 10;
     const team = Number(role(record, "user", "team_num") ?? value(tickRow, ["team_num"], 0));
     const sameTick = ticks?.byTick ? (ticks.byTick.get(tick) || []).filter((candidate) => Number(value(candidate, ["team_num"], -1)) === team) : (Array.isArray(ticks) ? ticks.filter((candidate) => number(candidate, ["tick"]) === tick && Number(value(candidate, ["team_num"], -1)) === team) : []);
     const teammateDistances = sameTick
@@ -734,13 +809,13 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
       .map((candidate) => distance({ X: x, Y: y }, candidate));
     const nearestTeammate = teammateDistances.length ? Math.min(...teammateDistances) : null;
     const round = roundNumber(record);
-    const recentFlash = flashes.some((flash) => roundNumber(flash) === round && number(flash, ["tick"]) <= tick && tick - number(flash, ["tick"]) <= 512);
+    const recentFlash = flashes.some((flash) => roundNumber(flash) === round && number(flash, ["tick"]) <= tick && Number.isFinite(tickRate) && (tick - number(flash, ["tick"])) / tickRate <= 8);
     const killerName = playerName(record, "attacker");
-    const traded = deathsAll.some((later) => number(later, ["tick"]) > tick && number(later, ["tick"]) - tick <= 320 && playerName(later, "user") === killerName && !matchesPlayer(later, "attacker", player));
+    const traded = isDeathTraded(record, combatDeaths, ticks, tickRate);
     const wasBlind = blindedEvents.some((blind) => {
       const blindTick = number(blind, ["tick"]);
       const blindDuration = number(blind, ["blind_duration", "duration"], 0);
-      return blindTick <= tick && tick - blindTick <= Math.max(64, Math.round(blindDuration * 64));
+      return blindTick <= tick && Number.isFinite(tickRate) && tick - blindTick <= Math.max(tickRate, Math.round(blindDuration * tickRate));
     });
     return {
       round, tick, time: number(record, ["game_time"], 0), zone: translateZone(zoneRaw),
@@ -767,18 +842,31 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     };
   });
 
+  const roundStartsList = (grouped.round_start || []).filter((r) => !isWarmup(r));
+  const freezeEndsList = (grouped.round_freeze_end || []).filter((r) => !isWarmup(r));
+  const roundEndsList = (grouped.round_end || []).filter((r) => !isWarmup(r));
+  const allPlayerTicks = ticks?.byPlayerList
+    ? ((player.steamid ? ticks.byPlayerList.get(player.steamid) : null) || (player.name ? ticks.byPlayerList.get(player.name) : null) || [])
+    : (Array.isArray(ticks) ? ticks.filter((t) => (player.steamid && text(t, ["steamid", "steam_id"]) === player.steamid) || text(t, ["name", "player_name"]) === player.name) : []);
+  const sideRoundCounts = { CT: 0, T: 0 };
+  for (let r = 0; r < roundEndsList.length; r++) {
+    const sTick = number(freezeEndsList[r] || roundStartsList[r], ["tick"], 0);
+    const eTick = number(roundEndsList[r], ["tick"], 0);
+    const row = allPlayerTicks.find((candidate) => {
+      const candidateTick = number(candidate, ["tick"], 0);
+      return candidateTick >= sTick && candidateTick <= eTick;
+    });
+    const side = teamSide(number(row, ["team_num"], 0));
+    if (side === "CT" || side === "T") sideRoundCounts[side]++;
+  }
+
   const sideStats = ["CT", "T"].map((side) => {
     const sideDeaths = deathDetails.filter((detail) => detail.side === side);
     const sideKills = killDetails.filter((detail) => detail.side === side);
     const sideHurts = hurts.filter((record) => teamSide(role(record, "attacker", "team_num")) === side);
     const sideShots = shots.filter((record) => teamSide(role(record, "user", "team_num") ?? role(record, "player", "team_num")) === side);
     const sideAssists = assists.filter((record) => teamSide(role(record, "assister", "team_num")) === side);
-    const observedRounds = new Set([
-      ...sideDeaths.map((detail) => detail.round),
-      ...sideKills.map((detail) => detail.round),
-      ...sideHurts.map(roundNumber),
-      ...sideShots.map(roundNumber),
-    ].filter((round) => round >= 0));
+    const observedRounds = sideRoundCounts[side];
     const sideDamage = sideHurts.reduce((sum, record) => sum + number(record, ["dmg_health", "health_damage", "damage"], 0), 0);
     const sideZones = new Map();
     for (const detail of sideDeaths) sideZones.set(detail.zone, (sideZones.get(detail.zone) || 0) + 1);
@@ -786,15 +874,21 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     const sideUntraded = sideDeaths.filter((detail) => !detail.traded).length;
     return {
       side,
-      rounds: observedRounds.size,
+      rounds: observedRounds,
       kills: sideKills.length,
       deaths: sideDeaths.length,
       assists: sideAssists.length,
       damage: sideDamage,
-      adr: observedRounds.size ? Math.round((sideDamage / observedRounds.size) * 10) / 10 : 0,
+      adr: observedRounds ? Math.round((sideDamage / observedRounds) * 10) / 10 : null,
       shots: sideShots.length,
-      movingShotPercent: sideShots.length ? Math.round((sideShots.filter((record) => movingShot(record, rowForPlayerAtTick(ticks, number(record, ["tick"]), player))).length / sideShots.length) * 100) : 0,
-      tradePercent: sideDeaths.length ? Math.round(((sideDeaths.length - sideUntraded) / sideDeaths.length) * 100) : 0,
+      ...(() => {
+        const samples = sideShots.map((record) => movingShot(record, rowForPlayerAtTick(ticks, number(record, ["tick"]), player))).filter((result) => result !== null);
+        return {
+          movingShotPercent: samples.length ? Math.round((samples.filter(Boolean).length / samples.length) * 100) : null,
+          movementSampleCount: samples.length,
+        };
+      })(),
+      tradePercent: sideDeaths.length ? Math.round(((sideDeaths.length - sideUntraded) / sideDeaths.length) * 100) : null,
       topZone: sideTopZone,
       topZoneDeaths: sideTopZoneDeaths,
     };
@@ -811,9 +905,12 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     const weaponHurts = hurts.filter((record) => eventWeapon(record) === weapon);
     const weaponDamage = weaponHurts.reduce((sum, record) => sum + number(record, ["dmg_health", "health_damage", "damage"], 0), 0);
     const weaponHeadshots = weaponKills.filter((record) => value(record, ["headshot"], false) === true || value(record, ["headshot"]) === 1).length;
-    const efficiency = weaponShots.length ? Math.round((weaponKills.length / weaponShots.length) * 1000) / 10 : 0;
-    const score = Math.min(100, Math.round(weaponKills.length * 9 + weaponDamage / 22 + Math.min(25, weaponShots.length / 3)));
-    const status = weaponKills.length >= 5 && weaponShots.length >= 35 ? "signature" : weaponKills.length >= 3 ? "strong" : weaponShots.length >= 18 ? "developing" : "sample";
+    const efficiency = weaponShots.length ? Math.round((weaponDamage / weaponShots.length) * 10) / 10 : null;
+    const score = efficiency;
+    const status = weaponShots.length >= 40 ? "large-sample" : weaponShots.length >= 15 ? "measured" : "small-sample";
+    const weaponMovementSamples = weaponShots
+      .map((record) => movingShot(record, rowForPlayerAtTick(ticks, number(record, ["tick"]), player)))
+      .filter((result) => result !== null);
     return {
       weapon,
       label: weaponLabel(weapon),
@@ -823,7 +920,8 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
       shots: weaponShots.length,
       headshots: weaponHeadshots,
       headshotPercent: weaponKills.length ? Math.round((weaponHeadshots / weaponKills.length) * 100) : 0,
-      movingShotPercent: weaponShots.length ? Math.round((weaponShots.filter((record) => movingShot(record, rowForPlayerAtTick(ticks, number(record, ["tick"]), player))).length / weaponShots.length) * 100) : 0,
+      movingShotPercent: weaponMovementSamples.length ? Math.round((weaponMovementSamples.filter(Boolean).length / weaponMovementSamples.length) * 100) : null,
+      movementSampleCount: weaponMovementSamples.length,
       efficiency,
       score,
       status,
@@ -836,7 +934,22 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
   const topZoneDetails = deathDetails.filter((detail) => detail.zone === topZone);
   const unflashedDeaths = topZoneDetails.filter((detail) => !detail.usedRecentFlash).length;
   const untradedDeaths = deathDetails.filter((detail) => !detail.traded).length;
-  const impact = Math.max(0, Math.min(100, Math.round(50 + (kills.length - deaths.length) * 2.2 + (damage / rounds - 70) * 0.35 + assists.length * 1.2)));
+  const killRounds = new Set(kills.map(roundNumber));
+  const assistRounds = new Set(assists.map(roundNumber));
+  const deathRounds = new Set(deaths.map(roundNumber));
+  const tradedDeathRounds = new Set(deathDetails.filter((detail) => detail.traded).map((detail) => detail.round));
+  let kastRounds = Math.max(0, rounds - deathRounds.size);
+  for (const round of deathRounds) {
+    if (killRounds.has(round) || assistRounds.has(round) || tradedDeathRounds.has(round)) kastRounds++;
+  }
+  const kastPercent = rounds ? Math.round((kastRounds / rounds) * 1000) / 10 : null;
+  const survivalPercent = rounds ? Math.round(((rounds - deathRounds.size) / rounds) * 1000) / 10 : null;
+  const utilityImpactRounds = new Set([
+    ...hurts.filter((record) => /grenade|inferno|molotov|incendiary/i.test(text(record, ["weapon", "weapon_name"]))).map(roundNumber),
+    ...blinds.filter((record) => number(record, ["blind_duration", "duration"], 0) > 0).map(roundNumber),
+  ]);
+  const utilityImpactRoundPercent = rounds ? Math.round((utilityImpactRounds.size / rounds) * 1000) / 10 : null;
+  const impact = kastPercent;
 
   const recommendations = [];
 
@@ -846,69 +959,44 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     confidence: Math.min(94, 60 + topZoneDeaths * 7),
   });
 
-  if (movementProfile.byCategory.rifle && movementProfile.byCategory.rifle.movingPercent >= 20) {
+  if (movementProfile.byCategory.rifle?.shots >= 10 && movementProfile.byCategory.rifle.movingPercent > 0) {
     recommendations.push({
-      id: "rifle_movement",
-      title: "Tüfeklerle (AK-47 / M4) hareketli atış hatası",
-      body: `Tüfek atışlarının %${movementProfile.byCategory.rifle.movingPercent}'inde duruş hız sınırını aştın. Tüfekte mermi sapmasını önlemek için tam counter-strafe (karşı tuşa dokunarak durma) şarttır.`,
-      confidence: 89,
+      id: "rifle_movement_observation",
+      title: "Tüfek atışlarında hız sınırı gözlemi",
+      body: `${movementProfile.byCategory.rifle.shots} ölçülen tüfek atışının %${movementProfile.byCategory.rifle.movingPercent}'i, o tickte silahın max_speed değerinin %34'ünü aştı veya havadayken yapıldı. Bu doğrudan oran puan değildir; aynı yöntemle sonraki maçla karşılaştır.`,
+      confidence: Math.min(90, 55 + movementProfile.byCategory.rifle.shots),
     });
   }
 
-  if (movementProfile.byCategory.sniper && movementProfile.byCategory.sniper.movingPercent >= 15) {
+  if (movementProfile.byCategory.sniper?.shots >= 10 && movementProfile.byCategory.sniper.movingPercent > 0) {
     recommendations.push({
-      id: "sniper_movement",
-      title: "AWP / Sniper ile hareket halindeyken atış",
-      body: `Sniper atışlarının %${movementProfile.byCategory.sniper.movingPercent}'inde hareket halindeyken tetiğe basıldı. AWP'de en küçük hız dahi mermiyi tamamen saptırır.`,
-      confidence: 92,
+      id: "sniper_movement_observation",
+      title: "Sniper atışlarında hız sınırı gözlemi",
+      body: `${movementProfile.byCategory.sniper.shots} ölçülen sniper atışının %${movementProfile.byCategory.sniper.movingPercent}'i, max_speed tabanlı sınırı aştı veya havadayken yapıldı. İsabet sonucu çıkarılmaz; ilgili roundları demoda izle.`,
+      confidence: Math.min(90, 55 + movementProfile.byCategory.sniper.shots),
     });
   }
 
-  if (crosshairStats.headErrorAngle > 4.5) {
-    recommendations.push({
-      id: "crosshair_placement",
-      title: "Nişangah kafa hizasından sapıyor (Pre-aim)",
-      body: `Temas anlarında kafa sapması ortalama ${crosshairStats.headErrorAngle}° (Gövde sapması ${crosshairStats.bodyErrorAngle}°). Pre-Aim skoru ${crosshairStats.preAimScore}/100 (${crosshairStats.headLevelRating}). Köşeleri dönerken crosshair'i yere değil, doğrudan kafa hizasına kilitle.`,
-      confidence: 86,
-    });
-  }
-
-  if (sprayStats.lateAccuracy < 18 && sprayStats.totalShots > 40) {
+  if (sprayStats.status === "measured" && sprayStats.earlyAccuracy !== null && sprayStats.lateAccuracy !== null
+    && sprayStats.earlyShots >= 10 && sprayStats.lateShots >= 10 && sprayStats.lateAccuracy < sprayStats.earlyAccuracy) {
     recommendations.push({
       id: "spray_control",
-      title: "4+ mermi sonrası sprey kontrolü dağılıyor",
-      body: `İlk 3 mermideki isabet oranın %${sprayStats.earlyAccuracy} iken, 4. mermiden sonra bu oran %${sprayStats.lateAccuracy}'ye geriliyor. Uzun sprey yerine 2-3 mermilik burst atışları tercih et ve recoil reset süresini bekle.`,
-      confidence: 84,
+      title: "4+ mermi isabeti aynı maçtaki ilk üç merminin altında",
+      body: `${sprayStats.earlyShots} erken mermide %${sprayStats.earlyAccuracy}, ${sprayStats.lateShots} geç mermide %${sprayStats.lateAccuracy} doğrudan isabet ölçüldü. Sabit bir profesyonel eşik kullanılmadı; farkı ilgili çatışmaların videosuyla doğrula.`,
+      confidence: Math.min(90, 55 + Math.min(sprayStats.earlyShots, sprayStats.lateShots)),
     });
   }
 
-  if (duelStats.ttdSampleCount >= 5 && duelStats.medianTTD > 360) {
+  if (sprayStats.hitboxSampleCount >= 10 && sprayStats.hitboxCounts.legs > sprayStats.hitboxCounts.head) {
     recommendations.push({
-      id: "time_to_damage",
-      title: "Time-to-Damage (TTD) ve reaksiyon gecikmesi",
-      body: `Yaklaşık görünür temastan ilk hasara medyan süren ${duelStats.medianTTD} ms; ortalama ${duelStats.averageTTD} ms (${duelStats.ttdSampleCount} geçerli temas). Reaktif aim ve crosshair sabitleme drilleriyle ilk hasar süreni hızlandır.`,
-      confidence: Math.min(92, 65 + duelStats.ttdSampleCount),
-    });
-  }
-
-  if (sprayStats.hitboxPercents.legs > 12) {
-    recommendations.push({
-      id: "low_crosshair",
-      title: "Mermiler bacak seviyesine kayıyor",
-      body: `İsabet eden mermilerin %${sprayStats.hitboxPercents.legs}'i bacaklara vurdu. Crosshair'i sürekli göğüs/kafa seviyesine kaldırarak hasar çarpanını katla.`,
-      confidence: 80,
+      id: "leg_hit_observation",
+      title: "Bacak isabetleri kafa isabetlerinden fazla",
+      body: `${sprayStats.hitboxSampleCount} hitgroup örneğinde ${sprayStats.hitboxCounts.legs} bacak ve ${sprayStats.hitboxCounts.head} kafa isabeti ölçüldü. Nişangah yüksekliğini ilgili çatışmaların videosunda kontrol et.`,
+      confidence: Math.min(88, 55 + sprayStats.hitboxSampleCount),
     });
   }
 
   // 6. Round Bazlı Hareket Rotaları ve Win/Loss Eşleşmesi (Round Movement Paths & Tactical Routes)
-  const roundStartsList = (grouped.round_start || []).filter((r) => !isWarmup(r));
-  const freezeEndsList = (grouped.round_freeze_end || []).filter((r) => !isWarmup(r));
-  const roundEndsList = (grouped.round_end || []).filter((r) => !isWarmup(r));
-
-  const allPlayerTicks = ticks?.byPlayerList
-    ? ((player.steamid ? ticks.byPlayerList.get(player.steamid) : null) || (player.name ? ticks.byPlayerList.get(player.name) : null) || [])
-    : (Array.isArray(ticks) ? ticks.filter((t) => (player.steamid && text(t, ["steamid", "steam_id"]) === player.steamid) || text(t, ["name", "player_name"]) === player.name) : []);
-
   const roundPaths = [];
   for (let r = 0; r < roundEndsList.length; r++) {
     const sTick = number(freezeEndsList[r] || roundStartsList[r], ["tick"], 0);
@@ -918,6 +1006,7 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     const winnerVal = value(roundEndsList[r], ["winner", "winner_team"], "");
     const isWinnerCT = String(winnerVal) === "3" || String(winnerVal).toUpperCase() === "CT";
     const isWinnerT = String(winnerVal) === "2" || String(winnerVal).toUpperCase() === "T";
+    if (!isWinnerCT && !isWinnerT) continue;
     const winReason = text(roundEndsList[r], ["reason", "legacy_reason", "message"]) || "elimination";
 
     // Player ticks in this round from cached player ticks
@@ -963,7 +1052,7 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
       won,
       winnerSide: isWinnerCT ? "CT" : "T",
       winReason,
-      durationSeconds: Math.max(1, Math.round((eTick - sTick) / 64)),
+      durationSeconds: Number.isFinite(tickRate) && tickRate > 0 ? Math.max(1, Math.round((eTick - sTick) / tickRate)) : 0,
       startZone,
       endZone,
       primaryZone,
@@ -1037,13 +1126,14 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
 
   return {
     player, map: text(header, ["map_name", "map"]), rounds, kills: kills.length, deaths: deaths.length,
-    assists: assists.length, adr: Math.round((damage / rounds) * 10) / 10,
+    assists: assists.length, adr: rounds ? Math.round((damage / rounds) * 10) / 10 : 0,
     headshotPercent: kills.length ? Math.round((headshots / kills.length) * 100) : 0,
     openingKills, openingDeaths, utilityDamage, enemyBlindSeconds: Math.round(enemyBlindSeconds * 10) / 10,
     flashesThrown: flashes.length, shots: shots.length,
-    movingShotPercent: shots.length ? Math.round((movingShots / shots.length) * 100) : 0,
-    tradePercent: deaths.length ? Math.round(((deaths.length - untradedDeaths) / deaths.length) * 100) : 0,
+    movingShotPercent: movementProfile.sampleCount ? Math.round((movingShots / movementProfile.sampleCount) * 100) : null,
+    tradePercent: deaths.length ? Math.round(((deaths.length - untradedDeaths) / deaths.length) * 100) : null,
     topZone, topZoneDeaths, unflashedDeaths, untradedDeaths, impact,
+    kastPercent, survivalPercent, utilityImpactRoundPercent, utilityImpactRoundSampleCount: rounds,
     deathDetails, killDetails, sideStats, weaponStats, movementProfile,
     sprayStats, crosshairStats, duelStats, economyStats, roundPaths, routeStats, recommendations,
   };
@@ -1076,7 +1166,7 @@ export function quickDemoMeta(pathOrBuffer) {
     const scoreFormatted = (ctScore > 0 || tScore > 0) ? `${ctScore} - ${tScore}` : (totalRounds > 0 ? `${totalRounds} Round` : "—");
 
     return {
-      map: map || "de_dust2",
+      map: map || "",
       ctScore,
       tScore,
       score: scoreFormatted,
@@ -1104,7 +1194,11 @@ export function analyzeDemo(pathOrBuffer) {
   const eventRows = parseEvents(pathOrBuffer, CORE_EVENTS, PLAYER_PROPS, OTHER_PROPS);
   const grouped = groupEvents(eventRows);
   const players = collectPlayers(eventRows);
-  const tickRate = estimateDemoTickRate(eventRows);
+  const eventTickRate = estimateDemoTickRate(eventRows);
+  const playbackTicks = finiteNumber(header, ["playback_ticks", "ticks"]);
+  const playbackTime = finiteNumber(header, ["playback_time", "duration"]);
+  const headerTickRate = playbackTicks !== null && playbackTime !== null && playbackTime > 0 ? playbackTicks / playbackTime : null;
+  const tickRate = eventTickRate || (headerTickRate && headerTickRate >= 16 && headerTickRate <= 256 ? Math.round(headerTickRate * 1000) / 1000 : null);
 
   const roundStarts = (grouped.round_start || []).filter((r) => !isWarmup(r));
   const freezeEnds = (grouped.round_freeze_end || []).filter((r) => !isWarmup(r));
@@ -1116,7 +1210,8 @@ export function analyzeDemo(pathOrBuffer) {
     const sTick = number(freezeEnds[r] || roundStarts[r], ["tick"], 0);
     const eTick = number(roundEnds[r], ["tick"], 0);
     if (sTick > 0 && eTick > sTick) {
-      for (let t = sTick; t <= eTick; t += 64) {
+      const pathStep = Number.isFinite(tickRate) && tickRate > 0 ? Math.max(1, Math.round(tickRate)) : 64;
+      for (let t = sTick; t <= eTick; t += pathStep) {
         roundPathTicks.push(t);
       }
     }
@@ -1135,11 +1230,13 @@ export function analyzeDemo(pathOrBuffer) {
     ...grouped.player_death.filter((record) => !isWarmup(record) && isGun(eventWeapon(record))),
   ];
   const combatTickSet = new Set();
-  const combatWindowTicks = Math.ceil(tickRate * (CONTACT_WINDOW_MS / 1000));
+  const combatWindowTicks = Number.isFinite(tickRate) && tickRate > 0 ? Math.ceil(tickRate * (CONTACT_WINDOW_MS / 1000)) : 0;
   for (const record of combatEvents) {
     const endTick = number(record, ["tick"], 0);
     if (!endTick) continue;
-    for (let tick = Math.max(0, endTick - combatWindowTicks); tick <= endTick; tick++) combatTickSet.add(tick);
+    if (combatWindowTicks > 0) {
+      for (let tick = Math.max(0, endTick - combatWindowTicks); tick <= endTick; tick++) combatTickSet.add(tick);
+    }
   }
   const importantTicks = [...importantTickSet].sort((a, b) => a - b);
   const combatTicks = [...combatTickSet].sort((a, b) => a - b);
@@ -1147,7 +1244,7 @@ export function analyzeDemo(pathOrBuffer) {
   const detailTickRows = importantTicks.length
     ? parseTicks(pathOrBuffer, [
         "X", "Y", "Z", "pitch", "yaw", "velocity_X", "velocity_Y", "team_num", "last_place_name",
-        "health", "game_time",
+        "health", "game_time", "max_speed", "duck_amount", "is_airborne", "round_start_equip_value",
         "CCSPlayerPawn.m_iShotsFired",
         "CCSPlayerController.CCSPlayerController_InGameMoneyServices.m_iAccount",
         "CCSPlayerController.CCSPlayerController_InGameMoneyServices.m_iCashSpentThisRound",
@@ -1159,5 +1256,5 @@ export function analyzeDemo(pathOrBuffer) {
     : [];
   const tickIndex = buildTickIndex(mergeTickRows(detailTickRows, combatTickRows));
   const reports = players.map((player) => buildPlayerReport(player, grouped, tickIndex, header, tickRate));
-  return { header, players, reports, parserVersion: "0.42.0", analysisVersion: "2.0.0", tickRate };
+  return { header, players, reports, parserVersion: "0.42.0", analysisVersion: "3.0.0", tickRate };
 }

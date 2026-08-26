@@ -24,15 +24,30 @@ Geliştirici bilgisayarında PowerShell ile `launcher\package-portable.ps1` çal
 
 Model ve llama.cpp dosyaları kaynak klasörde yoksa önce `launcher\download-embedded-ai.ps1`, ardından `launcher\package-portable.ps1` çalıştırılır. İlk betik yalnızca llama.cpp'nin resmî GitHub sürümünü ve Hugging Face üzerindeki ggml-org dönüştürmesini indirir. Büyük dosyalar repoya eklenmez; dağıtım arşivine eklenir.
 
+## Yerel yayın doğrulaması
+
+Git'e veya GitHub'a hiçbir şey göndermeden testleri, lint kontrolünü, üretim build'ini, patch ZIP'i ve model dahil portable RAR'ı üretmek için:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\launcher\publish-release.ps1 -NewVersion 0.50.0 -BuildOnly
+```
+
+Komut başarılı olduğunda şu iki dosya hazır olmalıdır:
+
+- `release\TRACER-Patch-v0.50.0.zip`
+- `release\TRACER-Portable-v0.50.0.rar`
+
+`release\TRACER-Portable` klasörü de RAR ile aynı sürümün açılmış, doğrudan çalıştırılabilir kopyasıdır. `BuildOnly` hiçbir commit, tag, push veya GitHub Release oluşturmaz.
+
 ## Arkadaşlara dağıtım ve tek tık güncelleme
 
 GitHub CLI bir kez kurulup `gh auth login` ile giriş yapıldıktan sonra yeni sürüm tek komutla yayınlanır:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\launcher\publish-release.ps1 -NewVersion 0.48.0
+powershell -ExecutionPolicy Bypass -File .\launcher\publish-release.ps1 -NewVersion 0.50.0
 ```
 
-Betik sürümü senkronize eder, test edilebilir üretim build'ini alır ve GitHub Release'e iki dosya yükler:
+Betik sürümü senkronize eder; test, lint ve TypeScript kontrollerini geçmeden devam etmez; üretim build'ini alır ve GitHub Release'e iki dosya yükler:
 
 - `TRACER-Portable-vX.Y.Z.rar`: uygulamayı ilk kez kuracaklar için model ve runtime dahil tam paket.
 - `TRACER-Patch-vX.Y.Z.zip`: uygulaması bulunanlar için hafif güncelleme.

@@ -13,6 +13,14 @@ import {
   IconSparkles,
 } from "./NavIcons";
 
+function percentMetric(value: number | null) {
+  return value === null ? "—" : `%${value}`;
+}
+
+function decimalMetric(value: number | null) {
+  return value === null ? "—" : value.toFixed(1);
+}
+
 export default function FullMatchReportModal({
   isOpen,
   onClose,
@@ -83,44 +91,44 @@ export default function FullMatchReportModal({
           </div>
         </header>
 
-        {/* 1. Maç Karnesi & 360 Skor */}
+        {/* Doğrudan maç metrikleri */}
         <div className="report-scorecard-grid">
           <div className="scorecard-hero">
-            <span>GENEL MAÇ PUANI</span>
-            <strong>{card.overallScore}<i>/100</i></strong>
+            <span>KAST ROUND KATKISI</span>
+            <strong>{percentMetric(card.overallScore)}</strong>
             <em className="scorecard-grade-badge">{card.grade}</em>
-            <small style={{ color: "#798c82", fontSize: "11px" }}>%{reportData.confidence} Kanıt Güveni</small>
+            <small style={{ color: "#798c82", fontSize: "11px" }}>{card.sampleCount} round · {card.method}</small>
           </div>
           <div className="scorecard-dimensions">
             <div className="scorecard-dim-box">
-              <span>Maç Etkisi</span>
-              <b>{card.impactScore}<i>/100</i></b>
-              <i><em style={{ width: `${card.impactScore}%`, background: "var(--acid)" }} /></i>
+              <span>KAST</span>
+              <b>{percentMetric(card.impactScore)}</b>
+              <i><em style={{ width: `${card.impactScore ?? 0}%`, background: "var(--acid)" }} /></i>
             </div>
             <div className="scorecard-dim-box">
-              <span>Nişangah & İsabet</span>
-              <b>{card.aimScore}<i>/100</i></b>
-              <i><em style={{ width: `${card.aimScore}%`, background: "#52e389" }} /></i>
+              <span>Headshot Oranı</span>
+              <b>{percentMetric(card.aimScore)}</b>
+              <i><em style={{ width: `${card.aimScore ?? 0}%`, background: "#52e389" }} /></i>
             </div>
             <div className="scorecard-dim-box">
-              <span>Counter-Strafe</span>
-              <b>{card.movementScore}<i>/100</i></b>
-              <i><em style={{ width: `${card.movementScore}%`, background: "#68d4ff" }} /></i>
+              <span>Geçerli Hızda Atış</span>
+              <b>{percentMetric(card.movementScore)}</b>
+              <i><em style={{ width: `${card.movementScore ?? 0}%`, background: "#68d4ff" }} /></i>
             </div>
             <div className="scorecard-dim-box">
               <span>Takım & Trade</span>
-              <b>{card.teamworkScore}<i>/100</i></b>
-              <i><em style={{ width: `${card.teamworkScore}%`, background: "#b99cff" }} /></i>
+              <b>{percentMetric(card.teamworkScore)}</b>
+              <i><em style={{ width: `${card.teamworkScore ?? 0}%`, background: "#b99cff" }} /></i>
             </div>
             <div className="scorecard-dim-box">
-              <span>Utility Katkısı</span>
-              <b>{card.utilityScore}<i>/100</i></b>
-              <i><em style={{ width: `${card.utilityScore}%`, background: "#ffb761" }} /></i>
+              <span>Utility Etkili Round</span>
+              <b>{percentMetric(card.utilityScore)}</b>
+              <i><em style={{ width: `${card.utilityScore ?? 0}%`, background: "#ffb761" }} /></i>
             </div>
             <div className="scorecard-dim-box">
-              <span>Pozisyon Tutarlılığı</span>
-              <b>{card.positionScore}<i>/100</i></b>
-              <i><em style={{ width: `${card.positionScore}%`, background: "#ff7e85" }} /></i>
+              <span>Hayatta Kalma</span>
+              <b>{percentMetric(card.positionScore)}</b>
+              <i><em style={{ width: `${card.positionScore ?? 0}%`, background: "#ff7e85" }} /></i>
             </div>
           </div>
         </div>
@@ -169,16 +177,16 @@ export default function FullMatchReportModal({
           <article className="report-subpanel">
             <div className="report-subpanel-head">
               <span>CT / T TARAF FARKLILIKLARI</span>
-              <b>{reportData.sideReview.ctAdr > 0 ? "Taraf Verisi Hazır" : "Genel"}</b>
+              <b>{reportData.sideReview.ctAdr !== null || reportData.sideReview.tAdr !== null ? "Taraf Verisi Hazır" : "Ölçülemedi"}</b>
             </div>
             <div className="side-mini-row">
               <div className="side-mini-box ct">
                 <span>SAVUNMA (CT)</span>
-                <b>{reportData.sideReview.ctKills} K / {reportData.sideReview.ctDeaths} D · {reportData.sideReview.ctAdr.toFixed(1)} ADR</b>
+                <b>{reportData.sideReview.ctKills} K / {reportData.sideReview.ctDeaths} D · {decimalMetric(reportData.sideReview.ctAdr)} ADR</b>
               </div>
               <div className="side-mini-box t">
                 <span>HÜCUM (T)</span>
-                <b>{reportData.sideReview.tKills} K / {reportData.sideReview.tDeaths} D · {reportData.sideReview.tAdr.toFixed(1)} ADR</b>
+                <b>{reportData.sideReview.tKills} K / {reportData.sideReview.tDeaths} D · {decimalMetric(reportData.sideReview.tAdr)} ADR</b>
               </div>
             </div>
             <p style={{ margin: 0, fontSize: "11.5px", color: "#b3c3bb", lineHeight: "1.45" }}>
@@ -193,16 +201,16 @@ export default function FullMatchReportModal({
             </div>
             <div className="weapon-verdict-box">
               <div className="weapon-verdict-item">
-                <span>En Güçlü Silah</span>
-                <b style={{ color: "#52e389" }}>{reportData.weaponVerdict.strongWeapon}</b>
+                <span>En Yüksek Kayıtlı Katkı</span>
+                <b>{reportData.weaponVerdict.strongWeapon}</b>
               </div>
               <div className="weapon-verdict-item">
-                <span>Gelişim Adayı</span>
-                <b style={{ color: "#ffb761" }}>{reportData.weaponVerdict.developWeapon}</b>
+                <span>En Düşük Hasar/Atış Karşılaştırması</span>
+                <b>{reportData.weaponVerdict.developWeapon}</b>
               </div>
             </div>
             <p style={{ margin: 0, fontSize: "11.5px", color: "#b3c3bb", lineHeight: "1.45" }}>
-              <strong>Tavsiye:</strong> {reportData.weaponVerdict.tip}
+              <strong>Ölçüm notu:</strong> {reportData.weaponVerdict.tip}
             </p>
           </article>
         </div>

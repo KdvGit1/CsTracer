@@ -556,16 +556,17 @@ function findPersonalReport(match, profile = null) {
   const preferredName = String(profile?.name || match?.userStats?.name || "");
   return reports.find((report) => preferredSteamId && String(report?.player?.steamid || "") === preferredSteamId)
     || reports.find((report) => preferredName && String(report?.player?.name || "") === preferredName)
-    || reports[0]
     || null;
 }
 
 function comparisonMessage(comparison) {
   if (!comparison) return "Tam analiz hazır. Geçmiş karşılaştırması için yeterli canlı veri yoktu.";
-  if (!comparison.sufficient) return `Tam analiz hazır: ${comparison.value}/100. Gelişim kıyası için en az 3 eski maç gerekli.`;
+  if (!comparison.sufficient) return comparison.kind === "overall"
+    ? `Tam analiz hazır: %${comparison.value} KAST. Gelişim kıyası için en az 3 eski maç gerekli.`
+    : `Canlı ön ölçüm: ${comparison.value} K/D. Gelişim kıyası için en az 3 eski maç gerekli.`;
   const sign = comparison.delta > 0 ? "+" : "";
   if (comparison.kind === "kd") return `Canlı ön ölçüm: ${comparison.value} K/D · geçmiş ortalamana göre ${sign}${comparison.delta}.`;
-  return `Tam analiz: ${comparison.value}/100 · gelişim ortalamana göre ${sign}${comparison.delta} puan.`;
+  return `Tam analiz: %${comparison.value} KAST · gelişim ortalamana göre ${sign}${comparison.delta} yüzde puanı.`;
 }
 
 async function progressContext() {
