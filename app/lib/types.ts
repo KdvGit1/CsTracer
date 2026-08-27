@@ -1,5 +1,5 @@
 export type Recommendation = { id: string; title: string; body: string; confidence: number };
-export type MetricStatus = "measured" | "insufficient-sample" | "unavailable";
+export type MetricStatus = "measured" | "insufficient-sample" | "unavailable" | "inconsistent";
 export type MetricQuality = {
   status: MetricStatus;
   sampleCount: number;
@@ -50,12 +50,20 @@ export type SprayStats = {
   earlyAccuracy: number | null;
   lateAccuracy: number | null;
   earlyShots: number;
+  earlyHits?: number;
   lateShots: number;
+  lateHits?: number;
   status: MetricStatus;
-  method: "bullet-damage-attack-tick-v1";
+  sampleCount?: number;
+  numerator?: number;
+  denominator?: number;
+  method: "bullet-damage-attack-tick-v1" | "bullet-damage-event-tick-v2";
   reason?: string;
-  hitboxCounts: { head: number; chest: number; stomach: number; arms: number; legs: number };
-  hitboxPercents: { head: number; chest: number; stomach: number; arms: number; legs: number };
+  hitboxStatus?: MetricStatus;
+  hitboxMethod?: "player-hurt-hitgroup-v2";
+  hitboxReason?: string;
+  hitboxCounts: { head: number; chest: number; stomach: number; arms: number; legs: number; other?: number };
+  hitboxPercents: { head: number; chest: number; stomach: number; arms: number; legs: number; other?: number };
 };
 export type CrosshairStats = {
   headErrorAngle: number | null;

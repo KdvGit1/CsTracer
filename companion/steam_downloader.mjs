@@ -595,7 +595,7 @@ export async function processDownloadedDemo(
   const assists = userReport?.assists || 0;
   const kd = deaths > 0 ? Math.round((kills / deaths) * 100) / 100 : null;
   const hsPercent = userReport?.headshotPercent || 0;
-  const counterStrafePercent = userReport.movementProfile?.status === "measured"
+  const movementEligibilityPercent = userReport.movementProfile?.status === "measured"
     && Number.isFinite(userReport.movementProfile.invalidShotPercent)
     ? Math.round((100 - userReport.movementProfile.invalidShotPercent) * 10) / 10
     : null;
@@ -647,7 +647,8 @@ export async function processDownloadedDemo(
       assists,
       kd,
       hsPercent,
-      counterStrafePercent,
+      movementEligibilityPercent,
+      counterStrafePercent: movementEligibilityPercent,
       adr,
     },
     fullAnalysis: analysis,
@@ -656,9 +657,15 @@ export async function processDownloadedDemo(
   // Son maç ekranının beş maçlık disk kotasından bağımsız, koordinatsız kompakt
   // takım kanıtını sakla. Böylece demo sonradan temizlense bile aynı beşlinin
   // geçmişi takım koçluğu raporunda kullanılabilir.
-  const squadArchiveResult = squadStore.ingestMatch(newMatchRecord, scannedMetadata || null);
-  if (!squadArchiveResult.ok) {
-    console.warn(`[TAKIM-KOÇU] ${basename(demPath)} arşivlenemedi: ${squadArchiveResult.reason}`);
+  try {
+    const squadArchiveResult = squadStore.ingestMatch(newMatchRecord, scannedMetadata || null);
+    if (!squadArchiveResult.ok) {
+      console.warn(`[TAKIM-KOÇU] ${basename(demPath)} arşivlenemedi: ${squadArchiveResult.reason}`);
+    }
+  } catch (error) {
+    // Takım arşivi ikincil bir kompakt kopyadır. Geçici dosya kilidi veya izin
+    // sorunu ana oyuncu analizini ve recent_matches güncellemesini iptal etmemeli.
+    console.warn(`[TAKIM-KOÇU] ${basename(demPath)} arşiv yazımı atlandı: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   // Paralel indirmelerde getRecentMatches→değiştir→saveRecentMatches yarışını önlemek için kuyruk üzerinden serileştir

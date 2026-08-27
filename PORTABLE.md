@@ -29,13 +29,13 @@ Model ve llama.cpp dosyaları kaynak klasörde yoksa önce `launcher\download-em
 Git'e veya GitHub'a hiçbir şey göndermeden testleri, lint kontrolünü, üretim build'ini, patch ZIP'i ve model dahil portable RAR'ı üretmek için:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\launcher\publish-release.ps1 -NewVersion 0.50.2 -BuildOnly
+powershell -ExecutionPolicy Bypass -File .\launcher\publish-release.ps1 -NewVersion 0.50.3 -BuildOnly
 ```
 
 Komut başarılı olduğunda şu iki dosya hazır olmalıdır:
 
-- `release\TRACER-Patch-v0.50.2.zip`
-- `release\TRACER-Portable-v0.50.2.rar`
+- `release\TRACER-Patch-v0.50.3.zip`
+- `release\TRACER-Portable-v0.50.3.rar`
 
 `release\TRACER-Portable` klasörü de RAR ile aynı sürümün açılmış, doğrudan çalıştırılabilir kopyasıdır. `BuildOnly` hiçbir commit, tag, push veya GitHub Release oluşturmaz.
 
@@ -44,7 +44,7 @@ Komut başarılı olduğunda şu iki dosya hazır olmalıdır:
 GitHub CLI bir kez kurulup `gh auth login` ile giriş yapıldıktan sonra yeni sürüm tek komutla yayınlanır:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\launcher\publish-release.ps1 -NewVersion 0.50.2
+powershell -ExecutionPolicy Bypass -File .\launcher\publish-release.ps1 -NewVersion 0.50.3
 ```
 
 Betik sürümü senkronize eder; test, lint ve TypeScript kontrollerini geçmeden devam etmez; üretim build'ini alır ve GitHub Release'e iki dosya yükler:

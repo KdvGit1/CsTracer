@@ -20,9 +20,9 @@ export const COACH_THRESHOLDS = {
 
 export const COACH_RULES: CoachRule[] = [
   { id: "aim_crosshair", area: "Kill Anı Nişangah Hizası", title: "Kill tick'i kafa/gövde açısı", target: "Puanlanmaz; maçtan maça yalnız aynı yöntemle izlenir", rationale: "Öldürme anındaki nişangah-hedef açısını doğrudan gösterir.", caveat: "Harita raycast'i olmadığı için pre-aim, görünür ilk temas veya profesyonel seviye ölçümü değildir." },
-  { id: "aim_spray", area: "Sprey & Recoil", title: "Burst ve uzun seri karşılaştırması", target: "İlk 3 ve 4+ mermi gruplarında en az 10'ar doğrudan eşleşme", rationale: "Aynı maç içinde uzayan serideki isabet kaybını görünür yapar.", caveat: "bullet_damage.attack_tick_count yoksa değer üretilmez; menzil ayrıca sınıflandırılmaz." },
+  { id: "aim_spray", area: "Sprey & Recoil", title: "Burst ve uzun seri karşılaştırması", target: "İlk 3 ve 4+ mermi gruplarında en az 10'ar doğrudan eşleşme", rationale: "Aynı maç içinde uzayan serideki isabet kaybını görünür yapar.", caveat: "weapon_fire ve bullet_damage aynı saldırgan + normal demo tick'iyle eşleşmezse değer üretilmez; menzil ayrıca sınıflandırılmaz." },
   { id: "duel_ttd", area: "İlk Temas & TTD", title: "Yaklaşık görünürlükten ilk hasara", target: "Bilgi metriği; puan veya seviye üretmez", rationale: "approximate_spotted_by başlangıcından silahlı ilk hasara kadar geçen süreyi gösterir.", caveat: "Spotted verisi yaklaşık olduğundan reaksiyon veya pre-aim hükmü değildir." },
-  { id: "movement", area: "Counter-Strafe & Duruş", title: "Silahın doğruluk hız sınırı", target: "Her atışta hız ≤ demo max_speed değerinin %34'ü", rationale: "Sabit silah eşiği yerine o tick'teki silah hız sınırını kullanır.", caveat: "max_speed/hız yoksa atış temiz kabul edilmez, ölçülemedi olarak ayrılır." },
+  { id: "movement", area: "Atış Anı Hareket Uygunluğu", title: "Silahın doğruluk hız sınırı", target: "Her atışta hız ≤ demo max_speed değerinin %34'ü", rationale: "Sabit silah eşiği yerine o tick'teki silah hız sınırını kullanır.", caveat: "Bu gerçek counter-strafe girdisini ölçmez; max_speed/hız yoksa atış temiz kabul edilmez, ölçülemedi olarak ayrılır." },
   { id: "trade", area: "Takım & Trade", title: "Beş saniye içindeki takım cevabı", target: "Aynı round, aynı killer SteamID ve doğru takım doğrulaması", rationale: "Ölümden sonra killer'ın takım arkadaşı tarafından düşürülmesini doğrudan sayar.", caveat: "Beş saniye ürün kuralıdır; görüş hattı veya rol uygunluğu kanıtlanmaz." },
   { id: "position", area: "Harita Pozisyonu", title: "Tekrarlayan ölüm kümesi", target: "Aynı bölgede 3+ ölümde round incelemesi", rationale: "Aynı açı, zamanlama veya geri düşme planındaki tekrarları görünür yapar.", caveat: "Bölge etiketi geniş olabilir; sebep aim, utility, ekonomi veya takım planı olabilir." },
   { id: "utility", area: "Utility & Flash", title: "Rakibe doğrudan utility etkisi", target: "Hasar veya körlük üretilen round yüzdesi", rationale: "Yalnız karşı takım doğrulanmış hasar ve körlük olaylarını sayar.", caveat: "Takım arkadaşına açılan ama asist olayı üretmeyen flash değeri eksik kalabilir." },
@@ -191,22 +191,22 @@ export function buildCoachPacket(report: PlayerReport): CoachPacket {
       severity: "info" as ErrorSeverity,
       confidence: report.crosshairStats.status === "measured" ? 64 : 40,
     }] : []),
-    ...(report.sprayStats?.status === "measured" ? [{
+    ...(report.sprayStats?.method === "bullet-damage-event-tick-v2" && report.sprayStats.status === "measured" ? [{
       id: "aim_spray", area: "Sprey & Recoil",
       title: report.sprayStats.earlyAccuracy !== null && report.sprayStats.lateAccuracy !== null && report.sprayStats.lateShots >= COACH_THRESHOLDS.sprayReview.minimumLateShots && report.sprayStats.lateAccuracy < report.sprayStats.earlyAccuracy * COACH_THRESHOLDS.sprayReview.lateToEarlyRatio ? "Uzayan spreyde kişisel isabet düşüyor" : `Genel silahlı isabet: ${getSprayTier(report.sprayStats.accuracyPercent, "overall").label}`,
       evidence: `Toplam ${report.sprayStats.totalShots} atışta %${report.sprayStats.accuracyPercent} isabet (${report.sprayStats.totalHits} hit). İlk 3 mermi %${report.sprayStats.earlyAccuracy}, 4+ mermi sprey %${report.sprayStats.lateAccuracy} isabet.`,
-      interpretation: "Bu oranlar bullet_damage saldırı tick'iyle eşleşen doğrudan mermilerden gelir; menzil ayrıca sınıflandırılmadı.",
+      interpretation: "Bu oranlar weapon_fire ile saldırgan SteamID + normal demo tick'inde eşleşen doğrudan bullet_damage olaylarından gelir; menzil ayrıca sınıflandırılmadı.",
       action: report.sprayStats.earlyAccuracy !== null && report.sprayStats.lateAccuracy !== null && report.sprayStats.lateShots >= COACH_THRESHOLDS.sprayReview.minimumLateShots && report.sprayStats.lateAccuracy < report.sprayStats.earlyAccuracy * COACH_THRESHOLDS.sprayReview.lateToEarlyRatio ? "Uzun seri roundlarını izle; Recoil Master'da aynı silahla ilk-3/4+ farkını azalt." : "Aynı örnek sayısıyla sonraki demoda yeniden karşılaştır.",
       severity: (report.sprayStats.earlyAccuracy !== null && report.sprayStats.lateAccuracy !== null && report.sprayStats.lateShots >= COACH_THRESHOLDS.sprayReview.minimumLateShots && report.sprayStats.lateAccuracy < report.sprayStats.earlyAccuracy * COACH_THRESHOLDS.sprayReview.lateToEarlyRatio ? "moderate" : "info") as ErrorSeverity,
       confidence: 84,
     }] : []),
     ...(duelFinding ? [duelFinding] : []),
     {
-      id: "movement", area: "Counter-Strafe & Duruş",
+      id: "movement", area: "Atış Anı Hareket Uygunluğu",
       title: movement?.status !== "measured" ? "Atış hızı ölçülemedi" : movement.severity === "severe" ? "Doğruluk hız sınırı sık aşılıyor" : movement.severity === "moderate" ? "Duruş zamanlaması incelenmeli" : movement.severity === "minor" ? "Bazı atışlar hız sınırı üzerinde" : "Atış öncesi duruş iyi",
       evidence: movement?.status === "measured" ? `${movement.sampleCount} ölçülen atış · ortalama ${movement.averageSpeed} u/s · P90 ${movement.p90Speed} u/s · max_speed %34 sınırı üstünde %${movement.invalidShotPercent} · ${movement.unmeasuredShots} ölçülemeyen.` : (movement?.reason || "Hız/max_speed verisi bulunamadı."),
       interpretation: movement?.status === "measured" ? explainMovement(movement).summary : "Eksik veri sıfır hız veya temiz atış kabul edilmedi.",
-      action: movementSeverity === "high" || movementSeverity === "moderate" ? "Antrenmanda 50 tekli counter-strafe tekrarı yap; ilk mermiden önce tam duruşu doğrula." : "Aynı yöntemi sonraki demoda tekrar ölç.",
+      action: movementSeverity === "high" || movementSeverity === "moderate" ? "Antrenmanda 50 tekli A-D frenleme tekrarı yap; ilk mermiden önce hızın doğruluk bandına indiğini doğrula." : "Aynı yöntemi sonraki demoda tekrar ölç.",
       severity: movementSeverity,
       confidence: report.shots >= 80 ? 88 : report.shots >= 25 ? 76 : 58,
     },

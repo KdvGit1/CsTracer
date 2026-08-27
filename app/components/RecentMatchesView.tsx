@@ -70,6 +70,7 @@ export interface ScannedMatchItem {
     ping?: number;
     stars?: string;
     counterStrafePercent?: number | null;
+    movementEligibilityPercent?: number | null;
     adr?: number;
   };
   players?: MatchPlayerSummary[];
@@ -84,6 +85,12 @@ interface RecentMatchesViewProps {
 }
 
 const AUTO_SCAN_INTERVAL = 300; // 5 minutes in seconds
+
+function hasCurrentShotSchema(analysis?: RecentMatchAnalysis): boolean {
+  return analysis?.analysisVersion === "3.2.0"
+    && Boolean(analysis.reports?.length)
+    && analysis.reports!.every((report) => report.sprayStats?.method === "bullet-damage-event-tick-v2");
+}
 
 function displayTeamLabel(label: string, index: number) {
   const match = label.match(/^Team\s+(\d+)$/i);
@@ -387,7 +394,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
   const handleSelectMatch = async (match: ScannedMatchItem) => {
     if (!match.isDownloaded) return;
 
-    if (match.fullAnalysis) {
+    if (match.fullAnalysis && hasCurrentShotSchema(match.fullAnalysis)) {
       onSelectAnalysis(match.fullAnalysis);
       return;
     }
@@ -396,9 +403,23 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
       setSelectedMatchLoadingId(match.id);
       const res = await fetch(`${COMPANION_URL}/matches/detail/${match.id}`);
       if (res.ok) {
-        const data = (await res.json()) as { analysis?: RecentMatchAnalysis };
+        const data = (await res.json()) as {
+          analysis?: RecentMatchAnalysis;
+          match?: ScannedMatchItem;
+          reanalyzed?: boolean;
+          needsReanalysis?: boolean;
+          reanalysisError?: string;
+        };
         if (data.analysis) {
           onSelectAnalysis(data.analysis);
+          if (data.match) {
+            setDownloadedMatches((current) => current.map((item) => item.id === data.match?.id ? data.match : item));
+          }
+          if (data.reanalyzed) {
+            toast.success("Eski maç ham demo dosyasından güncel yöntemle yeniden analiz edildi.");
+          } else if (data.needsReanalysis && data.reanalysisError) {
+            toast.error(data.reanalysisError);
+          }
         }
       }
     } catch (err: unknown) {
@@ -687,11 +708,11 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
                     </span>
                   </div>
 
-                  {isDownloaded && Number.isFinite(match.userStats.counterStrafePercent) ? (
+                  {isDownloaded && Number.isFinite(match.userStats.movementEligibilityPercent ?? match.userStats.counterStrafePercent) ? (
                     <div className="stat-box">
-                      <span className="stat-label">DURUŞ</span>
+                      <span className="stat-label" title="Atış tick'inde hızın silah max_speed değerinin %34 sınırında veya altında olduğu atışların payı; tuş girdisini ölçmez.">ATIŞ HIZI</span>
                       <span className="stat-val">
-                        %{match.userStats.counterStrafePercent}
+                        %{match.userStats.movementEligibilityPercent ?? match.userStats.counterStrafePercent}
                       </span>
                     </div>
                   ) : match.userStats.ping ? (

@@ -8,6 +8,7 @@ export type HitboxData = {
   stomach: number;
   arms: number;
   legs: number;
+  other?: number;
 };
 
 export type HitboxPercents = {
@@ -16,6 +17,7 @@ export type HitboxPercents = {
   stomach: number;
   arms: number;
   legs: number;
+  other?: number;
 };
 
 export const HitboxMannequin = React.memo(function HitboxMannequin({
@@ -27,9 +29,9 @@ export const HitboxMannequin = React.memo(function HitboxMannequin({
   percents?: HitboxPercents;
   totalHits?: number;
 }) {
-  const c = counts || { head: 0, chest: 0, stomach: 0, arms: 0, legs: 0 };
-  const p = percents || { head: 0, chest: 0, stomach: 0, arms: 0, legs: 0 };
-  const total = totalHits || (c.head + c.chest + c.stomach + c.arms + c.legs);
+  const c = counts || { head: 0, chest: 0, stomach: 0, arms: 0, legs: 0, other: 0 };
+  const p = percents || { head: 0, chest: 0, stomach: 0, arms: 0, legs: 0, other: 0 };
+  const total = totalHits ?? (c.head + c.chest + c.stomach + c.arms + c.legs + (c.other || 0));
 
   const getTheme = (pct: number, baseColor: string) => {
     if (pct === 0) {
@@ -292,6 +294,18 @@ export const HitboxMannequin = React.memo(function HitboxMannequin({
           <div className="legend-score-col">
             <strong>%{p.legs}</strong>
             <div className="legend-bar"><i style={{ width: `${p.legs}%`, background: "#8a9690" }} /></div>
+          </div>
+        </div>
+
+        <div className="legend-item other">
+          <span className="legend-dot" />
+          <div className="legend-copy">
+            <b>Boyun / Diğer</b>
+            <small>{c.other || 0} isabetli vuruş</small>
+          </div>
+          <div className="legend-score-col">
+            <strong>%{p.other || 0}</strong>
+            <div className="legend-bar"><i style={{ width: `${p.other || 0}%`, background: "#b7c0bb" }} /></div>
           </div>
         </div>
 

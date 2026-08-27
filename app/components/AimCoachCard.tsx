@@ -49,7 +49,7 @@ export function evaluateAimMechanics(report: PlayerReport): {
       evidence: `${rifleStats.shots} ölçülen tüfek atışının %${rifleStats.movingPercent}'inde hız, silahın max_speed değerinin %34'ünü aştı veya oyuncu havadaydı.`,
       rootCause: "Atış tick'indeki hareket, oyunun silah doğruluğunu geri kazandığı hız bandının üzerinde kalıyor.",
       drill: {
-        name: "A-D Counter-Strafe Senkronizasyon Drill'i",
+        name: "A-D Frenleme ve Atış Zamanlaması Drill'i",
         duration: "10 dk (Aim Botz veya DM)",
         target: "Sonraki demoda geçersiz hızlı tüfek atışı sayısını azaltmak",
         instructions: "Aim Botz'da sağa koşarken tam durmak için anında A tuşuna tek tık yap, hız sıfırlandığı milisaniyede 2 mermi burst sık. Ritim: D -> A-tık -> Ateş.",
@@ -77,7 +77,9 @@ export function evaluateAimMechanics(report: PlayerReport): {
 
   // Aynı oyuncunun ilk 3 ve 4+ mermileri birbiriyle kıyaslanır; dışarıdan
   // "pro" eşiği uygulanmaz.
-  if (spray?.status === "measured") {
+  const sprayCurrent = spray?.method === "bullet-damage-event-tick-v2";
+  const hitboxCurrent = sprayCurrent && spray?.hitboxMethod === "player-hurt-hitgroup-v2";
+  if (sprayCurrent && spray?.status === "measured") {
     if (spray.earlyAccuracy !== null && spray.lateAccuracy !== null && spray.earlyShots >= 6 && spray.lateShots >= 6 && spray.lateAccuracy < spray.earlyAccuracy * 0.5) {
       diagnoses.push({
         id: "spray_control_decay",
@@ -95,7 +97,10 @@ export function evaluateAimMechanics(report: PlayerReport): {
       });
     }
 
-    const hitboxSamples = spray.hitboxSampleCount ?? Object.values(spray.hitboxCounts).reduce((sum, count) => sum + count, 0);
+  }
+
+  if (hitboxCurrent && spray?.hitboxStatus === "measured") {
+    const hitboxSamples = spray.hitboxSampleCount ?? Object.values(spray.hitboxCounts).reduce((sum, count) => sum + (count || 0), 0);
     if (hitboxSamples >= 5 && spray.hitboxPercents.legs > spray.hitboxPercents.head + spray.hitboxPercents.chest) {
       diagnoses.push({
         id: "lazy_crosshair_legs",
@@ -117,8 +122,8 @@ export function evaluateAimMechanics(report: PlayerReport): {
   const currentAnalysis = /^3\.(?:[1-9]|\d{2,})\./.test(report.analysisVersion || "");
   const measuredSignals = [
     movement?.status === "measured" && movement.sampleCount > 0,
-    spray?.status === "measured" && spray.totalShots > 0,
-    spray?.status === "measured" && (spray.hitboxSampleCount || 0) > 0,
+    sprayCurrent && spray?.status === "measured" && spray.totalShots > 0,
+    hitboxCurrent && spray?.hitboxStatus === "measured" && (spray.hitboxSampleCount || 0) > 0,
   ].filter(Boolean).length;
   const rating = !currentAnalysis
     ? "Yeniden analiz et"
@@ -134,7 +139,7 @@ export function evaluateAimMechanics(report: PlayerReport): {
   if (currentAnalysis && movement?.status === "measured" && movement.sampleCount >= 5 && movement.invalidShotPercent < 15) {
     strengths.push(`Atış öncesi duruş iyi · ${movement.sampleCount} atışta yalnız %${movement.invalidShotPercent} sınır üstü`);
   }
-  if (currentAnalysis && spray?.status === "measured" && spray.totalShots >= 5 && spray.accuracyPercent !== null && spray.accuracyPercent >= 20) {
+  if (currentAnalysis && sprayCurrent && spray?.status === "measured" && spray.totalShots >= 5 && spray.accuracyPercent !== null && spray.accuracyPercent >= 20) {
     strengths.push(`Bu maçta silahlı isabet oranı iyi · ${spray.totalHits}/${spray.totalShots}`);
   }
 
@@ -154,7 +159,7 @@ export function evaluateAimMechanics(report: PlayerReport): {
   } else {
     routine.push(
       { step: 1, title: "Pre-Aim & Köşe Temizliği", duration: "10 dk", drill: "Refrag veya YPrac prefire modunda harita açılarını kafa hizasında dön.", goal: "Bir sonraki demoda aynı açılardaki kill anı hizasını karşılaştır." },
-      { step: 2, title: "A-D Counter-Strafe Senkronizasyonu", duration: "10 dk", drill: "Aim Botz'da A-D zıt frenleme ile 2 mermi burst çalış.", goal: "Max-speed sınırı üstündeki atış sayısını azalt." },
+      { step: 2, title: "A-D Frenleme ve Atış Zamanlaması", duration: "10 dk", drill: "Aim Botz'da A-D zıt frenleme ile 2 mermi burst çalış.", goal: "Max-speed sınırı üstündeki atış sayısını azalt." },
       { step: 3, title: "Recoil Master İlk 15 Mermi", duration: "10 dk", drill: "AK-47 ve M4 için sprey kontrol kalıbını tazele.", goal: "İlk-3 ve 4+ mermi isabet farkını azalt." }
     );
   }
@@ -280,12 +285,12 @@ export const AimCoachCard: React.FC<{
                 <p>Nişangah ile hedef kafa/gövde açısı yalnız öldürme tick’inde ölçülür. Harita geometrisi ve görüş hattı raycast’i olmadığı için bu değer pre-aim sayılmaz ve puanlanmaz.</p>
               </article>
               <article>
-                <b>2. Tüfek Counter-Strafe Hız Sınırı Kuralı</b>
-                <p>Her atışta demonun verdiği silah <code>max_speed</code> alanı okunur. Yatay hız bunun <code>%34</code>’ünü aşıyorsa veya oyuncu havadaysa atış sınır üstü sayılır; veri yoksa temiz kabul edilmez.</p>
+                <b>2. Atış Anı Hareket Uygunluğu Kuralı</b>
+                <p>Her atışta demonun verdiği silah <code>max_speed</code> alanı okunur. Yatay hız bunun <code>%34</code>’ünü aşıyorsa veya oyuncu havadaysa atış sınır üstü sayılır; bu metrik tuş girdisini veya gerçek counter-strafe yapılıp yapılmadığını ölçmez.</p>
               </article>
               <article>
                 <b>3. 3-Mermi Burst vs Sprey Dağılım Kuralı</b>
-                <p>Mermi ile hasar <code>bullet_damage.attack_tick_count</code> üzerinden eşleştirilir. İlk 3 ile 4+ mermi grubu yalnız yeterli örnek varsa aynı oyuncunun kendi içindeki farkla kıyaslanır.</p>
+                <p><code>weapon_fire</code> ile <code>bullet_damage</code>, saldırgan SteamID ve normal demo tick’i üzerinden eşleştirilir. İlk 3 ile 4+ mermi grubu yalnız yeterli örnek varsa aynı oyuncunun kendi içindeki farkla kıyaslanır.</p>
               </article>
               <article>
                 <b>4. Time-to-Damage (TTD) Eşik Kuralı</b>

@@ -5,7 +5,7 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { analyzeDemo, quickDemoMeta } from "../companion/analyze.mjs";
+import { ANALYSIS_VERSION, SPRAY_METHOD, analyzeDemo, buildPlayerShotRecords, quickDemoMeta } from "../companion/analyze.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DEMO_DIR = join(ROOT, "data", "recent_demos");
@@ -34,9 +34,41 @@ test("quickDemoMeta okunamayan demoya sahte harita atamaz", () => {
   assert.equal(meta.score, "—");
 });
 
+test("ShotRecord doğrudan isabeti demo tick'iyle bağlar ve MP5-SD adını korur", () => {
+  const player = { name: "Tester", steamid: "111" };
+  const grouped = {
+    weapon_fire: [{
+      tick: 100, weapon: "mp5sd", user_name: "Tester", user_steamid: "111", user_team_num: 2,
+    }],
+    bullet_damage: [{
+      tick: 100, attack_tick_count: 9999,
+      attacker_name: "Tester", attacker_steamid: "111", attacker_team_num: 2,
+      victim_name: "Enemy", victim_steamid: "222", victim_team_num: 3,
+    }],
+    player_hurt: [{
+      tick: 100, weapon: "mp7", dmg_health: 37, hitgroup: "neck",
+      attacker_name: "Tester", attacker_steamid: "111", attacker_team_num: 2,
+      user_name: "Enemy", user_steamid: "222", user_team_num: 3,
+    }],
+  };
+  const ticks = [{
+    tick: 100, name: "Tester", steamid: "111", team_num: 2, max_speed: 240,
+    velocity_X: 0, velocity_Y: 0, "CCSPlayerPawn.m_iShotsFired": 1,
+  }];
+
+  const result = buildPlayerShotRecords(player, grouped, ticks);
+  assert.equal(result.records.length, 1);
+  assert.equal(result.records[0].hit, true, "attack_tick_count farklı olsa bile normal demo tick eşleşmeli");
+  assert.equal(result.records[0].damage, 37);
+  assert.deepEqual(result.records[0].hitgroups, ["neck"]);
+  assert.equal(result.canonicalWeaponForEvent(grouped.player_hurt[0]), "mp5sd", "player_hurt mp7 aliası aynı tickteki MP5-SD atışına bağlanmalı");
+  assert.equal(result.inconsistent, false);
+});
+
 test("analyzeDemo tam maç raporu üretir", { skip: skipReason, timeout: 300000 }, () => {
   const result = analyzeDemo(demoPath);
-  assert.equal(result.analysisVersion, "3.1.0", "kök analiz sürümü güncel olmalı");
+  assert.equal(result.analysisVersion, ANALYSIS_VERSION, "kök analiz sürümü güncel olmalı");
+  assert.equal(result.analysisVersion, "3.2.0");
 
   // Header
   assert.ok(result.header, "header olmalı");
@@ -67,7 +99,9 @@ test("analyzeDemo tam maç raporu üretir", { skip: skipReason, timeout: 300000 
   assert.equal(report.duelStats.medianTTD === null, report.duelStats.ttdStatus !== "measured", "medyan TTD ölçülemediyse null olmalı");
   assert.equal(report.crosshairStats.headErrorAngle === null, report.crosshairStats.status !== "measured", "kill tick hizası ölçülemediyse null olmalı");
   const hitboxSamples = Object.values(report.sprayStats.hitboxCounts).reduce((sum, count) => sum + count, 0);
-  assert.equal(report.sprayStats.hitboxSampleCount, hitboxSamples, "hitbox paydası yalnız tanınan doğrudan hitgroup olaylarından oluşmalı");
+  assert.equal(report.sprayStats.method, SPRAY_METHOD, "sprey isabeti normal demo tick yöntemiyle hesaplanmalı");
+  assert.ok(["measured", "insufficient-sample", "unavailable", "inconsistent"].includes(report.sprayStats.status));
+  assert.equal(report.sprayStats.hitboxSampleCount, hitboxSamples, "hitbox paydası tüm silahlı player_hurt hitgroup olaylarından oluşmalı");
   if (hitboxSamples > 0) {
     const percentTotal = Object.values(report.sprayStats.hitboxPercents).reduce((sum, percent) => sum + percent, 0);
     assert.ok(percentTotal >= 98 && percentTotal <= 102, `hitbox yüzdeleri yaklaşık 100 etmeli (şu an ${percentTotal})`);

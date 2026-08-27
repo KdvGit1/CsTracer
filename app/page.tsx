@@ -279,6 +279,10 @@ export default function Home() {
 
   const report = useMemo(() => reports.find((item) => (item.player.steamid || item.player.name) === selectedPlayer), [reports, selectedPlayer]);
   const analysisNeedsRefresh = Boolean(report && !analysisVersionAtLeast(report.analysisVersion, 3, 1));
+  const spraySchemaCurrent = Boolean(report?.sprayStats?.method === "bullet-damage-event-tick-v2");
+  const hitboxSchemaCurrent = Boolean(spraySchemaCurrent && report?.sprayStats?.hitboxMethod === "player-hurt-hitgroup-v2");
+  const sprayNeedsRefresh = Boolean(report && !spraySchemaCurrent);
+  const reportNeedsRefresh = analysisNeedsRefresh || sprayNeedsRefresh;
   const crosshairSchemaCurrent = Boolean(
     report?.crosshairStats
     && report.crosshairStats.method === "kill-tick-alignment-v2"
@@ -985,12 +989,12 @@ export default function Home() {
           </div>
         )}
 
-        {analysisNeedsRefresh && report && (
+        {reportNeedsRefresh && report && (
           <div className="analysis-data-notice" role="status">
             <IconWarning size={16} />
             <div>
               <b>Bu maç eski analiz motoruyla kaydedilmiş.</b>
-              <span>Analiz sürümü {report.analysisVersion || "bilinmiyor"}; yeni örnek sayıları ve veri durumu alanları bu raporda yok. Bu nedenle eski açı/fallback değerleri gösterilmiyor. Demoyu güncel portable sürümde yeniden analiz et.</span>
+              <span>Analiz sürümü {report.analysisVersion || "bilinmiyor"}. Eski sprey/isabet sıfırları geçerli sonuç sayılmıyor; demo diskteyse Son Maçlarım’dan açıldığında otomatik yeniden analiz edilir, dosya yoksa yeni değer üretilmez.</span>
             </div>
           </div>
         )}
@@ -1410,12 +1414,12 @@ export default function Home() {
             <article className="aim-stat-card mannequin-card">
               <header>
                 <span>HEDEF İNSAN MAKETİ (HITBOX SİLUETİ)</span>
-                <small>{report?.sprayStats ? `${report.sprayStats.hitboxSampleCount ?? Object.values(report.sprayStats.hitboxCounts).reduce((sum, count) => sum + count, 0)} Hitgroup Örneği` : "Demo analizi bekleniyor"}</small>
+                <small>{hitboxSchemaCurrent && report?.sprayStats ? `${report.sprayStats.hitboxSampleCount ?? Object.values(report.sprayStats.hitboxCounts).reduce((sum, count) => sum + (count || 0), 0)} Hitgroup Örneği` : report ? "Güncel hitgroup analizi gerekli" : "Demo analizi bekleniyor"}</small>
               </header>
               <HitboxMannequin
-                counts={report?.sprayStats?.hitboxCounts}
-                percents={report?.sprayStats?.hitboxPercents}
-                totalHits={report?.sprayStats ? (report.sprayStats.hitboxSampleCount ?? Object.values(report.sprayStats.hitboxCounts).reduce((sum, count) => sum + count, 0)) : 0}
+                counts={hitboxSchemaCurrent ? report?.sprayStats?.hitboxCounts : undefined}
+                percents={hitboxSchemaCurrent ? report?.sprayStats?.hitboxPercents : undefined}
+                totalHits={hitboxSchemaCurrent && report?.sprayStats ? (report.sprayStats.hitboxSampleCount ?? Object.values(report.sprayStats.hitboxCounts).reduce((sum, count) => sum + (count || 0), 0)) : 0}
               />
             </article>
 
@@ -1462,13 +1466,20 @@ export default function Home() {
               <article className="aim-stat-card">
                 <header>
                   <span>SPREY VE BURST VERİMİ</span>
-                  <small>{report?.sprayStats ? `${report.sprayStats.totalShots} Toplam Mermi` : "Demo bekleniyor"}</small>
+                  <small>{spraySchemaCurrent && report?.sprayStats ? `${report.sprayStats.totalShots} Toplam Mermi` : report ? "Yeniden analiz gerekli" : "Demo bekleniyor"}</small>
                 </header>
                 {(() => {
-                  const acc = report?.sprayStats?.accuracyPercent ?? null;
-                  const early = report?.sprayStats?.earlyAccuracy ?? null;
-                  const late = report?.sprayStats?.lateAccuracy ?? null;
-                  const headShare = report?.sprayStats ? report.sprayStats.hitboxPercents.head : null;
+                  const spray = spraySchemaCurrent ? report?.sprayStats : undefined;
+                  const sprayMeasured = spray?.status === "measured";
+                  const hitboxMeasured = hitboxSchemaCurrent && spray?.hitboxStatus === "measured";
+                  const acc = sprayMeasured ? spray.accuracyPercent : null;
+                  const early = sprayMeasured ? spray.earlyAccuracy : null;
+                  const late = sprayMeasured ? spray.lateAccuracy : null;
+                  const headShare = hitboxMeasured ? spray.hitboxPercents.head : null;
+                  const unavailableLabel = !report ? "Hazır" : !spraySchemaCurrent ? "Yeniden analiz" : spray?.status === "inconsistent" ? "Tutarsız veri" : "Ölçülemedi";
+                  const sprayReason = !spraySchemaCurrent && report
+                    ? "Bu rapor eski attack_tick yöntemini kullanıyor; kayıtlı sıfır geçersiz sayıldı."
+                    : spray?.reason || "Bu maçta geçerli silahlı atış örneği bulunamadı.";
 
                   const accTier = getSprayTier(acc, "overall");
                   const earlyTier = getSprayTier(early, "early");
@@ -1481,35 +1492,37 @@ export default function Home() {
                         <div>
                           <span>Genel İsabet</span>
                           <b>{acc === null ? "—" : `%${acc}`}</b>
-                          <em className={`tier-badge ${accTier.tone}`}>{accTier.label}</em>
-                          <small>{report?.sprayStats ? `${report.sprayStats.totalShots} silahlı atış · ${report.sprayStats.totalHits} isabet` : "Demo bekleniyor"}</small>
+                          <em className={`tier-badge ${acc === null ? "normal" : accTier.tone}`}>{acc === null ? unavailableLabel : accTier.label}</em>
+                          <small>{sprayMeasured ? `${spray.totalHits}/${spray.totalShots} isabetli atış` : sprayReason}</small>
                         </div>
                         <div>
                           <span>İlk 3 Mermi İsabeti</span>
                           <b>{early === null ? "—" : `%${early}`}</b>
-                          <em className={`tier-badge ${earlyTier.tone}`}>{earlyTier.label}</em>
-                          <small>{report?.sprayStats ? `${report.sprayStats.earlyShots} mermi · ${earlyTier.hint}` : earlyTier.hint}</small>
+                          <em className={`tier-badge ${early === null ? "normal" : earlyTier.tone}`}>{early === null ? unavailableLabel : earlyTier.label}</em>
+                          <small>{sprayMeasured ? `${spray.earlyHits ?? 0}/${spray.earlyShots} isabet · ${earlyTier.hint}` : sprayReason}</small>
                         </div>
                         <div>
                           <span>4+ Mermi Sprey İsabeti</span>
                           <b>{late === null ? "—" : `%${late}`}</b>
-                          <em className={`tier-badge ${lateTier.tone}`}>{lateTier.label}</em>
-                          <small>{report?.sprayStats ? `${report.sprayStats.lateShots} mermi · ${lateTier.hint}` : lateTier.hint}</small>
+                          <em className={`tier-badge ${late === null ? "normal" : lateTier.tone}`}>{late === null ? unavailableLabel : lateTier.label}</em>
+                          <small>{sprayMeasured ? `${spray.lateHits ?? 0}/${spray.lateShots} isabet · ${lateTier.hint}` : sprayReason}</small>
                         </div>
                         <div>
                           <span>Kafa Vuruş Payı</span>
                           <b>{headShare === null ? "—" : `%${headShare}`}</b>
-                          <em className={`tier-badge ${headShareTier.tone}`}>{headShareTier.label}</em>
-                          <small>{report?.sprayStats ? `${report.sprayStats.hitboxSampleCount ?? Object.values(report.sprayStats.hitboxCounts).reduce((sum, count) => sum + count, 0)} isabet · ${headShareTier.hint}` : headShareTier.hint}</small>
+                          <em className={`tier-badge ${headShare === null ? "normal" : headShareTier.tone}`}>{headShare === null ? (report && !hitboxSchemaCurrent ? "Yeniden analiz" : "Ölçülemedi") : headShareTier.label}</em>
+                          <small>{hitboxMeasured ? `${spray.hitboxCounts.head}/${spray.hitboxSampleCount || 0} isabet · ${headShareTier.hint}` : spray?.hitboxReason || (report ? "Güncel hitgroup örneği yok." : "Demo bekleniyor")}</small>
                         </div>
                       </div>
 
-                      <p className="data-caveat">İsabetler bullet_damage saldırı tick’iyle eşleştirilir. Olay yoksa player_hurt zaman yakınlığıyla tahmin yapılmaz.</p>
+                      <p className="data-caveat">İsabetler attacker SteamID + normal demo tick’iyle weapon_fire ve bullet_damage arasında birebir bağlanır. Eşleşme yoksa player_hurt yakınlığıyla tahmin veya rastgele fallback yapılmaz.</p>
 
                       <div className="hitbox-bars">
-                        <div className="hb-row"><span>Kafa (Head)</span><i><em style={{ width: `${report?.sprayStats?.hitboxPercents.head || 0}%` }} /></i><b>%{report?.sprayStats?.hitboxPercents.head || 0} ({report?.sprayStats?.hitboxCounts.head || 0})</b></div>
-                        <div className="hb-row"><span>Gövde (Body)</span><i><em style={{ width: `${(report?.sprayStats?.hitboxPercents.chest || 0) + (report?.sprayStats?.hitboxPercents.stomach || 0)}%` }} /></i><b>%{((report?.sprayStats?.hitboxPercents.chest || 0) + (report?.sprayStats?.hitboxPercents.stomach || 0))} ({(report?.sprayStats?.hitboxCounts.chest || 0) + (report?.sprayStats?.hitboxCounts.stomach || 0)})</b></div>
-                        <div className="hb-row"><span>Bacaklar</span><i><em style={{ width: `${report?.sprayStats?.hitboxPercents.legs || 0}%` }} /></i><b>%{report?.sprayStats?.hitboxPercents.legs || 0} ({report?.sprayStats?.hitboxCounts.legs || 0})</b></div>
+                        <div className="hb-row"><span>Kafa (Head)</span><i><em style={{ width: `${hitboxMeasured ? spray.hitboxPercents.head : 0}%` }} /></i><b>{hitboxMeasured ? `%${spray.hitboxPercents.head} (${spray.hitboxCounts.head})` : "—"}</b></div>
+                        <div className="hb-row"><span>Gövde (Body)</span><i><em style={{ width: `${hitboxMeasured ? spray.hitboxPercents.chest + spray.hitboxPercents.stomach : 0}%` }} /></i><b>{hitboxMeasured ? `%${spray.hitboxPercents.chest + spray.hitboxPercents.stomach} (${spray.hitboxCounts.chest + spray.hitboxCounts.stomach})` : "—"}</b></div>
+                        <div className="hb-row"><span>Kollar</span><i><em style={{ width: `${hitboxMeasured ? spray.hitboxPercents.arms : 0}%` }} /></i><b>{hitboxMeasured ? `%${spray.hitboxPercents.arms} (${spray.hitboxCounts.arms})` : "—"}</b></div>
+                        <div className="hb-row"><span>Bacaklar</span><i><em style={{ width: `${hitboxMeasured ? spray.hitboxPercents.legs : 0}%` }} /></i><b>{hitboxMeasured ? `%${spray.hitboxPercents.legs} (${spray.hitboxCounts.legs})` : "—"}</b></div>
+                        <div className="hb-row"><span>Boyun / Diğer</span><i><em style={{ width: `${hitboxMeasured ? spray.hitboxPercents.other || 0 : 0}%` }} /></i><b>{hitboxMeasured ? `%${spray.hitboxPercents.other || 0} (${spray.hitboxCounts.other || 0})` : "—"}</b></div>
                       </div>
                     </>
                   );
@@ -1530,13 +1543,13 @@ export default function Home() {
           )}
         </section>
 
-        {/* 4. DÜELLO & REAKSİYON (TIME TO DAMAGE) */}
+        {/* 4. YAKLAŞIK GÖRÜNÜRLÜK & DÜELLO (TIME TO DAMAGE) */}
         <section className="duel-reaction-section" id="duel-reaction">
           <div className="section-title-row">
             <div>
-              <p className="eyebrow">REAKSİYON & DÜELLO</p>
-              <h2>Time-to-Damage (TTD) ve Karşılıklı Düello Başarısı</h2>
-              <p>Yaklaşık görünür temasın ilk hasara dönüşme hızı ve iki rakibin birbirini gördüğü düelloların sonucu.</p>
+              <p className="eyebrow">YAKLAŞIK GÖRÜNÜRLÜK & DÜELLO</p>
+              <h2>Görünürlükten İlk Hasara Yaklaşık Süre (TTD) ve Karşılıklı Düello</h2>
+              <p>approximate_spotted_by başlangıcından ilk hasara yaklaşık süre ve iki rakibin birbirini gördüğü düelloların sonucu; reaksiyon puanı değildir.</p>
             </div>
             <span>
               {report?.duelStats?.ttdMethod !== "spotted-to-first-damage-v2"
@@ -1590,7 +1603,7 @@ export default function Home() {
               </article>
             </div>
           ) : (
-            <div className="section-empty"><b>Düello ve reaksiyon verisi için demo gerekli.</b></div>
+            <div className="section-empty"><b>Yaklaşık görünürlük ve düello verisi için demo gerekli.</b></div>
           )}
         </section>
 

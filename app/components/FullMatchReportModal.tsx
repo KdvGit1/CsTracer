@@ -112,7 +112,7 @@ export default function FullMatchReportModal({
               <i><em style={{ width: `${card.aimScore ?? 0}%`, background: "#52e389" }} /></i>
             </div>
             <div className="scorecard-dim-box">
-              <span>Geçerli Hızda Atış</span>
+              <span>Atış Anı Hareket Uygunluğu</span>
               <b>{percentMetric(card.movementScore)}</b>
               <i><em style={{ width: `${card.movementScore ?? 0}%`, background: "#68d4ff" }} /></i>
             </div>

@@ -1,16 +1,16 @@
 {
-  "version": "0.50.2",
+  "version": "0.50.3",
   "githubRepo": "KdvGit1/CsTracer",
   "releaseDate": "2026-08-27",
-  "title": "TRACER v0.50.2 - Portable Başlatma Düzeltmesi",
+  "title": "TRACER v0.50.3 - Tutarlı Atış ve Sprey Analizi",
   "changelog": [
-    "Portable pakette eksik kalan unbzip2-stream ve alt bağımlılıkları eklendi; Steam demo indirme servisi artık temiz kurulumda açılıyor.",
-    "Hafif patch aynı companion bağımlılıklarını taşıyor; eski portable klasörün üzerine elle açılarak çalışmayan v0.50.0/v0.50.1 kurulumu onarılabiliyor.",
-    "Windows PowerShell 5.1'de başlatma hata penceresindeki Türkçe karakterlerin bozulmaması için launcher kodlaması düzeltildi.",
-    "KAST açılımı ve round katkısının nasıl hesaplandığı genel bakış ile tam maç raporunda açıklanıyor.",
-    "Eski analiz raporları yeni örnek alanlarıyla karıştırılmıyor; güvenilmez eski açı/fallback değerleri yerine yeniden analiz uyarısı gösteriliyor.",
-    "Ölüm olmayan tarafta Veri yok · 0 yerine durumun gerçek nedeni, bölge adı çıkarılamadığında ise ayrı bir veri açıklaması gösteriliyor.",
-    "Silahlar için 15/40 atış kapısı kaldırıldı; her kullanılan silah, bu maç içindeki diğer silahlara göre güçlü, dengeli veya geliştirilebilir olarak yorumlanıyor.",
-    "Kill anı hizası ve sprey kartlarında Ölçüldü etiketi yerine şeffaf maç içi iyi, orta ve geliştirilebilir koçluk bantları geri getirildi."
+    "weapon_fire, bullet_damage ve player_hurt artık saldırgan SteamID ile normal demo tick'i üzerinden tek ShotRecord katmanında birleştiriliyor; attack_tick_count karışıklığından doğan sahte yüzde sıfırlar kaldırıldı.",
+    "Genel, ilk üç mermi ve 4+ sprey isabetleri pay/payda ile gösteriliyor; ölçülemeyen veya tutarsız olaylarda sayı, tahmin ya da rastgele fallback üretilmiyor.",
+    "MP5-SD hasar olaylarının parser tarafından MP7 adıyla raporlanması aynı tickteki gerçek atış silahıyla düzeltiliyor; gerçek MP7 kullanımı etkilenmiyor.",
+    "Hitbox dağılımına Boyun/Diğer eklendi; tüm silahlı player_hurt örnekleri paydaya giriyor ve görünmeyen isabet kalmıyor.",
+    "Eski 3.1 analizler sprey sonucu sayılmıyor; ham demo diskteyse Son Maçlarım'dan açılışta otomatik 3.2 yeniden analizi yapılıyor, dosya yoksa açıkça kullanılamıyor deniyor.",
+    "Counter-strafe iddiası yerine Atış Anı Hareket Uygunluğu adı kullanılıyor; bu metriğin tuş girdisini değil max_speed yüzde 34 sınırını ölçtüğü arayüzde açıklanıyor.",
+    "TTD başlığı yaklaşık görünürlükten ilk hasara süre olarak netleştirildi; reaksiyon veya profesyonel seviye puanı olmadığı korunuyor.",
+    "Portable ve patch paketleri temiz kurulum için gerekli Steam bz2 bağımlılıklarını companion altında taşımaya devam ediyor."
   ]
 }

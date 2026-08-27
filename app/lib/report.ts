@@ -9,22 +9,24 @@ export function buildCompactSummary(report: PlayerReport, coachVerdict?: Compact
   const dimensions = scorecard?.dimensions || { aim: null, movement: null, utility: null, teamwork: null, position: null, roundImpact: null };
   const overall = scorecard?.overall ?? null;
 
-  const currentAimSchema = /^3\.(?:[1-9]|\d{2,})\./.test(report.analysisVersion || "")
-    && report.crosshairStats?.method === "kill-tick-alignment-v2"
+  const currentCrosshair = report.crosshairStats?.method === "kill-tick-alignment-v2"
     && report.crosshairStats.status === "measured"
     && report.crosshairStats.sampleCount > 0;
-  const aimMetrics = currentAimSchema && report.crosshairStats && report.duelStats && report.sprayStats ? {
-    headErrorAngle: report.crosshairStats.headErrorAngle,
-    bodyErrorAngle: report.crosshairStats.bodyErrorAngle,
-    averageTTD: report.duelStats.averageTTD,
-    medianTTD: report.duelStats.medianTTD,
-    ttdSampleCount: report.duelStats.ttdSampleCount || 0,
-    ttdMethod: report.duelStats.ttdMethod,
-    duelWinrate: report.duelStats.duelWinrate,
-    duelSampleCount: report.duelStats.duelTotal,
-    duelMethod: report.duelStats.duelMethod,
-    earlyAccuracy: report.sprayStats.earlyAccuracy,
-    lateAccuracy: report.sprayStats.lateAccuracy,
+  const currentTtd = report.duelStats?.ttdMethod === "spotted-to-first-damage-v2" && report.duelStats.ttdStatus === "measured";
+  const currentDuel = report.duelStats?.duelMethod === "mutual-spotted-death-v2" && report.duelStats.duelStatus === "measured";
+  const currentSpray = report.sprayStats?.method === "bullet-damage-event-tick-v2" && report.sprayStats.status === "measured";
+  const aimMetrics = currentCrosshair || currentTtd || currentDuel || currentSpray ? {
+    headErrorAngle: currentCrosshair ? report.crosshairStats?.headErrorAngle ?? null : null,
+    bodyErrorAngle: currentCrosshair ? report.crosshairStats?.bodyErrorAngle ?? null : null,
+    averageTTD: currentTtd ? report.duelStats?.averageTTD ?? null : null,
+    medianTTD: currentTtd ? report.duelStats?.medianTTD ?? null : null,
+    ttdSampleCount: currentTtd ? report.duelStats?.ttdSampleCount || 0 : 0,
+    ttdMethod: currentTtd ? report.duelStats?.ttdMethod : undefined,
+    duelWinrate: currentDuel ? report.duelStats?.duelWinrate ?? null : null,
+    duelSampleCount: currentDuel ? report.duelStats?.duelTotal || 0 : 0,
+    duelMethod: currentDuel ? report.duelStats?.duelMethod : undefined,
+    earlyAccuracy: currentSpray ? report.sprayStats?.earlyAccuracy ?? null : null,
+    lateAccuracy: currentSpray ? report.sprayStats?.lateAccuracy ?? null : null,
   } : undefined;
 
   return {
@@ -39,7 +41,7 @@ export function buildCompactSummary(report: PlayerReport, coachVerdict?: Compact
     })),
     aimMetrics,
     coachVerdict: coachVerdict || (report.crosshairStats ? {
-      title: currentAimSchema ? `Kill anı hizası: ${getAngleTier(report.crosshairStats.headErrorAngle, "head").label}` : "Nişangah hizası için güncel analiz gerekli",
+      title: currentCrosshair ? `Kill anı hizası: ${getAngleTier(report.crosshairStats.headErrorAngle, "head").label}` : "Nişangah hizası için güncel analiz gerekli",
       priorityArea: "Öldürme Anı Nişangah Hizası",
       grade: scorecard?.grade || "Ölçülemedi",
     } : undefined),
@@ -126,7 +128,7 @@ export function formatReportAsMarkdown(reportData: FullMatchReport, playerReport
 ## KAST Round Katkısı: ${reportData.matchScorecard.overallScore ?? "Ölçülemedi"}${reportData.matchScorecard.overallScore === null ? "" : "%"}
 - **KAST:** ${reportData.matchScorecard.impactScore ?? "Ölçülemedi"}${reportData.matchScorecard.impactScore === null ? "" : "%"}
 - **Headshot Oranı:** ${reportData.matchScorecard.aimScore ?? "Ölçülemedi"}${reportData.matchScorecard.aimScore === null ? "" : "%"}
-- **Geçerli Hızda Atış:** ${reportData.matchScorecard.movementScore ?? "Ölçülemedi"}${reportData.matchScorecard.movementScore === null ? "" : "%"}
+- **Atış Anı Hareket Uygunluğu:** ${reportData.matchScorecard.movementScore ?? "Ölçülemedi"}${reportData.matchScorecard.movementScore === null ? "" : "%"}
 - **Trade:** ${reportData.matchScorecard.teamworkScore ?? "Ölçülemedi"}${reportData.matchScorecard.teamworkScore === null ? "" : "%"}
 - **Utility Etkili Round:** ${reportData.matchScorecard.utilityScore ?? "Ölçülemedi"}${reportData.matchScorecard.utilityScore === null ? "" : "%"}
 - **Hayatta Kalma:** ${reportData.matchScorecard.positionScore ?? "Ölçülemedi"}${reportData.matchScorecard.positionScore === null ? "" : "%"}

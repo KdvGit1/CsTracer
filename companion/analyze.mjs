@@ -21,7 +21,8 @@ const OTHER_PROPS = ["total_rounds_played", "game_time", "is_warmup_period"];
 
 export const TTD_METHOD = "spotted-to-first-damage-v2";
 export const DUEL_METHOD = "mutual-spotted-death-v2";
-export const ANALYSIS_VERSION = "3.1.0";
+export const SPRAY_METHOD = "bullet-damage-event-tick-v2";
+export const ANALYSIS_VERSION = "3.2.0";
 const CONTACT_WINDOW_MS = 2000;
 const MAX_REACTION_TTD_MS = 1500;
 const MIN_REACTION_TTD_MS = 50;
@@ -565,6 +566,118 @@ function buildWeaponAwareMovementProfile(shotEntries) {
   };
 }
 
+function shotAtEventTick(shotRecordsByTick, record, expectedWeapon = "") {
+  const candidates = shotRecordsByTick.get(number(record, ["tick"], 0)) || [];
+  if (candidates.length === 1) return candidates[0];
+  if (candidates.length > 1 && expectedWeapon) {
+    const exact = candidates.filter((shot) => shot.weapon === expectedWeapon);
+    if (exact.length === 1) return exact[0];
+  }
+  return null;
+}
+
+/**
+ * Silahlı atış, doğrudan isabet ve hasar olaylarını aynı demo tick alanında
+ * birleştirir. attack_tick_count motor içi farklı bir sayaçtır ve burada join
+ * anahtarı olarak kullanılamaz. Eşleşmeyen olaylar tahmin edilmez.
+ */
+export function buildPlayerShotRecords(player, grouped, ticksOrRows) {
+  const ticks = ticksOrRows?.byPlayerTick ? ticksOrRows : buildTickIndex(ticksOrRows);
+  const gunShotEvents = (grouped?.weapon_fire || [])
+    .filter((record) => !isWarmup(record))
+    .filter((record) => matchesPlayer(record, "user", player) || matchesPlayer(record, "player", player))
+    .filter((record) => isGun(eventWeapon(record)));
+
+  const records = gunShotEvents.map((event) => {
+    const tick = number(event, ["tick"], 0);
+    const tickRow = rowForPlayerAtTick(ticks, tick, player);
+    const airborneRaw = value(tickRow, ["is_airborne"], false);
+    return {
+      event,
+      attackerSteamId: player.steamid || steamId(event, "user") || steamId(event, "player"),
+      tick,
+      weapon: eventWeapon(event),
+      shotsFired: finiteNumber(tickRow, ["CCSPlayerPawn.m_iShotsFired", "m_iShotsFired"]),
+      speed: shotSpeed(event, tickRow),
+      maxSpeed: finiteNumber(tickRow, ["max_speed"]),
+      airborne: airborneRaw === true || airborneRaw === 1 || airborneRaw === "true",
+      hit: false,
+      bulletDamageEvents: 0,
+      damage: 0,
+      hurtEvents: 0,
+      hitgroups: [],
+    };
+  });
+
+  const byTick = new Map();
+  for (const shot of records) {
+    const list = byTick.get(shot.tick) || [];
+    list.push(shot);
+    byTick.set(shot.tick, list);
+  }
+
+  const combatBulletDamage = (grouped?.bullet_damage || []).filter((record) => !isWarmup(record));
+  const bulletDamageAvailable = combatBulletDamage.length > 0;
+  const playerBulletDamage = combatBulletDamage
+    .filter((record) => matchesPlayer(record, "attacker", player))
+    .filter((record) => isKnownEnemyInteraction(record, "attacker", "victim", ticks));
+  let matchedBulletDamageEvents = 0;
+  for (const event of playerBulletDamage) {
+    const shot = shotAtEventTick(byTick, event);
+    if (!shot) continue;
+    shot.hit = true;
+    shot.bulletDamageEvents++;
+    matchedBulletDamageEvents++;
+  }
+
+  const canonicalHurtWeapons = new WeakMap();
+  const playerGunHurts = (grouped?.player_hurt || [])
+    .filter((record) => !isWarmup(record))
+    .filter((record) => matchesPlayer(record, "attacker", player) && !matchesPlayer(record, "user", player))
+    .filter((record) => isKnownEnemyInteraction(record, "attacker", "user", ticks))
+    .filter((record) => isGun(eventWeapon(record)));
+  let matchedGunHurtEvents = 0;
+  for (const event of playerGunHurts) {
+    const reportedWeapon = eventWeapon(event);
+    const shot = shotAtEventTick(byTick, event, reportedWeapon);
+    const canonicalWeapon = shot?.weapon || reportedWeapon;
+    canonicalHurtWeapons.set(event, canonicalWeapon);
+    if (!shot) continue;
+    shot.damage += number(event, ["dmg_health", "health_damage", "damage"], 0);
+    shot.hurtEvents++;
+    shot.hitgroups.push((text(event, ["hitgroup", "hit_group"]) || "unknown").toLowerCase());
+    matchedGunHurtEvents++;
+  }
+
+  const unmatchedBulletDamageEvents = playerBulletDamage.length - matchedBulletDamageEvents;
+  const unmatchedGunHurtEvents = playerGunHurts.length - matchedGunHurtEvents;
+  const inconsistent = records.length > 0 && (
+    unmatchedBulletDamageEvents > 0
+    || unmatchedGunHurtEvents > 0
+    || (playerGunHurts.length > 0 && playerBulletDamage.length === 0)
+  );
+
+  const canonicalWeaponForEvent = (event) => {
+    if (canonicalHurtWeapons.has(event)) return canonicalHurtWeapons.get(event);
+    const reportedWeapon = eventWeapon(event);
+    return shotAtEventTick(byTick, event, reportedWeapon)?.weapon || reportedWeapon;
+  };
+
+  return {
+    records,
+    gunShotEvents,
+    playerBulletDamage,
+    playerGunHurts,
+    bulletDamageAvailable,
+    matchedBulletDamageEvents,
+    matchedGunHurtEvents,
+    unmatchedBulletDamageEvents,
+    unmatchedGunHurtEvents,
+    inconsistent,
+    canonicalWeaponForEvent,
+  };
+}
+
 function calculateAngleDeviation(attackerPos, targetPos) {
   const dx = targetPos.x - attackerPos.x;
   const dy = targetPos.y - attackerPos.y;
@@ -607,34 +720,30 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
   const openingDeaths = Array.from(firstDeaths.values()).filter((record) => matchesPlayer(record, "user", player)).length;
 
   // 1. Silaha Duyarlı Hareket Analizi (Weapon-Aware Movement Profile)
-  const shotEntries = gunShots.map((record) => {
-    const tick = number(record, ["tick"]);
-    const tickRow = rowForPlayerAtTick(ticks, tick, player);
-    const speed = shotSpeed(record, tickRow);
-    const maxSpeed = finiteNumber(tickRow, ["max_speed"]);
-    const airborneRaw = value(tickRow, ["is_airborne"], false);
-    const airborne = airborneRaw === true || airborneRaw === 1 || airborneRaw === "true";
-    const weapon = eventWeapon(record);
-    return { speed, maxSpeed, airborne, weapon, tick };
-  });
+  const normalizedShots = buildPlayerShotRecords(player, grouped, ticks);
+  const shotEntries = normalizedShots.records;
   const movementProfile = buildWeaponAwareMovementProfile(shotEntries);
   const movingShots = movementProfile.status === "measured"
     ? shotEntries.filter((entry) => Number.isFinite(entry.speed) && Number.isFinite(entry.maxSpeed) && entry.maxSpeed > 0 && (entry.airborne || entry.speed > entry.maxSpeed * 0.34)).length
     : 0;
 
   // 2. Sprey & Hitbox Dağılımı (Hitbox & Spray Stats)
-  const gunHurts = hurts.filter((h) => isGun(eventWeapon(h)));
+  const gunHurts = normalizedShots.playerGunHurts;
   const totalGunShots = gunShots.length;
-  const bulletDamageAvailable = Array.isArray(grouped.bullet_damage) && grouped.bullet_damage.length > 0;
-  const playerBulletDamage = bulletDamageAvailable ? grouped.bullet_damage.filter((record) =>
-    matchesPlayer(record, "attacker", player) && isKnownEnemyInteraction(record, "attacker", "user", ticks)) : [];
-  const hitAttackTicks = new Set(playerBulletDamage.map((record) => number(record, ["attack_tick_count", "attack_tick", "tick"], 0)).filter(Boolean));
-  const totalGunHits = hitAttackTicks.size;
-  const accuracyPercent = bulletDamageAvailable && totalGunShots
+  const bulletDamageAvailable = normalizedShots.bulletDamageAvailable;
+  const totalGunHits = shotEntries.filter((shot) => shot.hit).length;
+  const sprayStatus = !bulletDamageAvailable
+    ? "unavailable"
+    : !totalGunShots
+      ? "insufficient-sample"
+      : normalizedShots.inconsistent
+        ? "inconsistent"
+        : "measured";
+  const accuracyPercent = sprayStatus === "measured"
     ? Math.round((totalGunHits / totalGunShots) * 1000) / 10
     : null;
 
-  const hitboxCounts = { head: 0, chest: 0, stomach: 0, arms: 0, legs: 0 };
+  const hitboxCounts = { head: 0, chest: 0, stomach: 0, arms: 0, legs: 0, other: 0 };
   gunHurts.forEach((h) => {
     const hg = (text(h, ["hitgroup", "hit_group"]) || "").toLowerCase();
     if (hg === "head" || hg === "1") hitboxCounts.head++;
@@ -642,6 +751,7 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     else if (hg === "stomach" || hg === "3") hitboxCounts.stomach++;
     else if (/arm|4|5/.test(hg)) hitboxCounts.arms++;
     else if (/leg|6|7/.test(hg)) hitboxCounts.legs++;
+    else hitboxCounts.other++;
   });
 
   const hitboxSampleCount = Object.values(hitboxCounts).reduce((sum, count) => sum + count, 0);
@@ -652,6 +762,7 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     stomach: hitboxSampleCount ? Math.round((hitboxCounts.stomach / hitboxSampleCount) * 100) : 0,
     arms: hitboxSampleCount ? Math.round((hitboxCounts.arms / hitboxSampleCount) * 100) : 0,
     legs: hitboxSampleCount ? Math.round((hitboxCounts.legs / hitboxSampleCount) * 100) : 0,
+    other: hitboxSampleCount ? Math.round((hitboxCounts.other / hitboxSampleCount) * 100) : 0,
   };
 
   // Sprey analizi: ilk 3 mermi vs 4+ mermiler
@@ -659,18 +770,14 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
   let earlyHits = 0;
   let lateShots = 0;
   let lateHits = 0;
-  gunShots.forEach((s) => {
-    const tick = number(s, ["tick"]);
-    const tickRow = rowForPlayerAtTick(ticks, tick, player);
-    const shotsFired = finiteNumber(tickRow, ["CCSPlayerPawn.m_iShotsFired", "m_iShotsFired"]);
-    if (shotsFired === null || !bulletDamageAvailable) return;
-    const isHit = hitAttackTicks.has(tick);
-    if (shotsFired <= 3) {
+  shotEntries.forEach((shot) => {
+    if (shot.shotsFired === null || sprayStatus !== "measured") return;
+    if (shot.shotsFired <= 3) {
       earlyShots++;
-      if (isHit) earlyHits++;
+      if (shot.hit) earlyHits++;
     } else {
       lateShots++;
-      if (isHit) lateHits++;
+      if (shot.hit) lateHits++;
     }
   });
 
@@ -681,10 +788,24 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     earlyAccuracy: earlyShots ? Math.round((earlyHits / earlyShots) * 100) : null,
     lateAccuracy: lateShots ? Math.round((lateHits / lateShots) * 100) : null,
     earlyShots,
+    earlyHits,
     lateShots,
-    status: bulletDamageAvailable ? (totalGunShots ? "measured" : "insufficient-sample") : "unavailable",
-    method: "bullet-damage-attack-tick-v1",
-    reason: bulletDamageAvailable ? (totalGunShots ? undefined : "Silahlı atış örneği bulunamadı.") : "Demo bullet_damage olayı sağlamadı; player_hurt zaman yakınlığıyla tahmin yapılmadı.",
+    lateHits,
+    status: sprayStatus,
+    sampleCount: totalGunShots,
+    numerator: sprayStatus === "measured" ? totalGunHits : undefined,
+    denominator: sprayStatus === "measured" ? totalGunShots : undefined,
+    method: SPRAY_METHOD,
+    reason: sprayStatus === "unavailable"
+      ? "Demo bullet_damage olayı sağlamadı; player_hurt zaman yakınlığıyla tahmin yapılmadı."
+      : sprayStatus === "insufficient-sample"
+        ? "Silahlı atış örneği bulunamadı."
+        : sprayStatus === "inconsistent"
+          ? `Olaylar aynı demo tick'inde tam eşleşmedi (${normalizedShots.unmatchedBulletDamageEvents} isabet, ${normalizedShots.unmatchedGunHurtEvents} hasar olayı eşleşmedi); sahte sıfır üretilmedi.`
+          : undefined,
+    hitboxStatus: hitboxSampleCount ? "measured" : "insufficient-sample",
+    hitboxMethod: "player-hurt-hitgroup-v2",
+    hitboxReason: hitboxSampleCount ? undefined : "Silahlı player_hurt hitgroup örneği bulunamadı.",
     hitboxSampleCount,
     hitboxCounts,
     hitboxPercents,
@@ -838,7 +959,7 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     const headshot = value(record, ["headshot"], false) === true || value(record, ["headshot"]) === 1;
     return {
       round: roundNumber(record), tick, time: number(record, ["game_time"], 0), zone: translateZone(zoneRaw),
-      x, y, z, victim: playerName(record, "user") || "Bilinmiyor", weapon: text(record, ["weapon", "weapon_name"]),
+      x, y, z, victim: playerName(record, "user") || "Bilinmiyor", weapon: normalizedShots.canonicalWeaponForEvent(record),
       headshot, side: teamSide(team),
     };
   });
@@ -896,21 +1017,23 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
   });
 
   const weaponNames = new Set([
-    ...shots.map(eventWeapon),
-    ...kills.map(eventWeapon),
-    ...hurts.map(eventWeapon),
+    ...shotEntries.map((shot) => shot.weapon),
+    ...kills.map(normalizedShots.canonicalWeaponForEvent),
+    ...gunHurts.map(normalizedShots.canonicalWeaponForEvent),
   ].filter(isGun));
   const weaponStats = [...weaponNames].map((weapon) => {
-    const weaponShots = shots.filter((record) => eventWeapon(record) === weapon);
-    const weaponKills = kills.filter((record) => eventWeapon(record) === weapon);
-    const weaponHurts = hurts.filter((record) => eventWeapon(record) === weapon);
+    const weaponShots = shotEntries.filter((shot) => shot.weapon === weapon);
+    const weaponKills = kills.filter((record) => normalizedShots.canonicalWeaponForEvent(record) === weapon);
+    const weaponHurts = gunHurts.filter((record) => normalizedShots.canonicalWeaponForEvent(record) === weapon);
     const weaponDamage = weaponHurts.reduce((sum, record) => sum + number(record, ["dmg_health", "health_damage", "damage"], 0), 0);
     const weaponHeadshots = weaponKills.filter((record) => value(record, ["headshot"], false) === true || value(record, ["headshot"]) === 1).length;
     const efficiency = weaponShots.length ? Math.round((weaponDamage / weaponShots.length) * 10) / 10 : null;
     const score = efficiency;
     const status = weaponShots.length >= 40 ? "large-sample" : weaponShots.length >= 15 ? "measured" : "small-sample";
     const weaponMovementSamples = weaponShots
-      .map((record) => movingShot(record, rowForPlayerAtTick(ticks, number(record, ["tick"]), player)))
+      .map((shot) => Number.isFinite(shot.speed) && Number.isFinite(shot.maxSpeed) && shot.maxSpeed > 0
+        ? Boolean(shot.airborne || shot.speed > shot.maxSpeed * 0.34)
+        : null)
       .filter((result) => result !== null);
     return {
       weapon,

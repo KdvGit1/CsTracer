@@ -9,7 +9,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { Worker } from "node:worker_threads";
-import { quickDemoMeta } from "./analyze.mjs";
+import { ANALYSIS_VERSION, quickDemoMeta } from "./analyze.mjs";
 import { processGsiPacket, getLiveState, getGamePerformanceStatus } from "./gsi.mjs";
 import {
   MatchAutomationStore,
@@ -42,6 +42,7 @@ import {
   repairExistingMatchDates,
   applyConfiguredDemoRetention,
   getDemoStorageState,
+  processDownloadedDemo,
   setGamePerformanceGuard,
   startAutoScanScheduler,
   steamEvents,
@@ -1647,9 +1648,39 @@ const server = createServer(async (request, response) => {
   if (request.method === "GET" && request.url?.startsWith("/matches/detail/")) {
     const matchId = request.url.replace("/matches/detail/", "");
     const matches = getRecentMatches();
-    const found = matches.find((m) => m.id === matchId);
+    let found = matches.find((m) => m.id === matchId);
     if (found && found.fullAnalysis) {
-      sendJson(response, 200, { ok: true, match: found, analysis: found.fullAnalysis }, origin);
+      const sprayCurrent = found.fullAnalysis.analysisVersion === ANALYSIS_VERSION
+        && (found.fullAnalysis.reports || []).every((report) => report.sprayStats?.method === "bullet-damage-event-tick-v2");
+      let reanalyzed = false;
+      let reanalysisError = "";
+      if (!sprayCurrent && found.demoPath && existsSync(found.demoPath)) {
+        try {
+          found = await processDownloadedDemo(
+            found.demoPath,
+            found.source || "steam_gcpd",
+            found.id,
+            found.timestamp || null,
+            found.formattedDate || null,
+            found.map || null
+          );
+          reanalyzed = true;
+        } catch (error) {
+          reanalysisError = error instanceof Error ? error.message : String(error);
+        }
+      } else if (!sprayCurrent) {
+        reanalysisError = "Ham .dem dosyası saklama kotasında artık bulunmuyor; eski sprey sıfırları gösterilmeyecek.";
+      }
+      const needsReanalysis = found.fullAnalysis.analysisVersion !== ANALYSIS_VERSION
+        || (found.fullAnalysis.reports || []).some((report) => report.sprayStats?.method !== "bullet-damage-event-tick-v2");
+      sendJson(response, 200, {
+        ok: true,
+        match: found,
+        analysis: found.fullAnalysis,
+        reanalyzed,
+        needsReanalysis,
+        reanalysisError: reanalysisError || undefined,
+      }, origin);
     } else {
       sendJson(response, 404, { error: "Maç analizi bulunamadı." }, origin);
     }

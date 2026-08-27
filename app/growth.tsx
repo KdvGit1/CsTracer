@@ -44,7 +44,7 @@ export type ProgressMatch = {
 
 const DIMENSIONS: Array<{ key: DimensionKey; label: string; color: string }> = [
   { key: "aim", label: "Headshot oranı", color: "#c8f54d" },
-  { key: "movement", label: "Geçerli hızda atış", color: "#68d4ff" },
+  { key: "movement", label: "Atış anı hareket uygunluğu", color: "#68d4ff" },
   { key: "utility", label: "Utility etkili round", color: "#ffb761" },
   { key: "teamwork", label: "Trade oranı", color: "#b99cff" },
   { key: "position", label: "Hayatta kalma", color: "#ff7e85" },
@@ -53,7 +53,7 @@ const DIMENSIONS: Array<{ key: DimensionKey; label: string; color: string }> = [
 
 export const AIM_METRIC_CONFIG: Array<{ key: AimMetricKey; label: string; unit: string; color: string; lowerIsBetter?: boolean; desc: string }> = [
   { key: "headError", label: "Kill Anı Kafa Sapması", unit: "°", color: "#ff9c4d", lowerIsBetter: true, desc: "Yalnız öldürme tick'indeki nişangah-hedef açısı; pre-aim ölçümü değildir" },
-  { key: "ttd", label: "Medyan Time-to-Damage", unit: "ms", color: "#68d4ff", lowerIsBetter: true, desc: "Yaklaşık görünür temastan ilk hasara medyan süre (Düşük = Hızlı)" },
+  { key: "ttd", label: "Görünürlükten İlk Hasara Yaklaşık Süre", unit: "ms", color: "#68d4ff", lowerIsBetter: true, desc: "approximate_spotted_by başlangıcından ilk hasara medyan süre; reaksiyon puanı değildir" },
   { key: "duelWinrate", label: "Karşılıklı Düello Kazanma", unit: "%", color: "#b99cff", desc: "İki rakibin birbirini gördüğü ve ölümle sonuçlanan temasların kazanma yüzdesi" },
   { key: "earlyAccuracy", label: "İlk 3 Mermi İsabeti", unit: "%", color: "#f4e37a", desc: "Burst ve ilk mermi isabet başarısı" },
 ];
