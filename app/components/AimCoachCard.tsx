@@ -40,7 +40,7 @@ export function evaluateAimMechanics(report: PlayerReport): {
 
   // Silahın demo içindeki max_speed değerinin %34 doğruluk sınırı kullanılır.
   const rifleStats = movement?.byCategory?.rifle;
-  if (movement?.status === "measured" && rifleStats && rifleStats.shots >= 15 && rifleStats.movingPercent >= 20) {
+  if (movement?.status === "measured" && rifleStats && rifleStats.shots >= 8 && rifleStats.movingPercent >= 20) {
     diagnoses.push({
       id: "rifle_counter_strafe",
       category: "movement",
@@ -58,7 +58,7 @@ export function evaluateAimMechanics(report: PlayerReport): {
   }
 
   const sniperStats = movement?.byCategory?.sniper;
-  if (movement?.status === "measured" && sniperStats && sniperStats.shots >= 8 && sniperStats.movingPercent >= 20) {
+  if (movement?.status === "measured" && sniperStats && sniperStats.shots >= 5 && sniperStats.movingPercent >= 20) {
     diagnoses.push({
       id: "sniper_moving",
       category: "movement",
@@ -78,7 +78,7 @@ export function evaluateAimMechanics(report: PlayerReport): {
   // Aynı oyuncunun ilk 3 ve 4+ mermileri birbiriyle kıyaslanır; dışarıdan
   // "pro" eşiği uygulanmaz.
   if (spray?.status === "measured") {
-    if (spray.earlyAccuracy !== null && spray.lateAccuracy !== null && spray.earlyShots >= 10 && spray.lateShots >= 10 && spray.lateAccuracy < spray.earlyAccuracy * 0.5) {
+    if (spray.earlyAccuracy !== null && spray.lateAccuracy !== null && spray.earlyShots >= 6 && spray.lateShots >= 6 && spray.lateAccuracy < spray.earlyAccuracy * 0.5) {
       diagnoses.push({
         id: "spray_control_decay",
         category: "recoil",
@@ -96,7 +96,7 @@ export function evaluateAimMechanics(report: PlayerReport): {
     }
 
     const hitboxSamples = spray.hitboxSampleCount ?? Object.values(spray.hitboxCounts).reduce((sum, count) => sum + count, 0);
-    if (hitboxSamples >= 10 && spray.hitboxPercents.legs > spray.hitboxPercents.head + spray.hitboxPercents.chest) {
+    if (hitboxSamples >= 5 && spray.hitboxPercents.legs > spray.hitboxPercents.head + spray.hitboxPercents.chest) {
       diagnoses.push({
         id: "lazy_crosshair_legs",
         category: "hitbox",
@@ -114,8 +114,29 @@ export function evaluateAimMechanics(report: PlayerReport): {
     }
   }
 
+  const currentAnalysis = /^3\.(?:[1-9]|\d{2,})\./.test(report.analysisVersion || "");
+  const measuredSignals = [
+    movement?.status === "measured" && movement.sampleCount > 0,
+    spray?.status === "measured" && spray.totalShots > 0,
+    spray?.status === "measured" && (spray.hitboxSampleCount || 0) > 0,
+  ].filter(Boolean).length;
+  const rating = !currentAnalysis
+    ? "Yeniden analiz et"
+    : measuredSignals === 0
+    ? "Yeterli veri yok"
+    : diagnoses.some((item) => item.severity === "high")
+    ? "Geliştirilmeli"
+    : diagnoses.some((item) => item.severity === "moderate")
+    ? "Orta"
+    : "İyi";
   const score = null;
-  const rating = "Puanlama kaldırıldı · doğrudan demo metrikleri";
+
+  if (currentAnalysis && movement?.status === "measured" && movement.sampleCount >= 5 && movement.invalidShotPercent < 15) {
+    strengths.push(`Atış öncesi duruş iyi · ${movement.sampleCount} atışta yalnız %${movement.invalidShotPercent} sınır üstü`);
+  }
+  if (currentAnalysis && spray?.status === "measured" && spray.totalShots >= 5 && spray.accuracyPercent !== null && spray.accuracyPercent >= 20) {
+    strengths.push(`Bu maçta silahlı isabet oranı iyi · ${spray.totalHits}/${spray.totalShots}`);
+  }
 
   // 3 Adımlı Kişiselleştirilmiş Drill Rutini
   const routine: Array<{ step: number; title: string; duration: string; drill: string; goal: string }> = [];
@@ -161,9 +182,9 @@ export const AimCoachCard: React.FC<{
           <p>Kural motoru yalnız doğrudan ölçülen max-speed, bullet_damage ve hitgroup verilerini kullanır. Kill anı hizası ve yaklaşık TTD bilgi amaçlıdır; pre-aim ya da profesyonel seviye hükmüne çevrilmez.</p>
         </div>
         <div className="aim-coach-score-box">
-          <span>AİM PUANI</span>
-          <b>{evaluation.score ?? "—"}</b>
-          <small>{evaluation.rating}</small>
+          <span>MAÇ İÇİ MEKANİK YORUMU</span>
+          <b>{evaluation.rating}</b>
+          <small>Rastgele puan değil · doğrudan demo kanıtı</small>
         </div>
       </header>
 
@@ -187,7 +208,7 @@ export const AimCoachCard: React.FC<{
         {evaluation.diagnoses.length === 0 ? (
           <div className="aim-clean-slate">
             <b>Ölçülen doğrudan metriklerde güçlü bir tekrar bulunmadı.</b>
-            <p>Bu sonuç profesyonel seviye hükmü değildir; örnek sayısını büyütüp aynı metrikleri maçtan maça karşılaştır.</p>
+            <p>Bu maçın ölçülen alanları iyi görünüyor; bu profesyonel seviye hükmü değildir. Aynı metrikleri sonraki maçlarla karşılaştır.</p>
           </div>
         ) : (
           evaluation.diagnoses.map((diag) => (

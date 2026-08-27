@@ -21,6 +21,7 @@ const OTHER_PROPS = ["total_rounds_played", "game_time", "is_warmup_period"];
 
 export const TTD_METHOD = "spotted-to-first-damage-v2";
 export const DUEL_METHOD = "mutual-spotted-death-v2";
+export const ANALYSIS_VERSION = "3.1.0";
 const CONTACT_WINDOW_MS = 2000;
 const MAX_REACTION_TTD_MS = 1500;
 const MIN_REACTION_TTD_MS = 50;
@@ -870,7 +871,7 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     const sideDamage = sideHurts.reduce((sum, record) => sum + number(record, ["dmg_health", "health_damage", "damage"], 0), 0);
     const sideZones = new Map();
     for (const detail of sideDeaths) sideZones.set(detail.zone, (sideZones.get(detail.zone) || 0) + 1);
-    const [sideTopZone = "Veri yok", sideTopZoneDeaths = 0] = [...sideZones.entries()].sort((a, b) => b[1] - a[1])[0] || [];
+    const [sideTopZone = null, sideTopZoneDeaths = 0] = [...sideZones.entries()].sort((a, b) => b[1] - a[1])[0] || [];
     const sideUntraded = sideDeaths.filter((detail) => !detail.traded).length;
     return {
       side,
@@ -1125,6 +1126,7 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
   });
 
   return {
+    analysisVersion: ANALYSIS_VERSION,
     player, map: text(header, ["map_name", "map"]), rounds, kills: kills.length, deaths: deaths.length,
     assists: assists.length, adr: rounds ? Math.round((damage / rounds) * 10) / 10 : 0,
     headshotPercent: kills.length ? Math.round((headshots / kills.length) * 100) : 0,
@@ -1256,5 +1258,5 @@ export function analyzeDemo(pathOrBuffer) {
     : [];
   const tickIndex = buildTickIndex(mergeTickRows(detailTickRows, combatTickRows));
   const reports = players.map((player) => buildPlayerReport(player, grouped, tickIndex, header, tickRate));
-  return { header, players, reports, parserVersion: "0.42.0", analysisVersion: "3.0.0", tickRate };
+  return { header, players, reports, parserVersion: "0.42.0", analysisVersion: ANALYSIS_VERSION, tickRate };
 }

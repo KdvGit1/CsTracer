@@ -17,4 +17,5 @@ export type DirectMatchScore = {
   dimensions: DirectScoreDimensions;
 };
 
+export function kastContributionGrade(value: unknown): string;
 export function scoreMatchReport(report: unknown): DirectMatchScore | null;

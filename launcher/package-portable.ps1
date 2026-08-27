@@ -48,6 +48,21 @@ Copy-Item -LiteralPath (Join-Path $tracerRoot "companion") -Destination $release
 Copy-Item -LiteralPath (Join-Path $tracerRoot "launcher") -Destination $releaseRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $tracerRoot "shared") -Destination $releaseRoot -Recurse -Force
 
+# Companion, Steam'in .dem.bz2 dosyalarını açarken unbzip2-stream kullanır.
+# Kök node_modules güncelleyici tarafından bilinçli olarak korunduğu için küçük
+# çalışma zamanı bağımlılık kümesini companion altına koyuyoruz. Node çözümleyici
+# bu klasörü önce arar; aynı yer hafif patch ile eski portable kurulumlara da taşınır.
+$companionNodeModules = Join-Path $releaseRoot "companion\node_modules"
+New-Item -ItemType Directory -Path $companionNodeModules -Force | Out-Null
+$companionRuntimeModules = @("unbzip2-stream", "buffer", "through", "ieee754")
+foreach ($module in $companionRuntimeModules) {
+  $moduleSource = Join-Path $tracerRoot "node_modules\$module"
+  if (-not (Test-Path -LiteralPath $moduleSource)) {
+    throw "Companion çalışma zamanı bağımlılığı bulunamadı: node_modules\$module"
+  }
+  Copy-Item -LiteralPath $moduleSource -Destination (Join-Path $companionNodeModules $module) -Recurse -Force
+}
+
 # Geliştiriciye özel betikler oyuncu paketine girmemeli
 $excludedLauncherFiles = @("publish-release.ps1", "create-patch.ps1", "download-embedded-ai.ps1", "package-portable.ps1", "sync-version-files.mjs")
 foreach ($devScript in $excludedLauncherFiles) {
@@ -117,6 +132,10 @@ if ($leakedSession.Count -gt 0) {
 $requiredPortableFiles = @(
   "app-runtime\server.js",
   "companion\analyze.mjs",
+  "companion\node_modules\unbzip2-stream\package.json",
+  "companion\node_modules\buffer\node_modules\base64-js\package.json",
+  "companion\node_modules\through\package.json",
+  "companion\node_modules\ieee754\package.json",
   "shared\scoring.mjs",
   "runtime\node.exe",
   "node_modules\@laihoe\demoparser2-win32-x64-msvc\demoparser2.win32-x64-msvc.node",
@@ -127,6 +146,19 @@ foreach ($requiredFile in $requiredPortableFiles) {
   if (-not (Test-Path -LiteralPath (Join-Path $releaseRoot $requiredFile))) {
     throw "Portable çekirdek dosyası eksik: $requiredFile"
   }
+}
+
+# Paket içindeki gerçek Node ile bağımlılık çözümlemesini çalıştır. Böylece yeni
+# bir import eklenip paketleme listesi unutulursa RAR üretilmeden hata alınır.
+$portableNode = Join-Path $releaseRoot "runtime\node.exe"
+Push-Location $releaseRoot
+try {
+  & $portableNode --input-type=module -e "import { createRequire } from 'node:module'; const require = createRequire(new URL('./companion/steam_downloader.mjs', import.meta.url)); require('unbzip2-stream');"
+  if ($LASTEXITCODE -ne 0) {
+    throw "Portable companion bağımlılık smoke testi başarısız oldu."
+  }
+} finally {
+  Pop-Location
 }
 
 # Paket özeti

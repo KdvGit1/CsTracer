@@ -26,6 +26,7 @@ import type { PlayerReport } from "../lib/types";
 export interface RecentMatchAnalysis {
   reports?: PlayerReport[];
   header?: { map_name?: string };
+  analysisVersion?: string;
   timestamp?: number;
 }
 

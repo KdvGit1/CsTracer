@@ -2,13 +2,18 @@ import { evaluateAimMechanics } from "../components/AimCoachCard";
 import type { CompactCoachVerdict, CompactMatchSummary } from "../growth";
 import type { CoachPacket, FullMatchReport, PlayerReport } from "./types";
 import { scoreMatchReport } from "../../shared/scoring.mjs";
+import { getAngleTier } from "./format";
 
 export function buildCompactSummary(report: PlayerReport, coachVerdict?: CompactCoachVerdict): CompactMatchSummary {
   const scorecard = scoreMatchReport(report);
   const dimensions = scorecard?.dimensions || { aim: null, movement: null, utility: null, teamwork: null, position: null, roundImpact: null };
   const overall = scorecard?.overall ?? null;
 
-  const aimMetrics = report.crosshairStats && report.duelStats && report.sprayStats ? {
+  const currentAimSchema = /^3\.(?:[1-9]|\d{2,})\./.test(report.analysisVersion || "")
+    && report.crosshairStats?.method === "kill-tick-alignment-v2"
+    && report.crosshairStats.status === "measured"
+    && report.crosshairStats.sampleCount > 0;
+  const aimMetrics = currentAimSchema && report.crosshairStats && report.duelStats && report.sprayStats ? {
     headErrorAngle: report.crosshairStats.headErrorAngle,
     bodyErrorAngle: report.crosshairStats.bodyErrorAngle,
     averageTTD: report.duelStats.averageTTD,
@@ -34,7 +39,7 @@ export function buildCompactSummary(report: PlayerReport, coachVerdict?: Compact
     })),
     aimMetrics,
     coachVerdict: coachVerdict || (report.crosshairStats ? {
-      title: report.crosshairStats.status === "measured" ? "Öldürme anı nişangah hizası ölçüldü" : "Nişangah hizası ölçülemedi",
+      title: currentAimSchema ? `Kill anı hizası: ${getAngleTier(report.crosshairStats.headErrorAngle, "head").label}` : "Nişangah hizası için güncel analiz gerekli",
       priorityArea: "Öldürme Anı Nişangah Hizası",
       grade: scorecard?.grade || "Ölçülemedi",
     } : undefined),
@@ -56,7 +61,7 @@ export function buildDeterministicFullReport(report: PlayerReport, packet: Coach
     : "CT/T taraf karşılaştırması için iki tarafta da ölçülebilir round verisi bulunamadı.";
 
   const strongestWeapon = report.weaponStats?.length ? [...report.weaponStats].sort((a, b) => b.kills - a.kills || b.damage - a.damage)[0] : undefined;
-  const developWeapon = report.weaponStats?.length ? [...report.weaponStats].filter((w) => w.shots > 15 && w.efficiency !== null).sort((a, b) => Number(a.efficiency) - Number(b.efficiency))[0] : undefined;
+  const developWeapon = report.weaponStats?.length ? [...report.weaponStats].filter((w) => w.shots > 0 && w.efficiency !== null && w !== strongestWeapon).sort((a, b) => Number(a.efficiency) - Number(b.efficiency))[0] : undefined;
 
   const priorities = packet.priorities.slice(0, 3).map((item) => ({
     area: item.area,
@@ -103,8 +108,8 @@ export function buildDeterministicFullReport(report: PlayerReport, packet: Coach
     },
     weaponVerdict: {
       strongWeapon: strongestWeapon?.label ? `${strongestWeapon.label} (${strongestWeapon.kills} kill, ${strongestWeapon.damage} hasar; en yüksek kayıtlı katkı)` : "Yeterli silah verisi yok",
-      developWeapon: developWeapon?.label ? `${developWeapon.label} (${developWeapon.efficiency} hasar/atış; 15+ atışlı silahlar içinde en düşük)` : "15+ atışlı karşılaştırma örneği yok",
-      tip: "Bu karşılaştırma puan değildir; ilgili silah çatışmalarını videoda menzil, satın alma ve rol bağlamıyla doğrula.",
+      developWeapon: developWeapon?.label ? `${developWeapon.label} (${developWeapon.shots} atış, ${developWeapon.efficiency} hasar/atış; bu maçtaki diğer silahlar içinde geliştirme adayı)` : "Bu maçta karşılaştırılabilecek ikinci silah olayı yok",
+      tip: "Bu maç içi göreli yorumdur; ilgili silah çatışmalarını videoda menzil, satın alma ve rol bağlamıyla doğrula.",
     },
     confidence: packet.confidence,
   };

@@ -36,6 +36,7 @@ test("quickDemoMeta okunamayan demoya sahte harita atamaz", () => {
 
 test("analyzeDemo tam maç raporu üretir", { skip: skipReason, timeout: 300000 }, () => {
   const result = analyzeDemo(demoPath);
+  assert.equal(result.analysisVersion, "3.1.0", "kök analiz sürümü güncel olmalı");
 
   // Header
   assert.ok(result.header, "header olmalı");
@@ -47,6 +48,7 @@ test("analyzeDemo tam maç raporu üretir", { skip: skipReason, timeout: 300000 
   assert.ok(Array.isArray(result.reports) && result.reports.length === result.players.length, "her oyuncu için rapor üretilmeli");
 
   const report = result.reports[0];
+  assert.equal(report.analysisVersion, result.analysisVersion, "rapor kendi analiz sürümünü taşımalı");
   // Temel skor alanları
   for (const field of ["kills", "deaths", "assists", "adr", "headshotPercent", "shots", "rounds"]) {
     assert.ok(Number.isFinite(report[field]), `${field} sayısal olmalı (şu an: ${report[field]})`);
@@ -73,6 +75,12 @@ test("analyzeDemo tam maç raporu üretir", { skip: skipReason, timeout: 300000 
   for (const weapon of report.weaponStats) {
     assert.equal(weapon.efficiency === null, weapon.shots === 0, `${weapon.weapon} için hasar/atış yalnız atış örneği varsa ölçülmeli`);
     assert.equal(weapon.movingShotPercent === null, (weapon.movementSampleCount || 0) === 0, `${weapon.weapon} hareket oranı örneksizken null olmalı`);
+  }
+  for (const side of report.sideStats) {
+    if (side.deaths === 0) {
+      assert.equal(side.topZone, null, `${side.side} tarafında ölüm yoksa 'Veri yok · 0' üretilmemeli`);
+      assert.equal(side.topZoneDeaths, 0);
+    }
   }
   assert.equal(report.duelStats.duelTotal, report.duelStats.duelWins + report.duelStats.duelLosses, "düello toplamı galibiyet ve mağlubiyetlerden oluşmalı");
   assert.ok(Array.isArray(report.recommendations) && report.recommendations.length > 0, "en az bir tavsiye üretilmeli");

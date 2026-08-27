@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { SCORE_METHOD, scoreMatchReport } from "../shared/scoring.mjs";
+import { SCORE_METHOD, kastContributionGrade, scoreMatchReport } from "../shared/scoring.mjs";
 
 test("genel skor yalnız doğrudan KAST değeridir", () => {
   const score = scoreMatchReport({
@@ -18,6 +18,7 @@ test("genel skor yalnız doğrudan KAST değeridir", () => {
 
   assert.equal(score.method, SCORE_METHOD);
   assert.equal(score.overall, 70.8);
+  assert.equal(score.grade, "İyi round katkısı");
   assert.equal(score.sampleCount, 24);
   assert.deepEqual(score.dimensions, {
     aim: 50,
@@ -28,6 +29,14 @@ test("genel skor yalnız doğrudan KAST değeridir", () => {
     roundImpact: 70.8,
   });
   assert.equal("economy" in score.dimensions, false);
+});
+
+test("KAST koçluk bandı profesyonel iddiası olmadan iyi/orta/geliştirilebilir yorumu verir", () => {
+  assert.equal(kastContributionGrade(82), "Çok yüksek round katkısı");
+  assert.equal(kastContributionGrade(74), "İyi round katkısı");
+  assert.equal(kastContributionGrade(65), "Orta round katkısı");
+  assert.equal(kastContributionGrade(54), "Geliştirilebilir round katkısı");
+  assert.equal(kastContributionGrade(null), "Ölçülemedi");
 });
 
 test("eksik metrikler rastgele veya sıfır değere düşmez", () => {

@@ -11,6 +11,15 @@ function percent(value) {
   return parsed === null ? null : Math.max(0, Math.min(100, Math.round(parsed * 10) / 10));
 }
 
+export function kastContributionGrade(value) {
+  const measured = percent(value);
+  if (measured === null) return "Ölçülemedi";
+  if (measured >= 80) return "Çok yüksek round katkısı";
+  if (measured >= 70) return "İyi round katkısı";
+  if (measured >= 60) return "Orta round katkısı";
+  return "Geliştirilebilir round katkısı";
+}
+
 /**
  * TRACER'ın tek maç karnesi. Genel değer bir tahmin veya profesyonel rating
  * değildir: doğrudan KAST (kill, assist, survival veya traded death olan
@@ -38,7 +47,7 @@ export function scoreMatchReport(report) {
 
   return {
     overall: dimensions.roundImpact,
-    grade: dimensions.roundImpact === null ? "Ölçülemedi" : "KAST round katkısı",
+    grade: kastContributionGrade(dimensions.roundImpact),
     method: SCORE_METHOD,
     sampleCount: rounds && rounds > 0 ? rounds : 0,
     dimensions,

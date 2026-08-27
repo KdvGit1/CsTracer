@@ -11,7 +11,7 @@ import { Transform } from "node:stream";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
-export const CURRENT_VERSION = "0.50.0";
+export const CURRENT_VERSION = "0.50.2";
 
 // Zip-bomb / disk doldurma koruması: indirilebilir maksimum yama boyutu
 const MAX_PATCH_BYTES = 100 * 1024 * 1024;

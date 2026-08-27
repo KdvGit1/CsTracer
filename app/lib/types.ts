@@ -18,7 +18,7 @@ export type KillDetail = {
 export type SideStat = {
   side: "CT" | "T"; rounds: number; kills: number; deaths: number; assists: number; damage: number;
   adr: number | null; shots: number; movingShotPercent: number | null; movementSampleCount?: number;
-  tradePercent: number | null; topZone: string; topZoneDeaths: number;
+  tradePercent: number | null; topZone: string | null; topZoneDeaths: number;
 };
 export type WeaponStat = {
   weapon: string; label: string; category?: string; kills: number; damage: number; shots: number; headshots: number;
@@ -134,6 +134,7 @@ export type RouteStat = {
   isBestRoute?: boolean;
 };
 export type PlayerReport = {
+  analysisVersion?: string;
   player: { name: string; steamid: string }; map: string; rounds: number; kills: number; deaths: number;
   assists: number; adr: number; headshotPercent: number; openingKills: number; openingDeaths: number;
   utilityDamage: number; enemyBlindSeconds: number; flashesThrown: number; shots: number;

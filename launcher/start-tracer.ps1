@@ -1,4 +1,4 @@
-param(
+﻿param(
   [switch]$NoWindow,
   [int]$TestDurationSeconds = 0,
   [string]$DataRoot = "",

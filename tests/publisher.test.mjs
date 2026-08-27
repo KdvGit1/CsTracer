@@ -78,3 +78,21 @@ test("patch ve portable ortak skor motorunu içerir", () => {
   assert.match(portableScript, /Join-Path \$tracerRoot "shared"/);
   assert.match(portableScript, /shared\\scoring\.mjs/);
 });
+
+test("patch ve portable Steam bz2 çalışma zamanı bağımlılıklarını companion altında taşır", () => {
+  const patchScript = readFileSync(join(root, "launcher", "create-patch.ps1"), "utf8");
+  const portableScript = readFileSync(join(root, "launcher", "package-portable.ps1"), "utf8");
+
+  for (const source of [patchScript, portableScript]) {
+    assert.match(source, /companion\\node_modules/);
+    assert.match(source, /"unbzip2-stream", "buffer", "through", "ieee754"/);
+    assert.match(source, /buffer\\node_modules\\base64-js\\package\.json/);
+    assert.match(source, /createRequire/);
+    assert.match(source, /require\('unbzip2-stream'\)/);
+  }
+});
+
+test("oyuncu başlatıcısı Windows PowerShell 5.1 için UTF-8 BOM taşır", () => {
+  const launcherBytes = readFileSync(join(root, "launcher", "start-tracer.ps1"));
+  assert.deepEqual([...launcherBytes.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
+});

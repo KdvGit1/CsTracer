@@ -8,12 +8,13 @@ import type {
   MovementProfile,
   PlayerReport,
 } from "./types";
+import { getAngleTier, getSprayTier } from "./format";
 
 // Bu eşikler profesyonel benchmark değildir. Yalnız aynı maç içinde video
 // incelemesine aday tekrarları seçen, kullanıcıya açık TRACER kurallarıdır.
 export const COACH_THRESHOLDS = {
-  movementReview: { minimumShots: 15, share: 20, highShare: 35 },
-  sprayReview: { minimumEarlyShots: 10, minimumLateShots: 10, lateToEarlyRatio: 0.5 },
+  movementReview: { minimumShots: 8, share: 20, highShare: 35 },
+  sprayReview: { minimumEarlyShots: 6, minimumLateShots: 6, lateToEarlyRatio: 0.5 },
   tradeReview: { minimumDeaths: 4 },
 } as const;
 
@@ -183,7 +184,7 @@ export function buildCoachPacket(report: PlayerReport): CoachPacket {
   const findings: CoachFinding[] = [
     ...(report.crosshairStats ? [{
       id: "aim_crosshair", area: "Kill Anı Nişangah Hizası",
-      title: report.crosshairStats.status === "measured" ? "Kill tick'i hizası ölçüldü" : "Kill tick'i hizası ölçülemedi",
+      title: report.crosshairStats.status === "measured" ? `Kill anı hizası: ${getAngleTier(report.crosshairStats.headErrorAngle, "head").label}` : "Kill tick'i hizası ölçülemedi",
       evidence: report.crosshairStats.status === "measured" ? `${report.crosshairStats.sampleCount} kill örneğinde medyan kafa sapması ${report.crosshairStats.headErrorAngle}°, gövde sapması ${report.crosshairStats.bodyErrorAngle}°.` : (report.crosshairStats.reason || "Geçerli örnek yok."),
       interpretation: "Bu ölçüm öldürme anını gösterir; köşe ön nişanı, ilk görünür temas veya görüş hattı raycast'i değildir.",
       action: "Değeri yalnız aynı yöntemli sonraki maçlarla ve ilgili kill videolarıyla birlikte yorumla.",
@@ -192,17 +193,17 @@ export function buildCoachPacket(report: PlayerReport): CoachPacket {
     }] : []),
     ...(report.sprayStats?.status === "measured" ? [{
       id: "aim_spray", area: "Sprey & Recoil",
-      title: report.sprayStats.earlyAccuracy !== null && report.sprayStats.lateAccuracy !== null && report.sprayStats.lateShots >= 10 && report.sprayStats.lateAccuracy < report.sprayStats.earlyAccuracy * .5 ? "Uzayan spreyde kişisel isabet düşüyor" : "Burst/sprey dağılımı ölçüldü",
+      title: report.sprayStats.earlyAccuracy !== null && report.sprayStats.lateAccuracy !== null && report.sprayStats.lateShots >= COACH_THRESHOLDS.sprayReview.minimumLateShots && report.sprayStats.lateAccuracy < report.sprayStats.earlyAccuracy * COACH_THRESHOLDS.sprayReview.lateToEarlyRatio ? "Uzayan spreyde kişisel isabet düşüyor" : `Genel silahlı isabet: ${getSprayTier(report.sprayStats.accuracyPercent, "overall").label}`,
       evidence: `Toplam ${report.sprayStats.totalShots} atışta %${report.sprayStats.accuracyPercent} isabet (${report.sprayStats.totalHits} hit). İlk 3 mermi %${report.sprayStats.earlyAccuracy}, 4+ mermi sprey %${report.sprayStats.lateAccuracy} isabet.`,
       interpretation: "Bu oranlar bullet_damage saldırı tick'iyle eşleşen doğrudan mermilerden gelir; menzil ayrıca sınıflandırılmadı.",
-      action: report.sprayStats.earlyAccuracy !== null && report.sprayStats.lateAccuracy !== null && report.sprayStats.lateShots >= 10 && report.sprayStats.lateAccuracy < report.sprayStats.earlyAccuracy * .5 ? "Uzun seri roundlarını izle; Recoil Master'da aynı silahla ilk-3/4+ farkını azalt." : "Aynı örnek sayısıyla sonraki demoda yeniden karşılaştır.",
-      severity: (report.sprayStats.earlyAccuracy !== null && report.sprayStats.lateAccuracy !== null && report.sprayStats.lateShots >= 10 && report.sprayStats.lateAccuracy < report.sprayStats.earlyAccuracy * .5 ? "moderate" : "info") as ErrorSeverity,
+      action: report.sprayStats.earlyAccuracy !== null && report.sprayStats.lateAccuracy !== null && report.sprayStats.lateShots >= COACH_THRESHOLDS.sprayReview.minimumLateShots && report.sprayStats.lateAccuracy < report.sprayStats.earlyAccuracy * COACH_THRESHOLDS.sprayReview.lateToEarlyRatio ? "Uzun seri roundlarını izle; Recoil Master'da aynı silahla ilk-3/4+ farkını azalt." : "Aynı örnek sayısıyla sonraki demoda yeniden karşılaştır.",
+      severity: (report.sprayStats.earlyAccuracy !== null && report.sprayStats.lateAccuracy !== null && report.sprayStats.lateShots >= COACH_THRESHOLDS.sprayReview.minimumLateShots && report.sprayStats.lateAccuracy < report.sprayStats.earlyAccuracy * COACH_THRESHOLDS.sprayReview.lateToEarlyRatio ? "moderate" : "info") as ErrorSeverity,
       confidence: 84,
     }] : []),
     ...(duelFinding ? [duelFinding] : []),
     {
       id: "movement", area: "Counter-Strafe & Duruş",
-      title: movement?.status !== "measured" ? "Atış hızı ölçülemedi" : movement.severity === "severe" ? "Doğruluk hız sınırı sık aşılıyor" : movement.severity === "moderate" ? "Duruş zamanlaması incelenmeli" : movement.severity === "minor" ? "Bazı atışlar hız sınırı üzerinde" : "Atış hızı dağılımı ölçüldü",
+      title: movement?.status !== "measured" ? "Atış hızı ölçülemedi" : movement.severity === "severe" ? "Doğruluk hız sınırı sık aşılıyor" : movement.severity === "moderate" ? "Duruş zamanlaması incelenmeli" : movement.severity === "minor" ? "Bazı atışlar hız sınırı üzerinde" : "Atış öncesi duruş iyi",
       evidence: movement?.status === "measured" ? `${movement.sampleCount} ölçülen atış · ortalama ${movement.averageSpeed} u/s · P90 ${movement.p90Speed} u/s · max_speed %34 sınırı üstünde %${movement.invalidShotPercent} · ${movement.unmeasuredShots} ölçülemeyen.` : (movement?.reason || "Hız/max_speed verisi bulunamadı."),
       interpretation: movement?.status === "measured" ? explainMovement(movement).summary : "Eksik veri sıfır hız veya temiz atış kabul edilmedi.",
       action: movementSeverity === "high" || movementSeverity === "moderate" ? "Antrenmanda 50 tekli counter-strafe tekrarı yap; ilk mermiden önce tam duruşu doğrula." : "Aynı yöntemi sonraki demoda tekrar ölç.",
@@ -211,7 +212,7 @@ export function buildCoachPacket(report: PlayerReport): CoachPacket {
     },
     {
       id: "trade", area: "Takım & Trade",
-      title: report.deaths < COACH_THRESHOLDS.tradeReview.minimumDeaths ? "Trade için örnek az" : report.untradedDeaths > report.deaths - report.untradedDeaths ? "Ölümlerin çoğu beş saniyede çevrilmedi" : "Trade sonuçları ölçüldü",
+      title: report.deaths < COACH_THRESHOLDS.tradeReview.minimumDeaths ? `${report.deaths} ölümde trade bilgisi` : report.untradedDeaths > report.deaths - report.untradedDeaths ? "Ölümlerin çoğu beş saniyede çevrilmedi" : "Trade dengesi iyi",
       evidence: report.deaths > 0 ? `${report.untradedDeaths}/${report.deaths} ölüm 5 saniye içinde takım tarafından çevrilmedi; trade oranı %${report.tradePercent}.` : "Trade için ölüm örneği yok.",
       interpretation: "Aynı round, killer kimliği, takım ve beş saniye penceresi doğrulandı; görüş hattı ve rol uygunluğu ölçülmedi.",
       action: report.deaths >= COACH_THRESHOLDS.tradeReview.minimumDeaths && report.untradedDeaths > report.deaths - report.untradedDeaths ? "Çevrilmeyen ölüm roundlarında ikinci oyuncunun mesafe ve görüş hattını video üzerinden kontrol et." : "Aynı yöntemle örnek sayısını büyüt.",

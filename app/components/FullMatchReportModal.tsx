@@ -98,6 +98,7 @@ export default function FullMatchReportModal({
             <strong>{percentMetric(card.overallScore)}</strong>
             <em className="scorecard-grade-badge">{card.grade}</em>
             <small style={{ color: "#798c82", fontSize: "11px" }}>{card.sampleCount} round · {card.method}</small>
+            <small style={{ color: "#9eaaa3", fontSize: "11px", lineHeight: 1.45 }}>KAST = Kill, Assist, Survived, Traded; en az birinin gerçekleştiği roundların yüzdesi.</small>
           </div>
           <div className="scorecard-dimensions">
             <div className="scorecard-dim-box">

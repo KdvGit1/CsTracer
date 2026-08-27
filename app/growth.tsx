@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import "./growth.css";
 import { IconSparkles, IconExternalLink } from "./components/NavIcons";
+import { getAngleTier } from "./lib/format";
 
 export type DimensionKey = "aim" | "movement" | "utility" | "teamwork" | "position" | "roundImpact";
 export type AimMetricKey = "headError" | "ttd" | "duelWinrate" | "earlyAccuracy";
@@ -321,7 +322,7 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
             <span>{match.summary.stats.kills}/{match.summary.stats.deaths}</span>
             <span>{match.summary.stats.adr}</span>
             <span>%{match.summary.stats.headshotPercent}</span>
-            <span>{match.summary.aimMetrics && Number.isFinite(match.summary.aimMetrics.headErrorAngle) ? "Ölçüldü" : "—"}</span>
+            <span>{match.summary.aimMetrics && Number.isFinite(match.summary.aimMetrics.headErrorAngle) ? getAngleTier(match.summary.aimMetrics.headErrorAngle, "head").label : "—"}</span>
             <span>{match.summary.aimMetrics && Number.isFinite(match.summary.aimMetrics.headErrorAngle) ? `${match.summary.aimMetrics.headErrorAngle}°` : "—"}</span>
             <span>{hasAimMetricValue(match, "ttd") ? `${match.summary.aimMetrics?.medianTTD}ms` : "—"}</span>
             <strong>{match.summary.overall === null ? "—" : `%${match.summary.overall}`}</strong>

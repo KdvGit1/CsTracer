@@ -1,13 +1,16 @@
 {
-  "version": "0.50.0",
+  "version": "0.50.2",
   "githubRepo": "KdvGit1/CsTracer",
-  "releaseDate": "2026-08-26",
-  "title": "TRACER v0.50.0 - Doğrudan Demo Metrikleri",
+  "releaseDate": "2026-08-27",
+  "title": "TRACER v0.50.2 - Portable Başlatma Düzeltmesi",
   "changelog": [
-    "Genel maç göstergesi tek bir yöntemle, doğrudan KAST round katkısı olarak hesaplanıyor; eski ağırlıklı rating ve ekonomi puanı kaldırıldı.",
-    "Ölçülemeyen TTD, düello, kill anı hizası, sprey ve ekonomi alanları artık rastgele veya sabit değerlere düşmeden açıkça ölçülemedi olarak gösteriliyor.",
-    "Hareket ölçümü her atış tickindeki max_speed değerine, sprey eşleşmesi bullet_damage olayına ve trade doğrulaması aynı round, killer, takım ve beş saniye koşuluna dayanıyor.",
-    "CT/T ADR round paydaları sessiz roundları da kapsıyor; utility yalnız doğrulanmış rakip etkilerini sayıyor ve silah karşılaştırması hasar/atış değerini kullanıyor.",
-    "Portable ve hafif patch paketleri ortak skor motorunu içeriyor; yayın akışı test, lint ve çekirdek dosya doğrulaması geçmeden paket oluşturmuyor."
+    "Portable pakette eksik kalan unbzip2-stream ve alt bağımlılıkları eklendi; Steam demo indirme servisi artık temiz kurulumda açılıyor.",
+    "Hafif patch aynı companion bağımlılıklarını taşıyor; eski portable klasörün üzerine elle açılarak çalışmayan v0.50.0/v0.50.1 kurulumu onarılabiliyor.",
+    "Windows PowerShell 5.1'de başlatma hata penceresindeki Türkçe karakterlerin bozulmaması için launcher kodlaması düzeltildi.",
+    "KAST açılımı ve round katkısının nasıl hesaplandığı genel bakış ile tam maç raporunda açıklanıyor.",
+    "Eski analiz raporları yeni örnek alanlarıyla karıştırılmıyor; güvenilmez eski açı/fallback değerleri yerine yeniden analiz uyarısı gösteriliyor.",
+    "Ölüm olmayan tarafta Veri yok · 0 yerine durumun gerçek nedeni, bölge adı çıkarılamadığında ise ayrı bir veri açıklaması gösteriliyor.",
+    "Silahlar için 15/40 atış kapısı kaldırıldı; her kullanılan silah, bu maç içindeki diğer silahlara göre güçlü, dengeli veya geliştirilebilir olarak yorumlanıyor.",
+    "Kill anı hizası ve sprey kartlarında Ölçüldü etiketi yerine şeffaf maç içi iyi, orta ve geliştirilebilir koçluk bantları geri getirildi."
   ]
 }
