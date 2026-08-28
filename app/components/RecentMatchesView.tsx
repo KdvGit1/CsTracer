@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef, type FormEvent, type MouseEvent } from "react";
+import { useCallback, useState, useEffect, useMemo, useRef, type FormEvent, type MouseEvent } from "react";
 import {
   IconCheck,
   IconSettings,
@@ -81,8 +81,28 @@ export interface ScannedMatchItem {
 }
 
 interface RecentMatchesViewProps {
-  onSelectAnalysis: (analysis: RecentMatchAnalysis) => void;
+  onSelectAnalysis: (analysis: RecentMatchAnalysis, match?: ScannedMatchItem) => void;
 }
+
+type SteamConnection = {
+  state: "connected" | "unverified" | "error" | "expired" | "disconnected";
+  message: string;
+};
+
+type DownloadQueueState = {
+  activeMatchId: string | null;
+  activeStartedAt: number;
+  queuedMatchIds: string[];
+  revision: number;
+  items?: Array<{ matchId: string; status: string; message: string }>;
+};
+
+const EMPTY_DOWNLOAD_QUEUE: DownloadQueueState = {
+  activeMatchId: null,
+  activeStartedAt: 0,
+  queuedMatchIds: [],
+  revision: 0,
+};
 
 const AUTO_SCAN_INTERVAL = 300; // 5 minutes in seconds
 
@@ -135,10 +155,11 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
   const [activeTab, setActiveTab] = useState<"all" | "available" | "downloaded">("all");
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
-  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [downloadQueue, setDownloadQueue] = useState<DownloadQueueState>(EMPTY_DOWNLOAD_QUEUE);
   const [downloadElapsed, setDownloadElapsed] = useState(0);
   const [statusMessage, setStatusMessage] = useState("");
   const [hasSession, setHasSession] = useState(false);
+  const [steamConnection, setSteamConnection] = useState<SteamConnection>({ state: "disconnected", message: "Steam oturumu kaydedilmemiş." });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [cookieInput, setCookieInput] = useState("");
   const [sessionidInput, setSessionidInput] = useState("");
@@ -149,6 +170,8 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
   const [demoStorage, setDemoStorage] = useState({ demoCount: 0, retentionCount: 5, totalBytes: 0 });
 
   const downloadTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const downloadQueueRef = useRef<DownloadQueueState>(EMPTY_DOWNLOAD_QUEUE);
+  const downloadingId = downloadQueue.activeMatchId;
 
   // Combine and de-duplicate matches for display
   const allDisplayMatches: ScannedMatchItem[] = useMemo(() => {
@@ -187,9 +210,22 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
   const availableCount = allDisplayMatches.filter((m) => !m.isDownloaded).length;
   const analyzedCount = allDisplayMatches.filter((m) => m.isDownloaded).length;
 
-  const fetchMatches = async () => {
+  const applyDownloadQueue = useCallback((next?: Partial<DownloadQueueState>) => {
+    if (!next) return;
+    const normalized: DownloadQueueState = {
+      activeMatchId: typeof next.activeMatchId === "string" ? next.activeMatchId : null,
+      activeStartedAt: Number(next.activeStartedAt) || 0,
+      queuedMatchIds: Array.isArray(next.queuedMatchIds) ? next.queuedMatchIds.map(String) : [],
+      revision: Number(next.revision) || 0,
+      items: Array.isArray(next.items) ? next.items : [],
+    };
+    downloadQueueRef.current = normalized;
+    setDownloadQueue(normalized);
+  }, []);
+
+  const fetchMatches = useCallback(async (silent = false) => {
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
       const res = await fetch(`${COMPANION_URL}/matches/recent`);
       if (res.ok) {
         const data = (await res.json()) as {
@@ -199,12 +235,19 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
           session?: { sessionid?: string };
           demoStorage?: { demoCount?: number; retentionCount?: number; totalBytes?: number };
           demoRetentionCount?: number;
+          connection?: SteamConnection;
+          downloadQueue?: DownloadQueueState;
         };
         setDownloadedMatches(data.matches || []);
         if (Array.isArray(data.scannedMatches)) {
           setScannedMatches(data.scannedMatches);
         }
         setHasSession(data.hasSession ?? false);
+        setSteamConnection(data.connection || {
+          state: data.hasSession ? "unverified" : "disconnected",
+          message: data.hasSession ? "Steam bilgileri kayıtlı; bağlantı henüz doğrulanmadı." : "Steam oturumu kaydedilmemiş.",
+        });
+        applyDownloadQueue(data.downloadQueue);
         setDemoStorage({
           demoCount: Number(data.demoStorage?.demoCount) || 0,
           retentionCount: Number(data.demoRetentionCount || data.demoStorage?.retentionCount) || 5,
@@ -217,14 +260,36 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
     } catch (err) {
       console.warn("Maçlar çekilemedi:", err);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  };
+  }, [applyDownloadQueue]);
 
   useEffect(() => {
     const initialFetch = window.setTimeout(() => void fetchMatches(), 0);
     return () => window.clearTimeout(initialFetch);
-  }, []);
+  }, [fetchMatches]);
+
+  useEffect(() => {
+    const queueBusy = Boolean(downloadQueue.activeMatchId || downloadQueue.queuedMatchIds.length);
+    if (!queueBusy) return;
+    const poll = window.setInterval(() => {
+      void (async () => {
+        try {
+          const response = await fetch(`${COMPANION_URL}/steam/download-queue`, { cache: "no-store" });
+          if (!response.ok) return;
+          const next = await response.json() as DownloadQueueState;
+          const previous = downloadQueueRef.current;
+          applyDownloadQueue(next);
+          if (previous.activeMatchId && previous.activeMatchId !== next.activeMatchId) {
+            await fetchMatches(true);
+          }
+        } catch {
+          // Companion kısa süre yeniden başlatılırsa mevcut kuyruk görünümünü koru.
+        }
+      })();
+    }, 1000);
+    return () => window.clearInterval(poll);
+  }, [applyDownloadQueue, downloadQueue.activeMatchId, downloadQueue.queuedMatchIds.length, fetchMatches]);
 
   // 5-minute Auto-Scan Countdown Timer
   useEffect(() => {
@@ -247,8 +312,10 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
   // Download & Analysis active elapsed timer
   useEffect(() => {
     if (downloadingId) {
+      const updateElapsed = () => setDownloadElapsed(Math.max(0, Math.floor((Date.now() - (downloadQueue.activeStartedAt || Date.now())) / 1000)));
+      updateElapsed();
       downloadTimerRef.current = setInterval(() => {
-        setDownloadElapsed((prev) => prev + 1);
+        updateElapsed();
       }, 1000);
     } else {
       if (downloadTimerRef.current) {
@@ -261,7 +328,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
         clearInterval(downloadTimerRef.current);
       }
     };
-  }, [downloadingId]);
+  }, [downloadingId, downloadQueue.activeStartedAt]);
 
   const formatSeconds = (secs: number) => {
     const m = Math.floor(secs / 60);
@@ -282,7 +349,13 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
         downloadedMatches?: ScannedMatchItem[];
         message?: string;
         requiresLogin?: boolean;
+        connectionState?: SteamConnection["state"];
       };
+      if (data.connectionState) {
+        setSteamConnection({ state: data.connectionState, message: data.message || "Steam bağlantı durumu güncellendi." });
+      } else if (data.requiresLogin) {
+        setSteamConnection({ state: "expired", message: data.message || "Steam oturumunu yenilemek gerekiyor." });
+      }
       if (data.ok) {
         if (Array.isArray(data.scannedMatches)) {
           setScannedMatches(data.scannedMatches);
@@ -309,11 +382,15 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
   const handleDownloadMatch = async (e: MouseEvent, match: ScannedMatchItem) => {
     e.stopPropagation();
     try {
-      setDownloadElapsed(0);
-      setDownloadingId(match.id);
-      setStatusMessage(`[${match.mode || "CS2"}] de_${match.map} maçı indiriliyor ve Valve CS2 motoruyla analiz ediliyor...`);
+      const isActive = downloadQueue.activeMatchId === match.id;
+      const isQueued = downloadQueue.queuedMatchIds.includes(match.id);
+      setStatusMessage(isActive
+        ? `de_${match.map} için etkin indirme ve analiz durduruluyor...`
+        : isQueued
+          ? `de_${match.map} indirme sırasından çıkarılıyor...`
+          : `[${match.mode || "CS2"}] de_${match.map} sıralı indirme ve analiz kuyruğuna ekleniyor...`);
 
-      const res = await fetch(`${COMPANION_URL}/steam/download-match`, {
+      const res = await fetch(`${COMPANION_URL}/steam/download-queue`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -325,41 +402,29 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
 
       const data = (await res.json()) as {
         ok?: boolean;
-        matches?: ScannedMatchItem[];
-        scannedMatches?: ScannedMatchItem[];
-        match?: { fullAnalysis?: RecentMatchAnalysis };
-        demoStorage?: { demoCount?: number; retentionCount?: number; totalBytes?: number };
-        message?: string;
+        action?: "queued" | "cancelled" | "cancelling" | "unchanged";
         error?: string;
-      };
+      } & DownloadQueueState;
       if (data.ok) {
-        setStatusMessage(`de_${match.map} maçı başarıyla indirildi ve analiz edildi! Raporu açabilirsiniz.`);
-        if (Array.isArray(data.matches)) {
-          setDownloadedMatches(data.matches);
-        }
-        if (Array.isArray(data.scannedMatches)) {
-          setScannedMatches(data.scannedMatches);
-        }
-        if (data.match?.fullAnalysis) {
-          onSelectAnalysis(data.match.fullAnalysis);
-        }
-        if (data.demoStorage) {
-          setDemoStorage({
-            demoCount: Number(data.demoStorage.demoCount) || 0,
-            retentionCount: Number(data.demoStorage.retentionCount) || 5,
-            totalBytes: Number(data.demoStorage.totalBytes) || 0,
-          });
-        }
+        applyDownloadQueue(data);
+        const queueIndex = data.queuedMatchIds?.indexOf(match.id) ?? -1;
+        const aheadCount = Math.max(0, queueIndex) + (data.activeMatchId && data.activeMatchId !== match.id ? 1 : 0);
+        setStatusMessage(data.action === "queued"
+          ? `de_${match.map} sıraya eklendi. ${data.activeMatchId === match.id ? "İndirme başladı." : `Önünde ${aheadCount} maç var.`}`
+          : data.action === "cancelling"
+            ? `de_${match.map} durduruluyor; yarım dosya temizlenecek.`
+            : data.action === "cancelled"
+              ? `de_${match.map} indirme sırasından çıkarıldı.`
+              : "İndirme sırası değişmedi.");
       } else {
-        toast.error(`İndirme başarısız: ${data.message || data.error}`);
-        setStatusMessage(`Hata: ${data.message || data.error}`);
+        toast.error(`İndirme sırası güncellenemedi: ${data.error || "Bilinmeyen hata"}`);
+        setStatusMessage(`Hata: ${data.error || "Bilinmeyen hata"}`);
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       toast.error(`İndirme sırasında hata oluştu: ${message}`);
       setStatusMessage(`Hata: ${message}`);
     } finally {
-      setDownloadingId(null);
       setTimeout(() => setStatusMessage(""), 7000);
     }
   };
@@ -379,6 +444,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
       });
       if (res.ok) {
         setHasSession(true);
+        setSteamConnection({ state: "unverified", message: "Steam bilgileri kaydedildi; bağlantı doğrulanıyor." });
         setSettingsOpen(false);
         setCookieInput("");
         setStatusMessage("Steam oturumu başarıyla bağlandı! Maç geçmişiniz taranıyor...");
@@ -395,7 +461,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
     if (!match.isDownloaded) return;
 
     if (match.fullAnalysis && hasCurrentShotSchema(match.fullAnalysis)) {
-      onSelectAnalysis(match.fullAnalysis);
+      onSelectAnalysis(match.fullAnalysis, match);
       return;
     }
 
@@ -411,7 +477,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
           reanalysisError?: string;
         };
         if (data.analysis) {
-          onSelectAnalysis(data.analysis);
+          onSelectAnalysis(data.analysis, data.match || match);
           if (data.match) {
             setDownloadedMatches((current) => current.map((item) => item.id === data.match?.id ? data.match : item));
           }
@@ -469,8 +535,18 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
               OTOMATİK MAÇ TARAYICI (5 DK)
             </span>
             {hasSession ? (
-              <span className="account-chip connected" title="Steam Oturumu Aktif">
-                <span className="chip-dot" /> STEAM COMMUNITY BAĞLI
+              <span
+                className={`account-chip ${steamConnection.state === "connected" ? "connected" : steamConnection.state === "expired" || steamConnection.state === "error" ? "warning" : steamConnection.state === "unverified" ? "pending" : "idle"}`}
+                title={steamConnection.message}
+              >
+                <span className="chip-dot" />
+                {steamConnection.state === "connected"
+                  ? "STEAM COMMUNITY BAĞLI"
+                  : steamConnection.state === "expired"
+                    ? "STEAM OTURUMUNU YENİLE"
+                    : steamConnection.state === "error"
+                      ? "STEAM ERİŞİM SORUNU"
+                      : "STEAM BAĞLANTISI DOĞRULANMADI"}
               </span>
             ) : (
               <span className="account-chip idle" title="Steam Oturumu Bağlanmadı">
@@ -553,6 +629,9 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
               <IconClock size={13} /> Sayaç: {formatSeconds(downloadElapsed)}
             </span>
           )}
+          {downloadQueue.queuedMatchIds.length > 0 && (
+            <span className="live-download-counter-badge">Sırada: {downloadQueue.queuedMatchIds.length} maç</span>
+          )}
         </div>
       )}
 
@@ -601,6 +680,9 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
             const cardClass = isTie ? "tie" : isWin ? "win" : "loss";
             const isDownloaded = Boolean(match.isDownloaded);
             const isDownloadingThis = downloadingId === match.id;
+            const queueIndex = downloadQueue.queuedMatchIds.indexOf(match.id);
+            const isQueuedThis = queueIndex >= 0;
+            const downloadStatus = downloadQueue.items?.find((item) => item.matchId === match.id)?.status;
             const isLoadingAnalysisThis = selectedMatchLoadingId === match.id;
             const teamRosters = matchRosters(match);
 
@@ -775,23 +857,31 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
                   </div>
                 ) : (
                   <button
-                    className={`match-download-btn ${isDownloadingThis ? "downloading" : ""}`}
+                    className={`match-download-btn ${isDownloadingThis ? "downloading" : ""} ${isQueuedThis ? "queued" : ""}`}
                     onClick={(e) => handleDownloadMatch(e, match)}
-                    disabled={isDownloadingThis}
+                    aria-pressed={isDownloadingThis || isQueuedThis}
+                    title={isDownloadingThis || isQueuedThis ? "Bir kez daha tıklayarak iptal et" : "Maçı sıralı indirme ve analiz kuyruğuna ekle"}
                   >
                     {isDownloadingThis ? (
                       <div className="download-active-state">
                         <IconRefresh size={14} className="spin-icon" />
                         <span>
-                          {downloadElapsed < 6
-                            ? `Demo İndiriliyor (${formatSeconds(downloadElapsed)})...`
-                            : `3D Valve Analizi Yapılıyor (${formatSeconds(downloadElapsed)})...`}
+                          {downloadStatus === "analyzing"
+                            ? `Analiz Ediliyor · İptal Et (${formatSeconds(downloadElapsed)})`
+                            : downloadStatus === "cancelling"
+                              ? `Durduruluyor (${formatSeconds(downloadElapsed)})`
+                              : `Demo İndiriliyor · İptal Et (${formatSeconds(downloadElapsed)})`}
                         </span>
                       </div>
+                    ) : isQueuedThis ? (
+                      <>
+                        <IconClock size={14} />
+                        <span>Sırada #{queueIndex + 1} · İptal Et</span>
+                      </>
                     ) : (
                       <>
                         <IconDownload size={14} />
-                        <span>Bu Maçı İndir & Analiz Et</span>
+                        <span>Sıraya Ekle & Analiz Et</span>
                       </>
                     )}
                   </button>

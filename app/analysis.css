@@ -2699,6 +2699,27 @@
   box-shadow: 0 0 6px rgba(82, 227, 137, 0.6);
 }
 
+.account-chip.warning {
+  border-color: rgba(255, 183, 97, 0.45);
+  color: #ffd6a6;
+  background: rgba(86, 55, 21, 0.2);
+}
+
+.account-chip.warning .chip-dot {
+  background: #ffb761;
+  box-shadow: 0 0 6px rgba(255, 183, 97, 0.45);
+}
+
+.account-chip.pending {
+  border-color: rgba(96, 165, 250, 0.35);
+  color: #bdd8ff;
+}
+
+.account-chip.pending .chip-dot {
+  background: #60a5fa;
+  box-shadow: 0 0 6px rgba(96, 165, 250, 0.45);
+}
+
 .account-chip.idle .chip-dot {
   background: #ff5252;
 }
@@ -2832,8 +2853,20 @@
   background: #1e293b;
   color: #94a3b8;
   border: 1px solid #334155;
-  cursor: not-allowed;
+  cursor: pointer;
   box-shadow: none;
+}
+
+.match-download-btn.queued {
+  color: #d8e9ff;
+  background: #17243a;
+  border: 1px solid #31598a;
+  box-shadow: none;
+}
+
+.match-download-btn.queued:hover {
+  color: #ffffff;
+  background: #213553;
 }
 
 .download-active-state {

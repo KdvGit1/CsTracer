@@ -31,7 +31,7 @@ import {
 import { AimCoachCard } from "./components/AimCoachCard";
 import LiveCoachView from "./components/LiveCoachView";
 import TeamCoachView from "./components/TeamCoachView";
-import { RecentMatchesView } from "./components/RecentMatchesView";
+import { RecentMatchesView, type ScannedMatchItem } from "./components/RecentMatchesView";
 import { NotificationCenter } from "./components/NotificationCenter";
 import UpdateModal, { UpdateInfo } from "./components/UpdateModal";
 import LogsModal from "./components/LogsModal";
@@ -77,7 +77,7 @@ export type {
   FullMatchReport,
 } from "./lib/types";
 
-type CurrentDemoMeta = { fileName: string; lastModified: number; size: number };
+type CurrentDemoMeta = { fileName: string; lastModified: number; size: number; matchId?: string };
 
 const sampleMetrics = [
   { label: "K / D", value: "—", delta: "demo gerekli", tone: "warn" },
@@ -391,7 +391,7 @@ export default function Home() {
     const samePlayer = preferredPlayer.steamid ? report.player.steamid === preferredPlayer.steamid : report.player.name === preferredPlayer.name;
     if (!samePlayer) return;
     const reportKey = report.player.steamid || report.player.name;
-    const summaryKey = `${currentDemoMeta.fileName}:${currentDemoMeta.lastModified}:${currentDemoMeta.size}:${reportKey}`;
+    const summaryKey = currentDemoMeta.matchId || `${currentDemoMeta.fileName}:${currentDemoMeta.lastModified}:${currentDemoMeta.size}:${reportKey}`;
     if (savedSummaryRef.current === summaryKey) return;
     savedSummaryRef.current = summaryKey;
     const summary = buildCompactSummary(report);
@@ -739,7 +739,7 @@ export default function Home() {
     // Save/update compact coach verdict to progress memory
     if (preferredPlayer && playerMatchesIdentity(report, preferredPlayer) && currentDemoMeta) {
       const reportKey = report.player.steamid || report.player.name;
-      const summaryKey = `${currentDemoMeta.fileName}:${currentDemoMeta.lastModified}:${currentDemoMeta.size}:${reportKey}`;
+      const summaryKey = currentDemoMeta.matchId || `${currentDemoMeta.fileName}:${currentDemoMeta.lastModified}:${currentDemoMeta.size}:${reportKey}`;
       const compactVerdict: CompactCoachVerdict = {
         title: finalReport.priorities[0]?.title ? `${finalReport.priorities[0].area}: ${finalReport.priorities[0].title}`.slice(0, 60) : finalReport.title.slice(0, 60),
         priorityArea: finalReport.priorities[0]?.area || "Genel Oyun",
@@ -794,13 +794,14 @@ export default function Home() {
     }
   }
 
-  function openDownloadedMatchAnalysis(analysis: import("./components/RecentMatchesView").RecentMatchAnalysis) {
+  function openDownloadedMatchAnalysis(analysis: import("./components/RecentMatchesView").RecentMatchAnalysis, match?: ScannedMatchItem) {
     if (analysis?.reports) applyReports(analysis.reports, analysis.analysisVersion);
     setFileName(analysis.header?.map_name ? `de_${analysis.header.map_name.replace(/^de_/, "")}` : "Otomatik CS2 Maçı");
     setCurrentDemoMeta({
       fileName: analysis.header?.map_name || "auto_match.dem",
       lastModified: analysis.timestamp || 1,
       size: 1024 * 1024,
+      matchId: match?.id,
     });
     setActiveView("analysis");
     navigateTo("dashboard");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseGcpdMatchesFromHtml } from "../companion/steam_downloader.mjs";
+import { getSteamConnectionHealth, mergeScannedMatchCache, parseGcpdMatchesFromHtml } from "../companion/steam_downloader.mjs";
 
 function playerRow(name, id, profile = false) {
   const identity = profile
@@ -35,4 +35,22 @@ test("GCPD data-miniprofile AccountID değerlerini SteamID64'e dönüştürür",
   assert.equal(match.players.find((player) => player.name === "Kısa Kimlik").steamid, "76561198426534261");
   assert.equal(match.players.find((player) => player.name === "B1").steamid, "76561198135949209");
   assert.equal(match.players.every((player) => /^\d{17}$/.test(player.steamid)), true);
+});
+
+test("Steam bağlantı rozeti yalnız kayıtlı çerezi doğrulanmış bağlantı saymaz", () => {
+  assert.equal(getSteamConnectionHealth({ steamLoginSecure: "76561198000000000||token" }).state, "unverified");
+  assert.equal(getSteamConnectionHealth({ steamLoginSecure: "76561198000000000||token", lastScanStatus: "success" }).state, "connected");
+  assert.equal(getSteamConnectionHealth({ steamLoginSecure: "76561198000000000||token", lastScanStatus: "error", lastScanError: "timeout" }).state, "error");
+  assert.equal(getSteamConnectionHealth({ steamLoginSecure: "76561198000000000||token", lastScanStatus: "expired" }).state, "expired");
+  assert.equal(getSteamConnectionHealth({ steamLoginSecure: "" }).state, "disconnected");
+});
+
+test("kısmi Steam taraması önceki maç önbelleğini boş veya eksik sonuçla ezmez", () => {
+  const merged = mergeScannedMatchCache(
+    [{ id: "new", timestamp: 30, replayUrl: "https://replay1.valve.net/730/new.dem.bz2" }],
+    [{ id: "old", timestamp: 20, fileName: "old.dem", replayUrl: "https://replay1.valve.net/730/old.dem.bz2" }],
+    [{ id: "old", fileName: "old.dem" }],
+  );
+  assert.deepEqual(merged.map((match) => match.id), ["new", "old"]);
+  assert.equal(merged.find((match) => match.id === "old").isDownloaded, true);
 });

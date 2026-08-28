@@ -32,12 +32,14 @@ import { checkGsiStatus, installGsiConfig, optimizeInstalledGsiConfig } from "./
 import { checkForUpdates, downloadAndApplyPatch, getLocalVersionInfo, saveLocalVersionInfo, restartApplication } from "./updater.mjs";
 import {
   getSteamSession,
+  getSteamConnectionHealth,
   saveSteamSession,
   getRecentMatches,
   getScannedMatches,
   syncSteamGcpdMatches,
   scanSteamGcpdMatches,
   downloadSingleMatch,
+  cancelSingleMatch,
   deleteSteamMatch,
   repairExistingMatchDates,
   applyConfiguredDemoRetention,
@@ -91,6 +93,8 @@ let autoDownloadWorkerRunning = false;
 let autoDownloadActiveMatchId = null;
 let autoDownloadRetryTimer = null;
 let previousGamePerformanceActive = false;
+let matchDownloadQueueRevision = 0;
+let matchDownloadActiveStartedAt = 0;
 
 setGamePerformanceGuard(() => getGamePerformanceStatus().active);
 
@@ -488,17 +492,21 @@ async function readProgressStore() {
   }
 }
 
-async function writeProgressStore(store) {
-  // Zincire catch eklenmezse tek bir yazma hatası kuyruğu kalıcı olarak reddedilmiş
-  // durumda bırakır ve sonraki tüm yazmalar sessizce başarısız olur.
+async function updateProgressStore(mutator) {
+  // Okuma da yazma kuyruğunun içinde yapılır. Böylece arka planda tamamlanan
+  // iki maç veya profil seçimi aynı anda gelirse eski bir snapshot son yazılan
+  // gelişim kaydını ezemez.
   progressWriteQueue = progressWriteQueue.catch((err) => {
     console.warn("[PROGRESS] Önceki yazma hatası yutuldu:", err instanceof Error ? err.message : err);
   }).then(async () => {
+    const current = await readProgressStore();
+    const store = await mutator(current) || current;
     await mkdir(DATA_DIR, { recursive: true });
     const tempPath = `${PROGRESS_PATH}.${process.pid}.tmp`;
     await writeFile(tempPath, JSON.stringify(store), "utf8");
     await rm(PROGRESS_PATH, { force: true });
     await rename(tempPath, PROGRESS_PATH);
+    return store;
   });
   return progressWriteQueue;
 }
@@ -519,9 +527,44 @@ function cleanProgressMatch(body, profile) {
   };
 }
 
+function progressMatchFromAnalyzedMatch(match, report, summary = buildCompactSummaryFromReport(report)) {
+  if (!match?.id || !report?.player || !summary) return null;
+  return {
+    id: String(match.id).slice(0, 400),
+    date: Number(match.timestamp) || Date.now(),
+    fileName: String(match.fileName || `${match.map || "match"}.dem`).slice(0, 260),
+    map: String(report.map || match.map || "Bilinmeyen harita").slice(0, 80),
+    playerSteamId: String(report.player.steamid || "").slice(0, 32),
+    playerName: String(report.player.name || "Bilinmeyen oyuncu").slice(0, 80),
+    summary,
+  };
+}
+
+function upsertPersonalProgressMatch(store, match) {
+  if (!store.profile || !match || !samePlayer({ steamid: match.playerSteamId, name: match.playerName }, store.profile)) return false;
+  const otherPlayers = store.matches.filter((item) => !samePlayer({ steamid: item.playerSteamId, name: item.playerName }, store.profile));
+  const playerMatches = [match, ...store.matches.filter((item) => samePlayer({ steamid: item.playerSteamId, name: item.playerName }, store.profile) && item.id !== match.id)]
+    .sort((a, b) => b.date - a.date)
+    .slice(0, 90);
+  store.matches = [...playerMatches, ...otherPlayers].slice(0, 450);
+  return true;
+}
+
+async function reconcileProgressWithAnalyzedMatches() {
+  return updateProgressStore((store) => {
+    if (!store.profile) return store;
+    for (const match of getRecentMatches()) {
+      const report = findPersonalReport(match, store.profile);
+      const progressMatch = progressMatchFromAnalyzedMatch(match, report);
+      if (progressMatch) upsertPersonalProgressMatch(store, progressMatch);
+    }
+    return store;
+  });
+}
+
 async function handleProgress(request, response, origin) {
-  const store = await readProgressStore();
   if (request.method === "GET") {
+    const store = await reconcileProgressWithAnalyzedMatches();
     const matches = store.profile
       ? store.matches.filter((item) => samePlayer({ steamid: item.playerSteamId, name: item.playerName }, store.profile)).sort((a, b) => b.date - a.date).slice(0, 90)
       : [];
@@ -530,22 +573,22 @@ async function handleProgress(request, response, origin) {
   }
   if (request.method === "PUT") {
     const profile = cleanIdentity(await readJsonBody(request));
-    store.profile = profile;
-    await writeProgressStore(store);
+    await updateProgressStore((store) => ({ ...store, profile }));
     sendJson(response, 200, { profile }, origin);
     return;
   }
   if (request.method === "POST") {
-    if (!store.profile) throw new Error("Önce demodaki kişisel oyuncunu seç.");
-    const match = cleanProgressMatch(await readJsonBody(request), store.profile);
-    if (!match.id) throw new Error("Maç kimliği eksik.");
-    const otherPlayers = store.matches.filter((item) => !samePlayer({ steamid: item.playerSteamId, name: item.playerName }, store.profile));
-    const playerMatches = [match, ...store.matches.filter((item) => samePlayer({ steamid: item.playerSteamId, name: item.playerName }, store.profile) && item.id !== match.id)]
-      .sort((a, b) => b.date - a.date)
-      .slice(0, 90);
-    store.matches = [...playerMatches, ...otherPlayers].slice(0, 450);
-    await writeProgressStore(store);
-    sendJson(response, 200, { ok: true, count: playerMatches.length }, origin);
+    const body = await readJsonBody(request);
+    let count = 0;
+    await updateProgressStore((store) => {
+      if (!store.profile) throw new Error("Önce demodaki kişisel oyuncunu seç.");
+      const match = cleanProgressMatch(body, store.profile);
+      if (!match.id) throw new Error("Maç kimliği eksik.");
+      upsertPersonalProgressMatch(store, match);
+      count = store.matches.filter((item) => samePlayer({ steamid: item.playerSteamId, name: item.playerName }, store.profile)).length;
+      return store;
+    });
+    sendJson(response, 200, { ok: true, count }, origin);
     return;
   }
   sendJson(response, 405, { error: "Desteklenmeyen yöntem." }, origin);
@@ -606,6 +649,7 @@ async function handleDiscoveredMatches(matches) {
 
 async function handleMatchDownloadStatus(event) {
   if (!event?.matchId) return;
+  matchDownloadQueueRevision += 1;
   if (event.status !== "ready" || !event.match) {
     const patch = {
       status: event.status,
@@ -619,6 +663,13 @@ async function handleMatchDownloadStatus(event) {
   const progress = await progressContext();
   const report = findPersonalReport(event.match, progress.profile);
   const summary = buildCompactSummaryFromReport(report);
+  const progressMatch = progressMatchFromAnalyzedMatch(event.match, report, summary);
+  if (progressMatch && progress.profile) {
+    await updateProgressStore((store) => {
+      upsertPersonalProgressMatch(store, progressMatch);
+      return store;
+    });
+  }
   const comparison = summary ? performanceComparison({
     summary,
     progressMatches: progress.matches,
@@ -649,6 +700,7 @@ function queueMatchDownload(match, { automatic = false } = {}) {
   const alreadyQueued = autoDownloadActiveMatchId === match.id || autoDownloadQueue.some((item) => item.match.id === match.id);
   if (alreadyQueued) return false;
   autoDownloadQueue.push({ match, automatic, attempts: 0 });
+  matchDownloadQueueRevision += 1;
   matchAutomationStore.ensure(match, {
     status: "queued",
     auto: automatic,
@@ -675,6 +727,8 @@ async function drainMatchDownloadQueue() {
   autoDownloadWorkerRunning = true;
   const queued = autoDownloadQueue.shift();
   autoDownloadActiveMatchId = queued.match.id;
+  matchDownloadActiveStartedAt = Date.now();
+  matchDownloadQueueRevision += 1;
   try {
     const alreadyDownloaded = getRecentMatches().find((match) => match.id === queued.match.id);
     if (alreadyDownloaded?.fullAnalysis) {
@@ -688,6 +742,14 @@ async function drainMatchDownloadQueue() {
       return;
     }
     if (!result.ok) {
+      if (result.cancelled) {
+        matchAutomationStore.update(queued.match.id, {
+          status: "cancelled",
+          message: "İndirme ve analiz kullanıcı tarafından iptal edildi.",
+          error: "",
+        });
+        return;
+      }
       queued.attempts += 1;
       if (queued.attempts < 3) {
         matchAutomationStore.update(queued.match.id, {
@@ -715,9 +777,39 @@ async function drainMatchDownloadQueue() {
     });
   } finally {
     autoDownloadActiveMatchId = null;
+    matchDownloadActiveStartedAt = 0;
     autoDownloadWorkerRunning = false;
+    matchDownloadQueueRevision += 1;
     if (autoDownloadQueue.length > 0 && !autoDownloadRetryTimer) void drainMatchDownloadQueue();
   }
+}
+
+function cancelQueuedMatch(matchId) {
+  const index = autoDownloadQueue.findIndex((item) => item.match.id === matchId);
+  if (index < 0) return false;
+  autoDownloadQueue.splice(index, 1);
+  matchDownloadQueueRevision += 1;
+  matchAutomationStore.update(matchId, {
+    status: "cancelled",
+    message: "Sıradaki indirme iptal edildi.",
+    error: "",
+  });
+  return true;
+}
+
+function matchDownloadQueueState() {
+  const queuedMatchIds = autoDownloadQueue.map((item) => item.match.id);
+  const relevantIds = new Set([autoDownloadActiveMatchId, ...queuedMatchIds].filter(Boolean));
+  const items = matchAutomationStore.listNotifications()
+    .filter((item) => relevantIds.has(item.matchId))
+    .map((item) => ({ matchId: item.matchId, status: item.status, message: item.message || "" }));
+  return {
+    activeMatchId: autoDownloadActiveMatchId,
+    activeStartedAt: matchDownloadActiveStartedAt,
+    queuedMatchIds,
+    revision: matchDownloadQueueRevision,
+    items,
+  };
 }
 
 async function reconcileLatestAutomaticMatch(scannedMatches = getScannedMatches()) {
@@ -1268,7 +1360,7 @@ const server = createServer(async (request, response) => {
       }
       return;
     }
-    if (["queued", "waiting", "downloading", "analyzing"].includes(notification.status)) {
+    if (["queued", "waiting", "downloading", "analyzing", "cancelling"].includes(notification.status)) {
       sendJson(response, 202, { ok: true, queued: true, notification: matchAutomationStore.update(notification.matchId, { read: true }) }, origin);
       return;
     }
@@ -1290,11 +1382,13 @@ const server = createServer(async (request, response) => {
   // --- Steam GCPD Replay Otomatik Tarayıcı, İndirici & Analiz Uç Noktaları ---
   if (request.method === "GET" && request.url === "/steam/status") {
     const session = getSteamSession();
+    const connection = getSteamConnectionHealth(session);
     const matches = getRecentMatches();
     const scanned = getScannedMatches();
     sendJson(response, 200, {
       ok: true,
       hasSession: Boolean(session.steamLoginSecure),
+      connection,
       session: {
         steamLoginSecureMasked: session.steamLoginSecure ? `${session.steamLoginSecure.substring(0, 8)}...` : "",
         sessionid: session.sessionid || "",
@@ -1347,6 +1441,48 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (request.method === "GET" && request.url === "/steam/download-queue") {
+    sendJson(response, 200, { ok: true, ...matchDownloadQueueState() }, origin);
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/steam/download-queue") {
+    try {
+      const body = await readJsonBody(request, 64 * 1024);
+      const matchId = String(body?.matchId || "");
+      if (!matchId) {
+        sendJson(response, 400, { error: "matchId parametresi gerekli." }, origin);
+        return;
+      }
+
+      if (autoDownloadActiveMatchId === matchId) {
+        const cancelled = cancelSingleMatch(matchId);
+        if (cancelled) {
+          matchAutomationStore.update(matchId, { status: "cancelling", message: "Etkin indirme ve analiz durduruluyor." });
+          matchDownloadQueueRevision += 1;
+        }
+        sendJson(response, 200, { ok: true, action: cancelled ? "cancelling" : "unchanged", ...matchDownloadQueueState() }, origin);
+        return;
+      }
+
+      if (cancelQueuedMatch(matchId)) {
+        sendJson(response, 200, { ok: true, action: "cancelled", ...matchDownloadQueueState() }, origin);
+        return;
+      }
+
+      const match = getScannedMatches().find((item) => item.id === matchId) || body.matchMeta;
+      if (!match?.id || !match?.replayUrl) {
+        sendJson(response, 404, { error: "Maçın replay bilgisi bulunamadı." }, origin);
+        return;
+      }
+      const queued = queueMatchDownload(match, { automatic: false });
+      sendJson(response, queued ? 202 : 200, { ok: true, action: queued ? "queued" : "unchanged", ...matchDownloadQueueState() }, origin);
+    } catch (error) {
+      sendJson(response, 422, { error: error instanceof Error ? error.message : String(error) }, origin);
+    }
+    return;
+  }
+
   if (request.method === "POST" && request.url === "/steam/download-match") {
     if (pauseHeavyOperation(response, origin, "replay indirme ve demo analizi")) return;
     try {
@@ -1378,12 +1514,15 @@ const server = createServer(async (request, response) => {
     const matches = getRecentMatches();
     const scanned = getScannedMatches();
     const session = getSteamSession();
+    const connection = getSteamConnectionHealth(session);
     const automationSettings = matchAutomationStore.getSettings();
     sendJson(response, 200, {
       ok: true,
       matches,
       scannedMatches: scanned,
       hasSession: Boolean(session.steamLoginSecure),
+      connection,
+      downloadQueue: matchDownloadQueueState(),
       demoStorage: getDemoStorageState(),
       demoRetentionCount: automationSettings.demoRetentionCount,
       session: {

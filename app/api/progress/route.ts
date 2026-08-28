@@ -72,7 +72,7 @@ function validSummary(summary: CompactSummary | undefined) {
   if (!summary || !validMetric(summary.overall)) return false;
   const dimensions = Object.values(summary.dimensions || {});
   if (dimensions.length !== 6 || dimensions.some((score) => !validMetric(score))) return false;
-  return Array.isArray(summary.weapons) && summary.weapons.length <= 6;
+  return Array.isArray(summary.weapons) && summary.weapons.length <= 10;
 }
 
 export async function GET() {

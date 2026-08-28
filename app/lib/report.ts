@@ -36,8 +36,14 @@ export function buildCompactSummary(report: PlayerReport, coachVerdict?: Compact
       kills: report.kills, deaths: report.deaths, assists: report.assists, adr: Math.round(report.adr * 10) / 10,
       headshotPercent: report.headshotPercent, tradePercent: report.tradePercent,
     },
-    weapons: (report.weaponStats || []).slice(0, 6).map((weapon) => ({
-      weapon: weapon.weapon, label: weapon.label, score: weapon.score, kills: weapon.kills, shots: weapon.shots,
+    weapons: (report.weaponStats || []).slice(0, 10).map((weapon) => ({
+      weapon: weapon.weapon,
+      label: weapon.label,
+      score: Number.isFinite(weapon.score ?? weapon.efficiency)
+        ? Math.round(Number(weapon.score ?? weapon.efficiency) * 10) / 10
+        : null,
+      kills: weapon.kills,
+      shots: weapon.shots,
     })),
     aimMetrics,
     coachVerdict: coachVerdict || (report.crosshairStats ? {

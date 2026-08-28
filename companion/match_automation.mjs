@@ -51,6 +51,31 @@ export function buildCompactSummaryFromReport(report) {
   const deaths = Number(report.deaths) || 0;
   const assists = Number(report.assists) || 0;
   const scorecard = scoreMatchReport(report);
+  const currentCrosshair = report.crosshairStats?.method === "kill-tick-alignment-v2"
+    && report.crosshairStats?.status === "measured"
+    && Number(report.crosshairStats?.sampleCount) > 0;
+  const currentTtd = report.duelStats?.ttdMethod === "spotted-to-first-damage-v2"
+    && report.duelStats?.ttdStatus === "measured"
+    && Number(report.duelStats?.ttdSampleCount) > 0;
+  const currentDuel = report.duelStats?.duelMethod === "mutual-spotted-death-v2"
+    && report.duelStats?.duelStatus === "measured"
+    && Number(report.duelStats?.duelTotal) > 0;
+  const currentSpray = report.sprayStats?.method === "bullet-damage-event-tick-v2"
+    && report.sprayStats?.status === "measured"
+    && Number(report.sprayStats?.sampleCount) > 0;
+  const aimMetrics = currentCrosshair || currentTtd || currentDuel || currentSpray ? {
+    headErrorAngle: currentCrosshair ? Number(report.crosshairStats?.headErrorAngle) : null,
+    bodyErrorAngle: currentCrosshair ? Number(report.crosshairStats?.bodyErrorAngle) : null,
+    averageTTD: currentTtd ? Number(report.duelStats?.averageTTD) : null,
+    medianTTD: currentTtd ? Number(report.duelStats?.medianTTD) : null,
+    ttdSampleCount: currentTtd ? Number(report.duelStats?.ttdSampleCount) || 0 : 0,
+    ttdMethod: currentTtd ? report.duelStats?.ttdMethod : undefined,
+    duelWinrate: currentDuel ? Number(report.duelStats?.duelWinrate) : null,
+    duelSampleCount: currentDuel ? Number(report.duelStats?.duelTotal) || 0 : 0,
+    duelMethod: currentDuel ? report.duelStats?.duelMethod : undefined,
+    earlyAccuracy: currentSpray ? Number(report.sprayStats?.earlyAccuracy) : null,
+    lateAccuracy: currentSpray ? Number(report.sprayStats?.lateAccuracy) : null,
+  } : undefined;
 
   return {
     overall: scorecard?.overall ?? null,
@@ -63,13 +88,20 @@ export function buildCompactSummaryFromReport(report) {
       headshotPercent: Number(report.headshotPercent) || 0,
       tradePercent: report.tradePercent === null || report.tradePercent === undefined ? null : Number(report.tradePercent),
     },
-    weapons: (Array.isArray(report.weaponStats) ? report.weaponStats : []).slice(0, 6).map((weapon) => ({
-      weapon: String(weapon.weapon || ""),
-      label: String(weapon.label || weapon.weapon || "Silah"),
-      score: weapon.score === null || weapon.score === undefined ? null : Number(weapon.score),
-      kills: Number(weapon.kills) || 0,
-      shots: Number(weapon.shots) || 0,
-    })),
+    weapons: (Array.isArray(report.weaponStats) ? report.weaponStats : []).slice(0, 10).map((weapon) => {
+      const rawScore = weapon.score ?? weapon.efficiency;
+      const score = rawScore === null || rawScore === undefined || !Number.isFinite(Number(rawScore))
+        ? null
+        : round(Number(rawScore));
+      return {
+        weapon: String(weapon.weapon || ""),
+        label: String(weapon.label || weapon.weapon || "Silah"),
+        score,
+        kills: Number(weapon.kills) || 0,
+        shots: Number(weapon.shots) || 0,
+      };
+    }),
+    aimMetrics,
     scoreMethod: scorecard?.method,
     scoreSampleCount: scorecard?.sampleCount || 0,
   };
@@ -315,7 +347,7 @@ export class MatchAutomationStore {
 
   ensure(match, overrides = {}) {
     const existing = this.listNotifications().find((item) => item.matchId === match?.id);
-    if (existing) return existing;
+    if (existing) return Object.keys(overrides).length ? this.update(match.id, overrides) : existing;
     const created = this.discover([match]);
     if (!created[0]) return null;
     return Object.keys(overrides).length ? this.update(match.id, overrides) : created[0];

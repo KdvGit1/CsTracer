@@ -47,10 +47,23 @@ test("takım keşif endpoint'i Steam oturumu yokken güvenli önbellek sonucu d�
   const companionPort = await getFreePort();
   const companionUrl = `http://127.0.0.1:${companionPort}`;
   const dataRoot = mkdtempSync(join(tmpdir(), "tracer-squad-server-"));
+  const personalSteamId = "76561198000000001";
   writeFileSync(join(dataRoot, "recent_matches.json"), JSON.stringify([
-    { id: "date-a", map: "dust2", timestamp: 1, formattedDate: "Eski A" },
+    {
+      id: "date-a", map: "dust2", timestamp: 1, formattedDate: "Eski A", fileName: "date-a.dem",
+      userStats: { steamid: personalSteamId, name: "Tester" },
+      fullAnalysis: { reports: [{
+        player: { steamid: personalSteamId, name: "Tester" }, map: "dust2", rounds: 20,
+        kills: 18, deaths: 14, assists: 5, adr: 84.4, headshotPercent: 44, tradePercent: 50,
+        kastPercent: 75, survivalPercent: 30, utilityImpactRoundPercent: 25, utilityImpactRoundSampleCount: 20,
+        movementProfile: { status: "measured", sampleCount: 30, invalidShotPercent: 12 },
+        weaponStats: [{ weapon: "nova", label: "Nova", score: 4.1000000000000005, efficiency: 4.1, kills: 2, shots: 10 }],
+        sprayStats: { method: "bullet-damage-event-tick-v2", status: "measured", sampleCount: 30, earlyAccuracy: 20, lateAccuracy: 15 },
+      }] },
+    },
     { id: "date-b", map: "dust2", timestamp: 2, formattedDate: "Eski B" },
   ]), "utf8");
+  writeFileSync(join(dataRoot, "progress.json"), JSON.stringify({ profile: { steamid: personalSteamId, name: "Tester" }, matches: [] }), "utf8");
   writeFileSync(join(dataRoot, "scanned_matches.json"), JSON.stringify([
     { id: "date-a", map: "dust2", timestamp: 200_001, formattedDate: "Doğru A" },
     { id: "date-b", map: "dust2", timestamp: 400_002, formattedDate: "Doğru B" },
@@ -82,6 +95,14 @@ test("takım keşif endpoint'i Steam oturumu yokken güvenli önbellek sonucu d�
     const dates = new Map(recent.matches.map((match) => [match.id, match.formattedDate]));
     assert.equal(dates.get("date-a"), "Doğru A");
     assert.equal(dates.get("date-b"), "Doğru B");
+
+    const progressResponse = await fetch(`${companionUrl}/progress`);
+    assert.equal(progressResponse.status, 200);
+    const progress = await progressResponse.json();
+    assert.equal(progress.matches.length, 1, "analiz edilen maç rapor açılmadan gelişim hafızasına eklenmeli");
+    assert.equal(progress.matches[0].id, "date-a", "Steam maç kimliği gelişim kaydında sabit kalmalı");
+    assert.equal(progress.matches[0].summary.weapons[0].score, 4.1);
+    assert.equal(progress.matches[0].summary.aimMetrics.earlyAccuracy, 20);
 
     const automationResponse = await fetch(`${companionUrl}/automation/state`);
     assert.equal(automationResponse.status, 200);

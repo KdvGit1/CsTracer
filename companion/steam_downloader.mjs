@@ -2,10 +2,10 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, renameS
 import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { EventEmitter } from "node:events";
+import { Worker } from "node:worker_threads";
 import http from "node:http";
 import https from "node:https";
 import bz2Stream from "unbzip2-stream";
-import { analyzeDemo } from "./analyze.mjs";
 import { isAllowedReplayUrl, replayFileBase } from "./steam_replay_url.mjs";
 import { SquadStore } from "./squad/store.mjs";
 import { normalizeSteamId } from "./squad/identity.mjs";
@@ -114,6 +114,10 @@ export function getSteamSession() {
 export function saveSteamSession(sessionData) {
   const current = getSteamSession();
   const merged = { ...current, ...sessionData };
+  if (Object.hasOwn(sessionData || {}, "steamLoginSecure") && sessionData.steamLoginSecure !== current.steamLoginSecure) {
+    merged.lastScanStatus = sessionData.steamLoginSecure ? "pending" : "disconnected";
+    merged.lastScanError = "";
+  }
   if (!merged.steamId && merged.steamLoginSecure) {
     merged.steamId = extractSteamIdFromCookie(merged.steamLoginSecure);
   }
@@ -123,6 +127,16 @@ export function saveSteamSession(sessionData) {
     console.error("[STEAM-GCPD] Session kaydetme hatası:", err.message);
   }
   return merged;
+}
+
+export function getSteamConnectionHealth(session = getSteamSession()) {
+  if (!session.steamLoginSecure) return { state: "disconnected", message: "Steam oturumu kaydedilmemiş." };
+  if (session.lastScanStatus === "expired") return { state: "expired", message: session.lastScanError || "Steam oturumunun süresi dolmuş." };
+  if (session.lastScanStatus === "error") return { state: "error", message: session.lastScanError || "Steam’e son bağlantı kurulamadı." };
+  if (session.lastScanStatus === "success" || (!session.lastScanStatus && session.lastScanTime)) {
+    return { state: "connected", message: "Steam Community bağlantısı son taramada doğrulandı." };
+  }
+  return { state: "unverified", message: "Steam bilgileri kayıtlı; bağlantı henüz doğrulanmadı." };
 }
 
 // 3. Recent Matches Storage (Downloaded & Fully Analyzed)
@@ -170,6 +184,16 @@ export function saveScannedMatches(matches) {
   } catch (err) {
     console.error("[STEAM-GCPD] Taranan maçlar kaydetme hatası:", err.message);
   }
+}
+
+export function mergeScannedMatchCache(freshMatches = [], cachedMatches = [], downloadedMatches = []) {
+  const merged = [...freshMatches];
+  for (const cached of cachedMatches) {
+    if (merged.some((item) => item.id === cached.id || (item.replayUrl && item.replayUrl === cached.replayUrl))) continue;
+    const isDownloaded = downloadedMatches.some((match) => match.id === cached.id || match.fileName === cached.fileName);
+    merged.push({ ...cached, isDownloaded });
+  }
+  return merged.sort((left, right) => Number(right.timestamp || 0) - Number(left.timestamp || 0));
 }
 
 // 5. Ham DEM kotası analiz geçmişinden bağımsızdır. Eski fonksiyon adı
@@ -391,12 +415,24 @@ async function fetchGcpdTabAjax(steamId, tab, session) {
   });
 
   if (!resp.ok) {
-    throw new Error(`Steam AJAX isteği başarısız (HTTP ${resp.status})`);
+    const error = new Error(`Steam AJAX isteği başarısız (HTTP ${resp.status})`);
+    if (resp.status === 401 || resp.status === 403) error.code = "STEAM_AUTH_EXPIRED";
+    throw error;
   }
 
-  const data = await resp.json();
+  const responseText = await resp.text();
+  let data;
+  try {
+    data = JSON.parse(responseText);
+  } catch {
+    const error = new Error("Steam beklenen maç verisi yerine oturum sayfası döndürdü.");
+    if (/login|sign\s*in|g_steamid\s*=\s*false/i.test(responseText)) error.code = "STEAM_AUTH_EXPIRED";
+    throw error;
+  }
   if (!data.success) {
-    throw new Error(`Steam verisi alınamadı (tab: ${tab})`);
+    const error = new Error(`Steam verisi alınamadı (tab: ${tab})`);
+    if (data.login_required || data.requires_login) error.code = "STEAM_AUTH_EXPIRED";
+    throw error;
   }
 
   return data.html || "";
@@ -407,8 +443,26 @@ const MAX_REDIRECTS = 5;
 const MAX_DOWNLOAD_RETRIES = 3;
 const DOWNLOAD_TIMEOUT_MS = 180000;
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+function cancelledError() {
+  return Object.assign(new Error("İndirme ve analiz kullanıcı tarafından iptal edildi."), { name: "AbortError", code: "DOWNLOAD_CANCELLED" });
+}
+
+function throwIfCancelled(signal) {
+  if (signal?.aborted) throw cancelledError();
+}
+
+function sleep(ms, signal) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    if (signal?.aborted) {
+      rejectPromise(cancelledError());
+      return;
+    }
+    const timer = setTimeout(resolvePromise, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      rejectPromise(cancelledError());
+    }, { once: true });
+  });
 }
 
 // 4xx kalıcı hata: retry YAPMA. 5xx ve ağ/timeout hataları: retry yap.
@@ -420,7 +474,7 @@ function isRetryableDownloadError(err) {
 }
 
 // Tek denemelik indirme (redirect takibi recursion yerine döngüyle, stack overflow olmaz)
-function downloadAndDecompressBz2Once(url, partPath) {
+function downloadAndDecompressBz2Once(url, partPath, signal) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let currentRequest = null;
@@ -428,9 +482,11 @@ function downloadAndDecompressBz2Once(url, partPath) {
     let activeDecompressor = null;
 
     // Timeout ve hata yollarında tüm stream'leri temizle (stream leak önleme)
+    const onAbort = () => fail(cancelledError());
     const fail = (err) => {
       if (settled) return;
       settled = true;
+      signal?.removeEventListener("abort", onAbort);
       try { activeWriteStream?.destroy(); } catch { /* ignore */ }
       try { activeDecompressor?.destroy?.(); } catch { /* ignore */ }
       try { currentRequest?.destroy(); } catch { /* ignore */ }
@@ -440,6 +496,8 @@ function downloadAndDecompressBz2Once(url, partPath) {
 
     let redirectCount = 0;
     let currentUrl = url;
+    if (signal?.aborted) return fail(cancelledError());
+    signal?.addEventListener("abort", onAbort, { once: true });
 
     const openNext = () => {
       if (settled) return;
@@ -489,6 +547,7 @@ function downloadAndDecompressBz2Once(url, partPath) {
         activeWriteStream.on("finish", () => {
           if (settled) return;
           settled = true;
+          signal?.removeEventListener("abort", onAbort);
           activeWriteStream.close();
           resolve(partPath);
         });
@@ -508,8 +567,9 @@ function downloadAndDecompressBz2Once(url, partPath) {
 }
 
 // Geçici ağ/5xx hatalarında üstel backoff (1sn, 2sn, 4sn) ile en fazla 3 deneme
-function downloadAndDecompressBz2(url, destDemPath) {
+function downloadAndDecompressBz2(url, destDemPath, signal) {
   return (async () => {
+    throwIfCancelled(signal);
     if (!isAllowedReplayUrl(url)) {
       throw new Error(`Replay adresi izin verilen Steam/Valve sunucularından değil: ${url}`);
     }
@@ -521,7 +581,8 @@ function downloadAndDecompressBz2(url, destDemPath) {
     let lastErr = null;
     for (let attempt = 1; attempt <= MAX_DOWNLOAD_RETRIES; attempt++) {
       try {
-        await downloadAndDecompressBz2Once(url, partPath);
+        await downloadAndDecompressBz2Once(url, partPath, signal);
+        throwIfCancelled(signal);
         // İndirme + bunzip başarıyla bitti: atomik rename ile .dem yap
         renameSync(partPath, destDemPath);
         return destDemPath;
@@ -533,7 +594,7 @@ function downloadAndDecompressBz2(url, destDemPath) {
         }
         const backoffMs = 1000 * Math.pow(2, attempt - 1); // 1sn, 2sn, 4sn
         console.warn(`[STEAM-GCPD] İndirme denemesi ${attempt}/${MAX_DOWNLOAD_RETRIES} başarısız: ${err.message} — ${backoffMs / 1000}sn sonra tekrar denenecek.`);
-        await sleep(backoffMs);
+        await sleep(backoffMs, signal);
       }
     }
     throw lastErr;
@@ -547,7 +608,8 @@ export async function processDownloadedDemo(
   externalId = "",
   customTimestamp = null,
   customFormattedDate = null,
-  customMap = null
+  customMap = null,
+  options = {}
 ) {
   if (!existsSync(demPath)) throw new Error(`Demo dosyası bulunamadı: ${demPath}`);
 
@@ -555,7 +617,7 @@ export async function processDownloadedDemo(
   const matchId = externalId || `gcpd_${fileBase}`;
 
   console.log(`[STEAM-GCPD] CS2 Demo analiz ediliyor (${source}): ${basename(demPath)}...`);
-  const analysis = analyzeDemo(demPath);
+  const analysis = await analyzeDemoInWorker(demPath, options.signal);
 
   const reports = analysis.reports || [];
   const session = getSteamSession();
@@ -748,6 +810,8 @@ export async function scanSteamGcpdMatches() {
 
     const allFound = [];
     const downloadedMatches = getRecentMatches();
+    const successfulModes = new Set();
+    const scanErrors = [];
 
     for (const mode of MODES) {
       if (isGamePerformanceModeActive()) {
@@ -758,6 +822,7 @@ export async function scanSteamGcpdMatches() {
         console.log(`[STEAM-GCPD] ${mode.label} maçları sorgulanıyor...`);
         const html = await fetchGcpdTabAjax(steamId, mode.tab, session);
         const parsed = parseGcpdMatchesFromHtml(html, mode.label, steamId);
+        successfulModes.add(mode.label);
         console.log(`[STEAM-GCPD] ${mode.label} modunda ${parsed.length} maç bulundu.`);
 
         for (const item of parsed) {
@@ -768,31 +833,75 @@ export async function scanSteamGcpdMatches() {
           }
         }
       } catch (err) {
+        scanErrors.push({ mode: mode.label, message: err.message, code: err.code || "" });
         console.warn(`[STEAM-GCPD] ${mode.label} sorgusu atlandı:`, err.message);
       }
     }
 
-    // Sort all found matches newest first by real match timestamp
-    allFound.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    if (successfulModes.size === 0) {
+      const authExpired = scanErrors.some((error) => error.code === "STEAM_AUTH_EXPIRED");
+      const lastError = scanErrors.map((error) => `${error.mode}: ${error.message}`).join(" · ").slice(0, 1000)
+        || "Steam’den hiçbir maç geçmişi sekmesi okunamadı.";
+      saveSteamSession({
+        lastScanTime: Date.now(),
+        lastScanStatus: authExpired ? "expired" : "error",
+        lastScanError: lastError,
+      });
+      return {
+        ok: false,
+        requiresLogin: authExpired,
+        connectionState: authExpired ? "expired" : "error",
+        message: authExpired
+          ? "Steam oturumunun süresi dolmuş. Bağlantı çerezini yenile; kayıtlı maçların korunuyor."
+          : "Steam’e şu anda erişilemedi. Kayıtlı maçların korundu; daha sonra yeniden tarayabilirsin.",
+        scannedMatches: previouslyScanned,
+        downloadedMatches: getRecentMatches(),
+      };
+    }
 
-    saveScannedMatches(allFound);
-    saveSteamSession({ lastScanTime: Date.now() });
+    if (allFound.length === 0 && previouslyScanned.length > 0) {
+      const message = "Steam yanıt verdi ancak maç satırları okunamadı. Önceki maçların korundu; bağlantı/HTML biçimi yeniden doğrulanmalı.";
+      saveSteamSession({ lastScanTime: Date.now(), lastScanStatus: "error", lastScanError: message });
+      return {
+        ok: false,
+        connectionState: "error",
+        message,
+        scannedMatches: previouslyScanned,
+        downloadedMatches: getRecentMatches(),
+      };
+    }
+
+    // Steam sekmelerinden biri geçici olarak yanıt vermediğinde veya açılış
+    // taraması kısmi kaldığında daha önce bulunan maçları boş/kısmi sonuçla
+    // ezme. Yeni veriyi öne al, önbellekteki benzersiz kayıtları koru.
+    const mergedMatches = mergeScannedMatchCache(allFound, previouslyScanned, downloadedMatches);
+
+    saveScannedMatches(mergedMatches);
+    saveSteamSession({
+      lastScanTime: Date.now(),
+      lastSuccessfulScanTime: Date.now(),
+      lastScanStatus: "success",
+      lastScanError: scanErrors.length
+        ? `${scanErrors.length} Steam sekmesi geçici olarak okunamadı; önbellekteki maçlar korundu.`
+        : "",
+    });
 
     // İlk bağlantıda geçmişi bildirim yağmuruna çevirmiyoruz. Sonraki
     // taramalarda daha önce görülmeyen maçlar otomasyon akışına girer.
     if (previouslyScanned.length > 0) {
       const known = new Set(previouslyScanned.flatMap((item) => [item.id, item.replayUrl]).filter(Boolean));
-      const discovered = allFound.filter((item) => !known.has(item.id) && !known.has(item.replayUrl));
+      const discovered = mergedMatches.filter((item) => !known.has(item.id) && !known.has(item.replayUrl));
       if (discovered.length > 0) steamEvents.emit("matches-discovered", discovered);
     }
-    steamEvents.emit("scan-complete", allFound);
+    steamEvents.emit("scan-complete", mergedMatches);
 
-    console.log(`[STEAM-GCPD] Toplam ${allFound.length} maç özeti hazırlandı (${allFound.filter((m) => m.isDownloaded).length} indirilmiş).`);
+    console.log(`[STEAM-GCPD] Toplam ${mergedMatches.length} maç özeti hazırlandı (${mergedMatches.filter((m) => m.isDownloaded).length} indirilmiş).`);
 
     return {
       ok: true,
-      message: `${allFound.length} maç tarandı ve güncellendi.`,
-      scannedMatches: allFound,
+      message: `${mergedMatches.length} maç tarandı ve güncellendi.`,
+      connectionState: "connected",
+      scannedMatches: mergedMatches,
       downloadedMatches: getRecentMatches(),
       lastScanTime: Date.now(),
     };
@@ -811,6 +920,49 @@ export async function scanSteamGcpdMatches() {
 
 // 12. On-Demand Single Match Downloader
 let downloadRunningMatchId = null;
+const activeDownloadControllers = new Map();
+
+function analyzeDemoInWorker(filePath, signal) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    throwIfCancelled(signal);
+    const workerPath = join(__dirname, "analyze-worker.mjs");
+    const worker = new Worker(workerPath, { workerData: { filePath } });
+    let settled = false;
+    const timer = setTimeout(() => finish(new Error("Demo analizi zaman aşımına uğradı (5 dk).")), 5 * 60 * 1000);
+    const onAbort = () => finish(cancelledError());
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (error) {
+        void worker.terminate();
+        rejectPromise(error);
+      } else {
+        resolvePromise(result);
+      }
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    worker.once("message", (message) => message?.ok
+      ? finish(null, message.result)
+      : finish(new Error(message?.error || "Demo analizi başarısız oldu.")));
+    worker.once("error", (error) => finish(error));
+    worker.once("exit", (code) => {
+      if (!settled && code !== 0) finish(new Error(`Analiz iş parçacığı beklenmedik şekilde kapandı (${code}).`));
+    });
+  });
+}
+
+export function cancelSingleMatch(matchId) {
+  const controller = activeDownloadControllers.get(String(matchId || ""));
+  if (!controller) return false;
+  controller.abort();
+  return true;
+}
+
+export function getActiveDownloadMatchId() {
+  return downloadRunningMatchId;
+}
 
 export async function downloadSingleMatch(matchId, replayUrl = "", matchMeta = {}) {
   if (isGamePerformanceModeActive()) {
@@ -822,8 +974,8 @@ export async function downloadSingleMatch(matchId, replayUrl = "", matchMeta = {
       message: "CS2 canlı maçta: replay indirme ve demo analizi maç sonrasına ertelendi.",
     };
   }
-  if (downloadRunningMatchId === matchId) {
-    return { ok: false, message: "Bu maç zaten indiriliyor." };
+  if (downloadRunningMatchId) {
+    return { ok: false, busy: true, activeMatchId: downloadRunningMatchId, message: "Başka bir maç indiriliyor; bu maç sırada beklemeli." };
   }
 
   let finalReplayUrl = replayUrl;
@@ -850,7 +1002,11 @@ export async function downloadSingleMatch(matchId, replayUrl = "", matchMeta = {
   }
 
   downloadRunningMatchId = matchId;
+  const controller = new AbortController();
+  activeDownloadControllers.set(matchId, controller);
+  const signal = controller.signal;
   const targetDem = join(DEMOS_DIR, `${fileBase}.dem`);
+  const demoAlreadyExisted = existsSync(targetDem);
 
   console.log(`[STEAM-GCPD] Seçilen maç indiriliyor: ${fileBase}.dem.bz2...`);
   steamEvents.emit("download-status", { matchId, status: "downloading", message: "Replay indiriliyor." });
@@ -860,8 +1016,9 @@ export async function downloadSingleMatch(matchId, replayUrl = "", matchMeta = {
     removePartialQuiet(`${targetDem}.part`);
 
     if (!existsSync(targetDem)) {
-      await downloadAndDecompressBz2(finalReplayUrl, targetDem);
+      await downloadAndDecompressBz2(finalReplayUrl, targetDem, signal);
     }
+    throwIfCancelled(signal);
 
     if (isGamePerformanceModeActive()) {
       console.log("[PERF] CS2 maçı başladı; indirilen demonun analizi maç sonrasına ertelendi.");
@@ -881,7 +1038,8 @@ export async function downloadSingleMatch(matchId, replayUrl = "", matchMeta = {
       matchId,
       finalMeta.timestamp || null,
       finalMeta.formattedDate || null,
-      finalMeta.map || null
+      finalMeta.map || null,
+      { signal }
     );
     steamEvents.emit("download-status", { matchId, status: "ready", message: "Maç indirildi ve tam analiz hazır.", match: processed });
 
@@ -894,10 +1052,17 @@ export async function downloadSingleMatch(matchId, replayUrl = "", matchMeta = {
       demoStorage: getDemoStorageState(),
     };
   } catch (err) {
+    if (err?.name === "AbortError" || err?.code === "DOWNLOAD_CANCELLED") {
+      if (!demoAlreadyExisted) removePartialQuiet(targetDem);
+      removePartialQuiet(`${targetDem}.part`);
+      steamEvents.emit("download-status", { matchId, status: "cancelled", message: "İndirme ve analiz iptal edildi." });
+      return { ok: false, cancelled: true, message: "İndirme ve analiz iptal edildi." };
+    }
     console.error(`[STEAM-GCPD] Tek maç indirme hatası (${fileBase}):`, err.message);
     steamEvents.emit("download-status", { matchId, status: "failed", message: `İndirme veya analiz başarısız: ${err.message}` });
     return { ok: false, message: `İndirme hatası: ${err.message}` };
   } finally {
+    activeDownloadControllers.delete(matchId);
     downloadRunningMatchId = null;
   }
 }

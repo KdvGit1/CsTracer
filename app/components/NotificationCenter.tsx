@@ -34,7 +34,7 @@ type MatchComparison = {
 type MatchNotification = {
   id: string;
   matchId: string;
-  status: "detected" | "queued" | "waiting" | "downloading" | "analyzing" | "ready" | "failed";
+  status: "detected" | "queued" | "waiting" | "downloading" | "analyzing" | "cancelling" | "cancelled" | "ready" | "failed";
   auto: boolean;
   read: boolean;
   createdAt: number;
@@ -73,6 +73,8 @@ const STATUS_LABELS: Record<MatchNotification["status"], string> = {
   waiting: "Bekliyor",
   downloading: "İndiriliyor",
   analyzing: "Analiz ediliyor",
+  cancelling: "Durduruluyor",
+  cancelled: "İptal edildi",
   ready: "Rapor hazır",
   failed: "Tekrar gerekli",
 };
@@ -83,17 +85,22 @@ function formatBytes(bytes: number) {
   return `${Math.round(bytes / 1024 ** 2)} MB`;
 }
 
+function formatMetric(value: number, digits = 1) {
+  return new Intl.NumberFormat("tr-TR", { maximumFractionDigits: digits }).format(Number(value) || 0);
+}
+
 function comparisonText(comparison?: MatchComparison | null) {
   if (!comparison) return "Kişisel kıyas tam analizden sonra hazırlanacak.";
   const unit = comparison.kind === "overall" ? "% KAST" : " K/D";
-  if (!comparison.sufficient) return `${comparison.value}${unit} · kıyas için ${3 - comparison.sampleSize} eski maç daha gerekli`;
+  if (!comparison.sufficient) return `${formatMetric(comparison.value)}${unit} · kıyas için ${3 - comparison.sampleSize} eski maç daha gerekli`;
   const sign = Number(comparison.delta) > 0 ? "+" : "";
-  return `${comparison.value}${unit} · ortalamaya göre ${sign}${comparison.delta}${comparison.kind === "overall" ? " yüzde puanı" : " K/D"}`;
+  return `${formatMetric(comparison.value)}${unit} · ortalamaya göre ${sign}${formatMetric(Number(comparison.delta))}${comparison.kind === "overall" ? " yüzde puanı" : " K/D"}`;
 }
 
 function notificationActionLabel(status: MatchNotification["status"]) {
   if (status === "ready") return "Raporu aç";
   if (status === "failed") return "Tekrar dene";
+  if (status === "cancelled") return "Yeniden sıraya al";
   if (status === "detected") return "İndir ve analiz et";
   return "İşleniyor";
 }
@@ -163,7 +170,7 @@ export function NotificationCenter({ onSelectAnalysis }: { onSelectAnalysis: (an
   };
 
   const handleNotification = async (item: MatchNotification) => {
-    if (["queued", "waiting", "downloading", "analyzing"].includes(item.status)) return;
+    if (["queued", "waiting", "downloading", "analyzing", "cancelling"].includes(item.status)) return;
     setActingId(item.id);
     try {
       const response = await fetch(`${COMPANION_URL}/notifications/${encodeURIComponent(item.id)}/action`, { method: "POST" });
@@ -173,7 +180,7 @@ export function NotificationCenter({ onSelectAnalysis }: { onSelectAnalysis: (an
         onSelectAnalysis(payload.analysis);
         setOpen(false);
       } else {
-        toast.success(item.status === "failed" ? "Maç yeniden sıraya alındı." : "Maç indiriliyor ve analiz ediliyor.");
+        toast.success(item.status === "failed" || item.status === "cancelled" ? "Maç yeniden sıraya alındı." : "Maç indiriliyor ve analiz ediliyor.");
       }
       await fetchState();
     } catch (error) {
@@ -272,14 +279,14 @@ export function NotificationCenter({ onSelectAnalysis }: { onSelectAnalysis: (an
             {loading ? <div className="notification-empty"><IconRefresh className="spin-icon" size={22} /><b>Bildirimler yükleniyor…</b></div>
               : state.notifications.length === 0 ? <div className="notification-empty"><IconBell size={25} /><b>Henüz maç bildirimi yok</b><p>Yeni Steam maçı algılandığında kısa özet burada kalıcı olarak görünür.</p></div>
               : state.notifications.map((item) => {
-                const busy = ["queued", "waiting", "downloading", "analyzing"].includes(item.status);
+                const busy = ["queued", "waiting", "downloading", "analyzing", "cancelling"].includes(item.status);
                 return <article key={item.id} className={`match-notification ${item.read ? "read" : "unread"} ${item.status}`}>
                   <header>
                     <div><span>{formatMapTitle(item.match.map)}</span><small>{item.match.mode || "CS2"} · {item.match.formattedDate || new Date(item.match.timestamp).toLocaleString("tr-TR")}</small></div>
                     <em>{item.auto && "OTO · "}{STATUS_LABELS[item.status]}</em>
                   </header>
                   <p>{item.message}</p>
-                  {item.stats && <div className="notification-stats"><b>{item.stats.kills ?? 0}/{item.stats.deaths ?? 0}/{item.stats.assists ?? 0} K/D/A</b>{Number(item.stats.adr) > 0 && <span>{Number(item.stats.adr).toFixed(1)} ADR</span>}</div>}
+                  {item.stats && <div className="notification-stats"><b>{item.stats.kills ?? 0}/{item.stats.deaths ?? 0}/{item.stats.assists ?? 0} K/D/A</b>{Number(item.stats.adr) > 0 && <span>{formatMetric(Number(item.stats.adr))} ADR</span>}</div>}
                   <div className={`notification-comparison ${item.comparison?.sufficient ? (Number(item.comparison.delta) >= 0 ? "positive" : "negative") : "neutral"}`}><IconSparkles size={13} /> {comparisonText(item.comparison)}</div>
                   <button onClick={() => handleNotification(item)} disabled={busy || actingId === item.id}>
                     {item.status === "ready" && <IconCheck size={13} />}

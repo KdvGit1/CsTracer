@@ -59,7 +59,16 @@ export const AIM_METRIC_CONFIG: Array<{ key: AimMetricKey; label: string; unit: 
 ];
 
 function average(values: number[]) {
-  return values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : 0;
+  return values.length ? roundMetric(values.reduce((sum, value) => sum + value, 0) / values.length) : 0;
+}
+
+function roundMetric(value: number, digits = 1) {
+  const scale = 10 ** digits;
+  return Math.round((Number(value) || 0) * scale) / scale;
+}
+
+function metricLabel(value: number, digits = 1) {
+  return new Intl.NumberFormat("tr-TR", { maximumFractionDigits: digits }).format(roundMetric(value, digits));
 }
 
 function slope(values: number[]) {
@@ -80,12 +89,19 @@ function momentum(values: number[]) {
 
 function deltaLabel(value: number | null, suffix = "") {
   if (value === null) return "Yeterli maç yok";
-  const sign = value > 0 ? "+" : "";
-  return `${sign}${value}${suffix}`;
+  const rounded = roundMetric(value);
+  const sign = rounded > 0 ? "+" : "";
+  return `${sign}${metricLabel(rounded)}${suffix}`;
+}
+
+function compactDelta(value: number | null, suffix = "") {
+  return value === null ? "—" : deltaLabel(value, suffix);
 }
 
 function dateLabel(timestamp: number) {
-  return new Intl.DateTimeFormat("tr-TR", { day: "2-digit", month: "short", year: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(timestamp));
+  const date = new Date(Number(timestamp));
+  if (!Number.isFinite(date.getTime())) return "Tarih bilinmiyor";
+  return new Intl.DateTimeFormat("tr-TR", { day: "2-digit", month: "short", year: "2-digit", hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
 function ScoreChart({
@@ -105,10 +121,14 @@ function ScoreChart({
   maxVal?: number;
   minVal?: number;
 }) {
-  const ordered = [...matches].sort((a, b) => a.date - b.date);
+  const measured = [...matches]
+    .sort((a, b) => a.date - b.date)
+    .map((match) => ({ match, score: Number(value(match)) }))
+    .filter((item) => Number.isFinite(item.score));
+  const ordered = measured.map((item) => item.match);
   if (ordered.length < 2) return <div className="growth-chart-empty"><b>Grafik için en az 2 maç gerekli</b><span>İlk gerçek maç özeti kaydedildiğinde başlangıç noktası oluşur.</span></div>;
-  const values = ordered.map(value);
-  const calculatedMax = Math.max(maxVal, ...values) * 1.08;
+  const values = measured.map((item) => item.score);
+  const calculatedMax = maxVal === 100 ? 100 : Math.max(maxVal, ...values) * 1.08;
   const calculatedMin = Math.min(minVal, ...values);
   const range = Math.max(1, calculatedMax - calculatedMin);
 
@@ -125,16 +145,16 @@ function ScoreChart({
 
   return <div className="growth-chart" aria-label={`${label} metrik grafiği`}>
     <svg viewBox={`0 0 ${width} ${height}`} role="img">
-      {ticks.map((tick) => (
-        <g key={tick}>
+      {ticks.map((tick, index) => (
+        <g key={`${tick}-${index}`}>
           <line x1={paddingX} x2={width - paddingX} y1={y(tick)} y2={y(tick)} stroke="#212c27" strokeDasharray="3,3" />
-          <text x="2" y={y(tick) + 4} fill="#788680" fontSize="9" fontFamily="monospace">{tick}{unit}</text>
+          <text x="2" y={y(tick) + 4} fill="#788680" fontSize="9" fontFamily="monospace">{metricLabel(tick)}{unit}</text>
         </g>
       ))}
       <polyline points={points} style={{ stroke: color, strokeWidth: "2.5", fill: "none" }} />
       {values.map((score, index) => (
         <circle key={ordered[index].id} cx={x(index)} cy={y(score)} r="4.5" style={{ fill: color, stroke: "#0d1210", strokeWidth: "2" }}>
-          <title>{dateLabel(ordered[index].date)} · {score} {unit}</title>
+          <title>{dateLabel(ordered[index].date)} · {metricLabel(score)} {unit}</title>
         </circle>
       ))}
     </svg>
@@ -155,12 +175,21 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
   const careerAverage = overallValues.length ? average(overallValues) : null;
   const storageKb = Math.max(0, Math.round(new Blob([JSON.stringify(matches)]).size / 102.4) / 10);
   const weaponNames = useMemo(() => {
-    const labels = new Map<string, string>();
-    ordered.forEach((match) => match.summary.weapons.forEach((item) => labels.set(item.weapon, item.label)));
-    return [...labels.entries()].map(([id, label]) => ({ id, label }));
+    const weapons = new Map<string, { id: string; label: string; observations: number; lastSeen: number }>();
+    ordered.forEach((match) => match.summary.weapons.forEach((item) => {
+      if (!item.weapon || item.score === null || !Number.isFinite(Number(item.score))) return;
+      const current = weapons.get(item.weapon);
+      weapons.set(item.weapon, {
+        id: item.weapon,
+        label: item.label || item.weapon,
+        observations: (current?.observations || 0) + 1,
+        lastSeen: Math.max(current?.lastSeen || 0, match.date),
+      });
+    }));
+    return [...weapons.values()].sort((left, right) => right.observations - left.observations || right.lastSeen - left.lastSeen || left.label.localeCompare(right.label, "tr"));
   }, [ordered]);
-  const selectedWeapon = weapon || weaponNames[0]?.id || "";
-  const weaponMatches = ordered.filter((match) => match.summary.weapons.some((item) => item.weapon === selectedWeapon && Number.isFinite(item.score)));
+  const selectedWeapon = weaponNames.some((item) => item.id === weapon) ? weapon : weaponNames[0]?.id || "";
+  const weaponMatches = ordered.filter((match) => match.summary.weapons.some((item) => item.weapon === selectedWeapon && item.score !== null && Number.isFinite(Number(item.score))));
   const selectedDimension = DIMENSIONS.find((item) => item.key === dimension) || DIMENSIONS[0];
   const selectedAimConfig = AIM_METRIC_CONFIG.find((item) => item.key === aimMetric) || AIM_METRIC_CONFIG[0];
 
@@ -188,13 +217,13 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
 
   return <section className="growth-view">
     <header className="growth-topbar">
-      <div><button onClick={onBack}>← Analize dön</button><p className="eyebrow">GELİŞİM MERKEZİ</p><h1>{playerName ? `${playerName} · uzun dönem formu` : "Kişisel gelişim geçmişi"}</h1><span>Son 90 analiz · yalnızca seçtiğin oyuncunun küçük maç özetleri</span></div>
+      <div><button onClick={onBack}>← Analize dön</button><p className="eyebrow">GELİŞİM MERKEZİ</p><h1>{playerName ? `${playerName} · uzun dönem formu` : "Kişisel gelişim geçmişi"}</h1><span>Son 90 maç özeti · yalnızca seçtiğin oyuncunun verileri</span></div>
       <div className="memory-state"><span>KALICI HAFIZA</span><b>{matches.length} / 90 maç</b><small>Yaklaşık {storageKb} KB özet</small></div>
     </header>
 
     {!matches.length ? <div className="growth-empty"><span><IconExternalLink size={20} /></span><b>Henüz kaydedilmiş maç yok</b><p>Bir demo analiz et ve demodaki kendi oyuncunu seç. Gerçek maç özeti otomatik olarak burada saklanacak; örnek veri gösterilmiyor.</p><button onClick={onBack}>İlk demoyu analiz et</button></div> : <>
       <div className="growth-score-grid">
-        <article className="overall-score"><span>ORTALAMA KAST</span><strong>{careerAverage ?? "—"}</strong><small>% · {overallValues.length} ölçülen maç</small><div><b>Son maç {latest.summary.overall ?? "—"}{latest.summary.overall === null ? "" : "%"}</b><em>{previous && latest.summary.overall !== null && previous.summary.overall !== null ? deltaLabel(latest.summary.overall - previous.summary.overall, "%") : "Karşılaştırma yok"}</em></div></article>
+        <article className="overall-score"><span>ORTALAMA KAST</span><strong>{careerAverage === null ? "—" : metricLabel(careerAverage)}</strong><small>% · {overallValues.length} ölçülen maç</small><div><b>Son maç {latest.summary.overall === null ? "—" : `${metricLabel(latest.summary.overall)}%`}</b><em>{previous && latest.summary.overall !== null && previous.summary.overall !== null ? deltaLabel(latest.summary.overall - previous.summary.overall, "%") : "Karşılaştırma yok"}</em></div></article>
         <article><span>SON 5 MAÇ EĞİMİ</span><strong>{deltaLabel(overallMomentum.trend, " yüzde puanı/maç")}</strong><small>Doğrusal KAST yönü</small></article>
         <article><span>İVME DEĞİŞİMİ</span><strong>{deltaLabel(overallMomentum.acceleration, " yüzde puanı/maç")}</strong><small>Son 5 eğim − önceki 5 eğim</small></article>
         <article><span>SON MAÇ</span><strong>{latest.summary.stats.kills} / {latest.summary.stats.deaths}</strong><small>{latest.map} · {dateLabel(latest.date)}</small></article>
@@ -239,8 +268,8 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
                 style={{ "--accent-color": item.color } as React.CSSProperties}
               >
                 <span>{item.label}</span>
-                <strong>{current === undefined ? "—" : `${current} ${item.unit}`}</strong>
-                <em>{current === undefined ? "Geçerli ölçüm yok" : prior === undefined ? "Başlangıç" : `${deltaLabel(Math.round((current - prior) * 10) / 10, item.unit)} son maç`}</em>
+                <strong>{current === undefined ? "—" : `${metricLabel(current)} ${item.unit}`}</strong>
+                <em>{current === undefined ? "Geçerli ölçüm yok" : prior === undefined ? "Başlangıç" : `${deltaLabel(current - prior, item.unit)} önceki ölçüme göre`}</em>
                 <small>
                   {form.trend === null ? "Eğim için 2 maç" : `Eğim ${deltaLabel(form.trend, item.unit)}`}
                 </small>
@@ -267,7 +296,7 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
           const prior = values[values.length - 2];
           const form = momentum(values);
           return <button className={dimension === item.key ? "selected" : ""} onClick={() => setDimension(item.key)} key={item.key} style={{ "--dimension-color": item.color } as React.CSSProperties}>
-            <span>{item.label}</span><strong>{current ?? "—"}</strong><em>{current === undefined ? "Ölçüm yok" : prior === undefined ? "Başlangıç" : `${deltaLabel(current - prior)} son maç`}</em><small>{form.trend === null ? "Eğim için 2 ölçüm gerekli" : `Eğim ${deltaLabel(form.trend)} · ivme ${deltaLabel(form.acceleration)}`}</small>
+            <span>{item.label}</span><strong>{current === undefined ? "—" : metricLabel(current)}</strong><em>{current === undefined ? "Ölçüm yok" : prior === undefined ? "Başlangıç" : `${deltaLabel(current - prior)} önceki ölçüme göre`}</em><small>{form.trend === null ? "Eğim için 2 ölçüm gerekli" : `Eğim ${compactDelta(form.trend)} · ivme ${compactDelta(form.acceleration)}`}</small>
           </button>;
         })}
       </section>
@@ -289,7 +318,7 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
           const form = momentum(observations);
           const current = observations[observations.length - 1];
           const prior = observations[observations.length - 2];
-          return <button className={selectedWeapon === item.id ? "selected" : ""} onClick={() => setWeapon(item.id)} key={item.id}><span>{item.label}</span><strong>{current}</strong><em>{prior === undefined ? "Başlangıç" : `${deltaLabel(current - prior)} son maç`}</em><small>Eğim {deltaLabel(form.trend)} · ivme {deltaLabel(form.acceleration)}</small></button>;
+          return <button className={selectedWeapon === item.id ? "selected" : ""} onClick={() => setWeapon(item.id)} key={item.id}><span>{item.label}</span><strong>{metricLabel(current)} <small>dmg/atış</small></strong><em>{prior === undefined ? "Başlangıç" : `${deltaLabel(current - prior)} önceki ölçüme göre`}</em><small>{observations.length} maç · eğim {compactDelta(form.trend)} · ivme {compactDelta(form.acceleration)}</small></button>;
         })}</div>}
         {selectedWeapon && weaponMatches.length ? <ScoreChart matches={weaponMatches} value={(match) => Number(match.summary.weapons.find((item) => item.weapon === selectedWeapon)?.score)} color="#ffb761" label={weaponNames.find((item) => item.id === selectedWeapon)?.label || selectedWeapon} unit=" dmg/atış" maxVal={0} /> : <div className="growth-chart-empty"><b>Silah grafiği için veri yok</b><span>Atış ve hasar olayı birlikte çıkarılan maçlar burada görünür.</span></div>}
       </article>
@@ -299,7 +328,7 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
         <div className="growth-history-head">
           <span>Tarih</span>
           <span>Harita</span>
-          <span>Skor</span>
+          <span>K/D</span>
           <span>ADR</span>
           <span>HS</span>
           <span>Kill Anı Hizası</span>
@@ -320,12 +349,12 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
               )}
             </div>
             <span>{match.summary.stats.kills}/{match.summary.stats.deaths}</span>
-            <span>{match.summary.stats.adr}</span>
-            <span>%{match.summary.stats.headshotPercent}</span>
+            <span>{metricLabel(match.summary.stats.adr)}</span>
+            <span>%{metricLabel(match.summary.stats.headshotPercent)}</span>
             <span>{match.summary.aimMetrics && Number.isFinite(match.summary.aimMetrics.headErrorAngle) ? getAngleTier(match.summary.aimMetrics.headErrorAngle, "head").label : "—"}</span>
-            <span>{match.summary.aimMetrics && Number.isFinite(match.summary.aimMetrics.headErrorAngle) ? `${match.summary.aimMetrics.headErrorAngle}°` : "—"}</span>
-            <span>{hasAimMetricValue(match, "ttd") ? `${match.summary.aimMetrics?.medianTTD}ms` : "—"}</span>
-            <strong>{match.summary.overall === null ? "—" : `%${match.summary.overall}`}</strong>
+            <span>{match.summary.aimMetrics && Number.isFinite(match.summary.aimMetrics.headErrorAngle) ? `${metricLabel(Number(match.summary.aimMetrics.headErrorAngle))}°` : "—"}</span>
+            <span>{hasAimMetricValue(match, "ttd") ? `${metricLabel(Number(match.summary.aimMetrics?.medianTTD))}ms` : "—"}</span>
+            <strong>{match.summary.overall === null ? "—" : `%${metricLabel(match.summary.overall)}`}</strong>
           </div>
         ))}
       </article>

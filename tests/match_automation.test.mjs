@@ -102,6 +102,8 @@ test("bildirimler maç kimliğiyle tekilleştirilir ve otomatik indirme durumunu
     assert.equal(state.notifications[0].status, "queued");
     assert.equal(state.notifications[0].auto, true);
     assert.equal(state.unreadCount, 1);
+    store.update("m1", { status: "cancelled" });
+    assert.equal(store.ensure(match, { status: "queued", message: "Yeniden sırada." }).status, "queued", "iptal edilen maç yeniden kuyruğa alınabilmeli");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -113,10 +115,17 @@ test("companion performans özeti tek KAST sözleşmesini kullanır", () => {
     movingShotPercent: 9, utilityDamage: 120, enemyBlindSeconds: 18, tradePercent: 52,
     topZoneDeaths: 3, openingDeaths: 2, impact: 82, kastPercent: 82,
     survivalPercent: 25, utilityImpactRoundPercent: 30, utilityImpactRoundSampleCount: 20,
-    movementProfile: { status: "measured", sampleCount: 40, invalidShotPercent: 10 }, weaponStats: [],
+    movementProfile: { status: "measured", sampleCount: 40, invalidShotPercent: 10 },
+    weaponStats: [{ weapon: "nova", label: "Nova", score: 3.3000000000000003, efficiency: 3.3, kills: 2, shots: 9 }],
+    crosshairStats: { method: "kill-tick-alignment-v2", status: "measured", sampleCount: 3, headErrorAngle: 4.2, bodyErrorAngle: 5.1 },
+    duelStats: { ttdMethod: "spotted-to-first-damage-v2", ttdStatus: "measured", ttdSampleCount: 2, averageTTD: 310, medianTTD: 290, duelMethod: "mutual-spotted-death-v2", duelStatus: "measured", duelTotal: 4, duelWinrate: 50 },
+    sprayStats: { method: "bullet-damage-event-tick-v2", status: "measured", sampleCount: 40, earlyAccuracy: 18, lateAccuracy: 14 },
   });
   assert.equal(summary.overall, 82);
   assert.equal(summary.dimensions.roundImpact, 82);
   assert.equal(summary.scoreMethod, "kast-round-contribution-v1");
   assert.equal(summary.stats.kills, 22);
+  assert.equal(summary.weapons[0].score, 3.3, "silah verimi kayan nokta artığı olmadan saklanmalı");
+  assert.equal(summary.aimMetrics.medianTTD, 290, "arka planda kaydedilen maç gelişim aim metriklerini de taşımalı");
+  assert.equal(summary.aimMetrics.earlyAccuracy, 18);
 });
