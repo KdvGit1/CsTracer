@@ -97,6 +97,11 @@ type DownloadQueueState = {
   items?: Array<{ matchId: string; status: string; message: string }>;
 };
 
+type HistoryStorageState = {
+  state: "pending" | "optimizing" | "ready" | "error";
+  message: string;
+};
+
 const EMPTY_DOWNLOAD_QUEUE: DownloadQueueState = {
   activeMatchId: null,
   activeStartedAt: 0,
@@ -168,6 +173,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
   const [countdown, setCountdown] = useState(AUTO_SCAN_INTERVAL);
   const [autoScanEnabled, setAutoScanEnabled] = useState(true);
   const [demoStorage, setDemoStorage] = useState({ demoCount: 0, retentionCount: 5, totalBytes: 0 });
+  const [historyStorage, setHistoryStorage] = useState<HistoryStorageState>({ state: "pending", message: "Maç geçmişi hazırlanıyor." });
 
   const downloadTimerRef = useRef<NodeJS.Timeout | null>(null);
   const downloadQueueRef = useRef<DownloadQueueState>(EMPTY_DOWNLOAD_QUEUE);
@@ -209,6 +215,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
 
   const availableCount = allDisplayMatches.filter((m) => !m.isDownloaded).length;
   const analyzedCount = allDisplayMatches.filter((m) => m.isDownloaded).length;
+  const visibleStatusMessage = statusMessage || (historyStorage.state === "optimizing" ? historyStorage.message : "");
 
   const applyDownloadQueue = useCallback((next?: Partial<DownloadQueueState>) => {
     if (!next) return;
@@ -226,17 +233,18 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
   const fetchMatches = useCallback(async (silent = false) => {
     try {
       if (!silent) setLoading(true);
-      const res = await fetch(`${COMPANION_URL}/matches/recent`);
+      const res = await fetch(`${COMPANION_URL}/matches/recent`, { signal: AbortSignal.timeout(2_000) });
       if (res.ok) {
         const data = (await res.json()) as {
           matches?: ScannedMatchItem[];
           scannedMatches?: ScannedMatchItem[];
           hasSession?: boolean;
-          session?: { sessionid?: string };
+          session?: { sessionid?: string; autoScanEnabled?: boolean };
           demoStorage?: { demoCount?: number; retentionCount?: number; totalBytes?: number };
           demoRetentionCount?: number;
           connection?: SteamConnection;
           downloadQueue?: DownloadQueueState;
+          historyStorage?: HistoryStorageState;
         };
         setDownloadedMatches(data.matches || []);
         if (Array.isArray(data.scannedMatches)) {
@@ -248,6 +256,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
           message: data.hasSession ? "Steam bilgileri kayıtlı; bağlantı henüz doğrulanmadı." : "Steam oturumu kaydedilmemiş.",
         });
         applyDownloadQueue(data.downloadQueue);
+        setHistoryStorage(data.historyStorage || { state: "ready", message: "Maç geçmişi hazır." });
         setDemoStorage({
           demoCount: Number(data.demoStorage?.demoCount) || 0,
           retentionCount: Number(data.demoRetentionCount || data.demoStorage?.retentionCount) || 5,
@@ -256,18 +265,40 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
         if (data.session?.sessionid) {
           setSessionidInput(data.session.sessionid);
         }
+        setAutoScanEnabled(data.session?.autoScanEnabled !== false);
+        return true;
       }
     } catch (err) {
-      console.warn("Maçlar çekilemedi:", err);
+      if (!silent) console.warn("Maçlar çekilemedi:", err);
     } finally {
       if (!silent) setLoading(false);
     }
+    return false;
   }, [applyDownloadQueue]);
 
   useEffect(() => {
-    const initialFetch = window.setTimeout(() => void fetchMatches(), 0);
-    return () => window.clearTimeout(initialFetch);
+    let cancelled = false;
+    let retryTimer: number | null = null;
+    const loadWhenCompanionIsReady = async (attempt = 0) => {
+      const loaded = await fetchMatches(attempt > 0);
+      if (cancelled || loaded) return;
+      // Arayüz parserdan önce açılabilir. Servis geç hazırlanırsa kullanıcıdan
+      // yenileme istemeden kısa aralıklarla tekrar bağlan ve verileri getir.
+      const delay = Math.min(5_000, 400 * (2 ** Math.min(attempt, 4)));
+      retryTimer = window.setTimeout(() => void loadWhenCompanionIsReady(attempt + 1), delay);
+    };
+    void loadWhenCompanionIsReady();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
   }, [fetchMatches]);
+
+  useEffect(() => {
+    if (historyStorage.state !== "optimizing") return;
+    const poll = window.setInterval(() => void fetchMatches(true), 1_500);
+    return () => window.clearInterval(poll);
+  }, [fetchMatches, historyStorage.state]);
 
   useEffect(() => {
     const queueBusy = Boolean(downloadQueue.activeMatchId || downloadQueue.queuedMatchIds.length);
@@ -291,6 +322,61 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
     return () => window.clearInterval(poll);
   }, [applyDownloadQueue, downloadQueue.activeMatchId, downloadQueue.queuedMatchIds.length, fetchMatches]);
 
+  const triggerScan = useCallback(async (isManual = true) => {
+    try {
+      setScanning(true);
+      if (isManual) {
+        setStatusMessage("Steam maç geçmişiniz (Ranked, Premier, Rekabetçi, Yoldaş) taranıyor...");
+      }
+      const res = await fetch(`${COMPANION_URL}/steam/scan-now`, {
+        method: "POST",
+        // Steam yavaşlasa bile arayüz sonsuza kadar "taranıyor" durumunda kalmaz.
+        // İstek kesilse de companion kendi taramasını ve önbellek güncellemesini tamamlar.
+        signal: AbortSignal.timeout(28_000),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        scannedMatches?: ScannedMatchItem[];
+        downloadedMatches?: ScannedMatchItem[];
+        message?: string;
+        requiresLogin?: boolean;
+        connectionState?: SteamConnection["state"];
+        failureReason?: "auth_expired" | "timeout" | "network";
+      };
+      if (data.connectionState) {
+        setSteamConnection({ state: data.connectionState, message: data.message || "Steam bağlantı durumu güncellendi." });
+      } else if (data.requiresLogin) {
+        setSteamConnection({ state: "expired", message: data.message || "Steam oturumunu yenilemek gerekiyor." });
+      }
+      if (data.ok) {
+        if (Array.isArray(data.scannedMatches)) {
+          setScannedMatches(data.scannedMatches);
+        }
+        if (Array.isArray(data.downloadedMatches)) {
+          setDownloadedMatches(data.downloadedMatches);
+        }
+        setStatusMessage(data.message || "Tarama tamamlandı.");
+        setCountdown(AUTO_SCAN_INTERVAL);
+      } else {
+        if (data.requiresLogin && isManual) {
+          setSettingsOpen(true);
+        }
+        setStatusMessage(data.message || "Tarama başarısız.");
+      }
+    } catch (err: unknown) {
+      const timedOut = err instanceof DOMException && err.name === "TimeoutError";
+      if (timedOut) {
+        setStatusMessage("Steam yavaş yanıt veriyor; kayıtlı maçların hazır, yeni tarama arka planda tamamlanacak.");
+        window.setTimeout(() => void fetchMatches(true), 5_000);
+      } else if (isManual) {
+        setStatusMessage(`Tarama hatası: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } finally {
+      setScanning(false);
+      setTimeout(() => setStatusMessage(""), 7000);
+    }
+  }, [fetchMatches]);
+
   // 5-minute Auto-Scan Countdown Timer
   useEffect(() => {
     if (!hasSession || !autoScanEnabled) return;
@@ -307,7 +393,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [hasSession, autoScanEnabled]);
+  }, [hasSession, autoScanEnabled, triggerScan]);
 
   // Download & Analysis active elapsed timer
   useEffect(() => {
@@ -334,49 +420,6 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
     const m = Math.floor(secs / 60);
     const s = secs % 60;
     return `${m}:${s < 10 ? "0" : ""}${s}`;
-  };
-
-  const triggerScan = async (isManual = true) => {
-    try {
-      setScanning(true);
-      if (isManual) {
-        setStatusMessage("Steam maç geçmişiniz (Ranked, Premier, Rekabetçi, Yoldaş) taranıyor...");
-      }
-      const res = await fetch(`${COMPANION_URL}/steam/scan-now`, { method: "POST" });
-      const data = (await res.json()) as {
-        ok?: boolean;
-        scannedMatches?: ScannedMatchItem[];
-        downloadedMatches?: ScannedMatchItem[];
-        message?: string;
-        requiresLogin?: boolean;
-        connectionState?: SteamConnection["state"];
-      };
-      if (data.connectionState) {
-        setSteamConnection({ state: data.connectionState, message: data.message || "Steam bağlantı durumu güncellendi." });
-      } else if (data.requiresLogin) {
-        setSteamConnection({ state: "expired", message: data.message || "Steam oturumunu yenilemek gerekiyor." });
-      }
-      if (data.ok) {
-        if (Array.isArray(data.scannedMatches)) {
-          setScannedMatches(data.scannedMatches);
-        }
-        if (Array.isArray(data.downloadedMatches)) {
-          setDownloadedMatches(data.downloadedMatches);
-        }
-        setStatusMessage(data.message || "Tarama tamamlandı.");
-        setCountdown(AUTO_SCAN_INTERVAL);
-      } else {
-        if (data.requiresLogin && isManual) {
-          setSettingsOpen(true);
-        }
-        setStatusMessage(data.message || "Tarama başarısız.");
-      }
-    } catch (err: unknown) {
-      if (isManual) setStatusMessage(`Tarama hatası: ${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      setScanning(false);
-      setTimeout(() => setStatusMessage(""), 7000);
-    }
   };
 
   const handleDownloadMatch = async (e: MouseEvent, match: ScannedMatchItem) => {
@@ -433,25 +476,46 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
     e.preventDefault();
     setSavingSettings(true);
     try {
+      const newCookie = cookieInput.trim();
+      if (!hasSession && !newCookie) {
+        throw new Error("İlk bağlantı için steamLoginSecure çerezini girin.");
+      }
+      const sessionUpdate: {
+        steamLoginSecure?: string;
+        sessionid?: string;
+        autoScanEnabled: boolean;
+      } = {
+        autoScanEnabled,
+      };
+      // Alan boşsa kayıtlı çerezi koru. Böylece otomatik tarama ayarı veya
+      // sessionid değiştirilirken kullanıcıdan gereksiz yere yeni çerez istenmez.
+      if (newCookie) sessionUpdate.steamLoginSecure = newCookie;
+      if (sessionidInput.trim()) sessionUpdate.sessionid = sessionidInput.trim();
       const res = await fetch(`${COMPANION_URL}/steam/session`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          steamLoginSecure: cookieInput.trim(),
-          sessionid: sessionidInput.trim(),
-          autoScanEnabled,
-        }),
+        body: JSON.stringify(sessionUpdate),
+        // Bu uç nokta yalnız yerel diske küçük bir JSON yazar. Uzak Steam
+        // taraması bu kaydetme işleminin parçası değildir ve arayüzü kilitlemez.
+        signal: AbortSignal.timeout(8_000),
       });
-      if (res.ok) {
-        setHasSession(true);
-        setSteamConnection({ state: "unverified", message: "Steam bilgileri kaydedildi; bağlantı doğrulanıyor." });
-        setSettingsOpen(false);
-        setCookieInput("");
-        setStatusMessage("Steam oturumu başarıyla bağlandı! Maç geçmişiniz taranıyor...");
-        await triggerScan(true);
+      const data = await res.json() as { error?: string };
+      if (!res.ok) {
+        throw new Error(data.error || "Steam bilgileri kaydedilemedi.");
       }
+      setHasSession(true);
+      setSteamConnection({ state: "unverified", message: "Steam bilgileri kaydedildi; bağlantı doğrulanıyor." });
+      setSettingsOpen(false);
+      setCookieInput("");
+      setStatusMessage("Steam bilgileri kaydedildi. Kayıtlı maçlar kullanılabilir; yeni tarama arka planda başladı.");
+      // Kaydet düğmesi yalnız yerel kaydı bekler. Steam Community yavaş veya
+      // erişilemez olsa bile modal kapanır ve kullanıcı uygulamayı kullanır.
+      void triggerScan(false);
     } catch (err: unknown) {
-      toast.error(`Oturum kaydedilemedi: ${err instanceof Error ? err.message : String(err)}`);
+      const timedOut = err instanceof DOMException && (err.name === "TimeoutError" || err.name === "AbortError");
+      toast.error(timedOut
+        ? "Oturum yerel servise kaydedilemedi. TRACER’ı bir kez kapatıp yeniden açın; Steam çereziniz bu hatanın nedeni değildir."
+        : `Oturum kaydedilemedi: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setSavingSettings(false);
     }
@@ -541,7 +605,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
               >
                 <span className="chip-dot" />
                 {steamConnection.state === "connected"
-                  ? "STEAM COMMUNITY BAĞLI"
+                  ? "STEAM GEÇMİŞİ BAĞLI"
                   : steamConnection.state === "expired"
                     ? "STEAM OTURUMUNU YENİLE"
                     : steamConnection.state === "error"
@@ -620,10 +684,10 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
       </div>
 
       {/* Alert / Status Bar */}
-      {statusMessage && (
+      {visibleStatusMessage && (
         <div className="sync-status-alert">
           <IconSparkles size={16} />
-          <span>{statusMessage}</span>
+          <span>{visibleStatusMessage}</span>
           {downloadingId && (
             <span className="live-download-counter-badge">
               <IconClock size={13} /> Sayaç: {formatSeconds(downloadElapsed)}
@@ -899,7 +963,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
             <div className="modal-head">
               <h3 id="steam-settings-title">
                 <IconSettings size={18} style={{ marginRight: "8px", verticalAlign: "middle" }} />
-                Steam Otomatik Tarayıcı Bağlantısı
+                Steam Maç Geçmişi Bağlantısı
               </h3>
               <button type="button" className="close-modal-btn" onClick={() => setSettingsOpen(false)} aria-label="Steam bağlantı ayarlarını kapat">
                 <IconClose size={16} />
@@ -910,26 +974,32 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
               <div className="form-section">
                 <h4>
                   <IconLock size={15} style={{ marginRight: "6px", verticalAlign: "middle" }} />
-                  Steam Çerezini Bağlama (1 Dakika)
+                  Steam Maç Geçmişini Bağlama (1 Dakika)
                 </h4>
                 <p className="form-tip">
-                  Valve’ın Premier, Ranked Rekabetçi ve Yoldaş maç geçmişinizi otomatik okuyabilmesi için tarayıcınızdaki Steam oturum çerezinizi buraya yapıştırın. Şifreniz asla kaydedilmez.
+                  Premier, Ranked Rekabetçi, Rekabetçi ve Yoldaş geçmişinizin tamamını tarayabilmek için tarayıcınızdaki iki Steam oturum değerini girin. Şifreniz istenmez ve kaydedilmez.
+                </p>
+
+                <p className="form-tip" style={{ borderColor: "rgba(96,165,250,.35)", color: "#bfdbfe" }}>
+                  Buraya Steam Web API key değil, tarayıcı çerezi girilir. Yeni API key oluşturmak bu bağlantıyı düzeltmez; Son Maçlarım doğrudan Steam Community maç geçmişini okur.
                 </p>
 
                 <div className="form-group">
-                  <label htmlFor="steam-login-secure">steamLoginSecure Çerezi:</label>
+                  <label htmlFor="steam-login-secure">
+                    steamLoginSecure Çerezi{hasSession ? " (Kayıtlı · yalnız yenilemek için girin)" : ""}:
+                  </label>
                   <input
                     id="steam-login-secure"
                     type="password"
-                    placeholder="Örn: 76561198113042361%7C%7CeyAid..."
+                    placeholder={hasSession ? "Kayıtlı çerez korunacak" : "Çerez değeri veya tam Cookie satırı"}
                     value={cookieInput}
                     onChange={(e) => setCookieInput(e.target.value)}
-                    required
+                    required={!hasSession}
                   />
                 </div>
 
                 <div className="form-group">
-                  <label htmlFor="steam-session-id">sessionid Çerezi (Opsiyonel):</label>
+                  <label htmlFor="steam-session-id">sessionid Çerezi (tam Cookie satırı yapıştırırsanız otomatik alınır):</label>
                   <input
                     id="steam-session-id"
                     type="text"
@@ -956,7 +1026,9 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
                   <b>Çerezi Nasıl Alırsınız?</b><br />
                   1. Chrome veya Edge’de <a href="https://steamcommunity.com/my/gcpd/730/?tab=matchhistorypremier" target="_blank" rel="noreferrer" style={{ color: "#60a5fa" }}>Steam Maç Geçmişi</a> sayfasına gidin.<br />
                   2. Klavyeden <b>F12</b> (Geliştirici Araçları) basın - <b>Application (Uygulama)</b> sekmesine geçin.<br />
-                  3. Soldan <b>Cookies - steamcommunity.com</b> seçin ve <b>steamLoginSecure</b> değerini kopyalayıp yukarıya yapıştırın.
+                  3. Soldan <b>Cookies - steamcommunity.com</b> seçin; <b>steamLoginSecure</b> ve <b>sessionid</b> değerlerini ilgili alanlara kopyalayın. İsterseniz Network bölümündeki bir Steam isteğinin tam <b>Cookie</b> başlığını ilk alana tek seferde yapıştırabilirsiniz.<br />
+                  4. Çerez zaten kayıtlıysa bu alanı boş bırakabilirsiniz; mevcut değer silinmez. Yalnız “oturum süresi doldu” uyarısında yenileyin.<br />
+                  5. Önce bağlantıdaki sayfada maçlarınızı görebildiğinizi doğrulayın. Sayfa tarayıcıda da açılmıyorsa sorun çerez değil; Steam erişimi, VPN/DNS veya güvenlik duvarıdır.
                 </div>
               </div>
 
@@ -965,7 +1037,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
                   İptal
                 </button>
                 <button type="submit" className="primary-btn" disabled={savingSettings}>
-                  {savingSettings ? "Kaydediliyor..." : "Bağlantıyı Kaydet & Tara"}
+                  {savingSettings ? "Kaydediliyor..." : "Kaydet · Arka Planda Tara"}
                 </button>
               </div>
             </form>

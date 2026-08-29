@@ -1,4 +1,6 @@
 import { parseEvents, parseHeader, parseTicks } from "@laihoe/demoparser2";
+import { ANALYSIS_VERSION } from "./analysis_version.mjs";
+export { ANALYSIS_VERSION } from "./analysis_version.mjs";
 
 const CORE_EVENTS = [
   "round_start", "round_end", "round_freeze_end", "player_death", "player_hurt", "weapon_fire",
@@ -22,7 +24,6 @@ const OTHER_PROPS = ["total_rounds_played", "game_time", "is_warmup_period"];
 export const TTD_METHOD = "spotted-to-first-damage-v2";
 export const DUEL_METHOD = "mutual-spotted-death-v2";
 export const SPRAY_METHOD = "bullet-damage-event-tick-v2";
-export const ANALYSIS_VERSION = "3.2.0";
 const CONTACT_WINDOW_MS = 2000;
 const MAX_REACTION_TTD_MS = 1500;
 const MIN_REACTION_TTD_MS = 50;
@@ -1146,13 +1147,31 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     const side = teamSide(playerTeamNum);
     const won = (side === "CT" && isWinnerCT) || (side === "T" && isWinnerT);
 
-    const points = playerTicksInRound.map((pt) => ({
-      x: number(pt, ["X", "x"], 0),
-      y: number(pt, ["Y", "y"], 0),
-      z: number(pt, ["Z", "z"], 0),
-      zone: translateZone(value(pt, ["last_place_name", "place_name"], "")),
-      tick: number(pt, ["tick"], 0),
-    }));
+    // Savaş pencereleri milisaniyelik tickler de içerir. Rota çizimi için her
+    // ticki saklamak hem görsel olarak gereksiz hem de tek maç kaydını onlarca
+    // MB'a çıkarıyordu. İlk/son nokta, bölge değişimleri ve yaklaşık saniyelik
+    // örnekler rota şeklini korur; ölçüm metrikleri bu seyreltilmiş diziden
+    // hesaplanmadığı için analiz doğruluğu etkilenmez.
+    const pathSampleGap = Number.isFinite(tickRate) && tickRate > 0 ? Math.max(1, Math.round(tickRate)) : 64;
+    const points = [];
+    let lastStoredTick = Number.NEGATIVE_INFINITY;
+    let lastStoredZone = "";
+    for (let index = 0; index < playerTicksInRound.length; index += 1) {
+      const pt = playerTicksInRound[index];
+      const tick = number(pt, ["tick"], 0);
+      const zone = translateZone(value(pt, ["last_place_name", "place_name"], ""));
+      const isBoundary = index === 0 || index === playerTicksInRound.length - 1;
+      if (!isBoundary && zone === lastStoredZone && tick - lastStoredTick < pathSampleGap) continue;
+      points.push({
+        x: number(pt, ["X", "x"], 0),
+        y: number(pt, ["Y", "y"], 0),
+        z: number(pt, ["Z", "z"], 0),
+        zone,
+        tick,
+      });
+      lastStoredTick = tick;
+      lastStoredZone = zone;
+    }
 
     // Filter meaningful route zones in chronological order (collapse duplicates)
     const zonesVisited = [];

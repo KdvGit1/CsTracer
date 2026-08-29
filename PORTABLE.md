@@ -29,13 +29,14 @@ Model ve llama.cpp dosyaları kaynak klasörde yoksa önce `launcher\download-em
 Git'e veya GitHub'a hiçbir şey göndermeden testleri, lint kontrolünü, üretim build'ini, patch ZIP'i ve model dahil portable RAR'ı üretmek için:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\launcher\publish-release.ps1 -NewVersion 0.50.4 -BuildOnly
+powershell -ExecutionPolicy Bypass -File .\launcher\publish-release.ps1 -NewVersion 0.50.5 -BuildOnly
 ```
 
-Komut başarılı olduğunda şu iki dosya hazır olmalıdır:
+Komut başarılı olduğunda şu üç dosya hazır olmalıdır:
 
-- `release\TRACER-Patch-v0.50.4.zip`
-- `release\TRACER-Portable-v0.50.4.rar`
+- `release\TRACER-Patch-v0.50.5.zip`
+- `release\TRACER-Guncelleyici-Duzeltmesi-v0.50.5.zip`
+- `release\TRACER-Portable-v0.50.5.rar`
 
 `release\TRACER-Portable` klasörü de RAR ile aynı sürümün açılmış, doğrudan çalıştırılabilir kopyasıdır. `BuildOnly` hiçbir commit, tag, push veya GitHub Release oluşturmaz.
 
@@ -44,15 +45,26 @@ Komut başarılı olduğunda şu iki dosya hazır olmalıdır:
 GitHub CLI bir kez kurulup `gh auth login` ile giriş yapıldıktan sonra yeni sürüm tek komutla yayınlanır:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\launcher\publish-release.ps1 -NewVersion 0.50.4
+powershell -ExecutionPolicy Bypass -File .\launcher\publish-release.ps1 -NewVersion 0.50.5
 ```
 
-Betik sürümü senkronize eder; test, lint ve TypeScript kontrollerini geçmeden devam etmez; üretim build'ini alır ve GitHub Release'e iki dosya yükler:
+Betik sürümü senkronize eder; test, lint ve TypeScript kontrollerini geçmeden devam etmez; üretim build'ini alır ve GitHub Release'e üç dosya yükler:
 
 - `TRACER-Portable-vX.Y.Z.rar`: uygulamayı ilk kez kuracaklar için model ve runtime dahil tam paket.
 - `TRACER-Patch-vX.Y.Z.zip`: uygulaması bulunanlar için hafif güncelleme.
+- `TRACER-Guncelleyici-Duzeltmesi-vX.Y.Z.zip`: eski v0.50.3/v0.50.4 güncelleyicisi yedekleme hatası veren kullanıcılar için bir defalık kurtarma.
 
 Kullanıcı ilk kurulumu yalnızca bir kez `https://github.com/KdvGit1/CsTracer/releases/latest` adresinden indirir. Daha sonraki sürümlerde TRACER içindeki **Güncelle → 1-Tıkla Şimdi Güncelle** düğmesi doğru patch asset'ini indirir, SHA-256 bütünlüğünü doğrular, yedek alır, yamayı uygular ve uygulamayı yeniden başlatır. Güncelleme deposu herkese açık olmalıdır; özel repoya erişim anahtarı uygulamaya gömülmez.
+
+### v0.50.3/v0.50.4 güncelleyici geçiş düzeltmesi
+
+İlk v0.50.3 ve v0.50.4 portable paketlerindeki yedekleyici kök dosyaları klasör gibi kopyaladığı için otomatik yama güvenlik amacıyla durabiliyordu. Bu eski kurulumlar için bir defaya mahsus düzeltme paketi oluşturulur:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\launcher\create-updater-hotfix.ps1
+```
+
+Oluşan `release\TRACER-Guncelleyici-Duzeltmesi-v0.50.5.zip` dosyası GitHub'daki v0.50.5 sürümüne eklenir. v0.50.3 veya v0.50.4 kullanan kişi TRACER'ı kapatır, ZIP içeriğini mevcut portable klasörünün üzerine çıkarır ve yalnızca `companion\updater.mjs` dosyasının değiştirilmesini onaylar. Ardından uygulamayı açıp normal Güncelle düğmesiyle doğrudan v0.50.5'e geçer. Oyuncu verileri ile model pakete dahil değildir.
 
 ## Yerel veriler
 

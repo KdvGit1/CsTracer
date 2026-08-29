@@ -105,7 +105,13 @@ function notificationActionLabel(status: MatchNotification["status"]) {
   return "İşleniyor";
 }
 
-export function NotificationCenter({ onSelectAnalysis }: { onSelectAnalysis: (analysis: RecentMatchAnalysis) => void }) {
+export function NotificationCenter({
+  onSelectAnalysis,
+  onProgressChange,
+}: {
+  onSelectAnalysis: (analysis: RecentMatchAnalysis) => void;
+  onProgressChange?: () => void;
+}) {
   const toast = useToast();
   const [state, setState] = useState<AutomationState>(DEFAULT_STATE);
   const [open, setOpen] = useState(false);
@@ -115,6 +121,7 @@ export function NotificationCenter({ onSelectAnalysis }: { onSelectAnalysis: (an
   const [saving, setSaving] = useState(false);
   const [actingId, setActingId] = useState("");
   const lastDesktopKey = useRef("");
+  const lastReadyProgressKey = useRef("");
 
   const fetchState = useCallback(async () => {
     try {
@@ -124,6 +131,17 @@ export function NotificationCenter({ onSelectAnalysis }: { onSelectAnalysis: (an
       const next = { ...DEFAULT_STATE, ...payload } as AutomationState;
       setState(next);
       setSettingsDraft(next.settings);
+
+      // Arka planda tamamlanan analiz gelişim hafızasına companion tarafından
+      // yazılır. Hazır bildirim değiştiğinde ana ekran yerel hafızayı tazeler.
+      const readyProgressKey = next.notifications
+        .filter((item) => item.status === "ready")
+        .map((item) => `${item.matchId}:${item.updatedAt}`)
+        .join("|");
+      if (readyProgressKey && readyProgressKey !== lastReadyProgressKey.current) {
+        lastReadyProgressKey.current = readyProgressKey;
+        onProgressChange?.();
+      }
 
       const latestUnread = next.notifications.find((item) => !item.read);
       const desktopKey = latestUnread ? `${latestUnread.id}:${latestUnread.status}:${latestUnread.updatedAt}` : "";
@@ -151,7 +169,7 @@ export function NotificationCenter({ onSelectAnalysis }: { onSelectAnalysis: (an
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [onProgressChange]);
 
   useEffect(() => {
     const initialFetch = window.setTimeout(() => void fetchState(), 0);

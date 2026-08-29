@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getSteamConnectionHealth, mergeScannedMatchCache, parseGcpdMatchesFromHtml } from "../companion/steam_downloader.mjs";
+import {
+  extractSteamIdFromCookie,
+  extractSteamCookieValues,
+  getSteamConnectionHealth,
+  mergeSteamSession,
+  mergeScannedMatchCache,
+  normalizeSteamLoginSecure,
+  normalizeSteamSessionId,
+  parseGcpdAjaxResponse,
+  parseGcpdMatchesFromHtml,
+} from "../companion/steam_downloader.mjs";
 
 function playerRow(name, id, profile = false) {
   const identity = profile
@@ -41,8 +51,46 @@ test("Steam bağlantı rozeti yalnız kayıtlı çerezi doğrulanmış bağlant�
   assert.equal(getSteamConnectionHealth({ steamLoginSecure: "76561198000000000||token" }).state, "unverified");
   assert.equal(getSteamConnectionHealth({ steamLoginSecure: "76561198000000000||token", lastScanStatus: "success" }).state, "connected");
   assert.equal(getSteamConnectionHealth({ steamLoginSecure: "76561198000000000||token", lastScanStatus: "error", lastScanError: "timeout" }).state, "error");
+  assert.match(getSteamConnectionHealth({ steamLoginSecure: "76561198000000000||token", lastScanStatus: "error", lastScanError: "timeout" }).message, /kayıtlı çerezin korunuyor/);
   assert.equal(getSteamConnectionHealth({ steamLoginSecure: "76561198000000000||token", lastScanStatus: "expired" }).state, "expired");
   assert.equal(getSteamConnectionHealth({ steamLoginSecure: "" }).state, "disconnected");
+});
+
+test("bağlantı ayarı kaydedilirken boş bırakılan alan mevcut Steam çerezini korur", () => {
+  const current = {
+    steamLoginSecure: "76561198000000000%7C%7Cold-token",
+    steamId: "76561198000000000",
+    sessionid: "old-session",
+    lastScanStatus: "success",
+  };
+  const merged = mergeSteamSession(current, { sessionid: "new-session", autoScanEnabled: false });
+
+  assert.equal(merged.steamLoginSecure, current.steamLoginSecure);
+  assert.equal(merged.steamId, current.steamId);
+  assert.equal(merged.sessionid, "new-session");
+  assert.equal(merged.autoScanEnabled, false);
+  assert.equal(merged.lastScanStatus, "success");
+});
+
+test("Steam çerez alanı yalnız değeri veya tam çerez atamasını güvenle kabul eder", () => {
+  const steamId = "76561198000000000";
+  const encoded = `${steamId}%7C%7Ctoken-value`;
+
+  assert.equal(normalizeSteamLoginSecure(encoded), encoded);
+  assert.equal(normalizeSteamLoginSecure(`steamLoginSecure=${encoded}; Path=/; Secure`), encoded);
+  assert.equal(extractSteamIdFromCookie(`steamLoginSecure=${encoded}; Path=/`), steamId);
+  assert.equal(extractSteamIdFromCookie("0123456789ABCDEF0123456789ABCDEF"), "");
+  assert.equal(normalizeSteamSessionId("sessionid=abcdef123456; Path=/"), "abcdef123456");
+
+  const fullHeader = `timezoneOffset=10800,0; sessionid=abcdef123456; steamLoginSecure=${encoded}; steamCountry=TR`;
+  assert.deepEqual(extractSteamCookieValues(fullHeader), {
+    steamLoginSecure: encoded,
+    sessionid: "abcdef123456",
+  });
+  const merged = mergeSteamSession({}, { steamLoginSecure: fullHeader });
+  assert.equal(merged.steamLoginSecure, encoded);
+  assert.equal(merged.sessionid, "abcdef123456");
+  assert.equal(merged.steamId, steamId);
 });
 
 test("kısmi Steam taraması önceki maç önbelleğini boş veya eksik sonuçla ezmez", () => {
@@ -53,4 +101,15 @@ test("kısmi Steam taraması önceki maç önbelleğini boş veya eksik sonuçla
   );
   assert.deepEqual(merged.map((match) => match.id), ["new", "old"]);
   assert.equal(merged.find((match) => match.id === "old").isDownloaded, true);
+});
+
+test("Steam giriş sayfası zaman aşımı değil süresi dolmuş oturum olarak sınıflandırılır", () => {
+  assert.throws(
+    () => parseGcpdAjaxResponse({ status: 200, text: "<script>var g_steamID = false;</script><a>Sign In</a>" }, "matchhistorypremier"),
+    (error) => error?.code === "STEAM_AUTH_EXPIRED" && /çerezini kabul etmedi/i.test(error.message),
+  );
+  assert.equal(
+    parseGcpdAjaxResponse({ status: 200, text: JSON.stringify({ success: 1, html: "<table>maç</table>" }) }, "matchhistorypremier"),
+    "<table>maç</table>",
+  );
 });

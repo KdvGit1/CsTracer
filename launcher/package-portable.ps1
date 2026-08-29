@@ -64,7 +64,7 @@ foreach ($module in $companionRuntimeModules) {
 }
 
 # Geliştiriciye özel betikler oyuncu paketine girmemeli
-$excludedLauncherFiles = @("publish-release.ps1", "create-patch.ps1", "download-embedded-ai.ps1", "package-portable.ps1", "sync-version-files.mjs")
+$excludedLauncherFiles = @("publish-release.ps1", "create-patch.ps1", "create-updater-hotfix.ps1", "download-embedded-ai.ps1", "package-portable.ps1", "sync-version-files.mjs")
 foreach ($devScript in $excludedLauncherFiles) {
   $devScriptPath = Join-Path $releaseRoot "launcher\$devScript"
   if (Test-Path -LiteralPath $devScriptPath) { Remove-Item -LiteralPath $devScriptPath -Force }
@@ -132,6 +132,14 @@ if ($leakedSession.Count -gt 0) {
 $requiredPortableFiles = @(
   "app-runtime\server.js",
   "companion\analyze.mjs",
+  "companion\analyze-worker.mjs",
+  "companion\analysis_version.mjs",
+  "companion\match_storage.mjs",
+  "companion\recent-matches-compactor.mjs",
+  "companion\steam_downloader.mjs",
+  "companion\steam_http.mjs",
+  "companion\steam_http_bridge.ps1",
+  "companion\steam_replay_url.mjs",
   "companion\node_modules\unbzip2-stream\package.json",
   "companion\node_modules\buffer\node_modules\base64-js\package.json",
   "companion\node_modules\through\package.json",

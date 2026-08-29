@@ -67,6 +67,8 @@ test("yayıncı Windows PowerShell 5.1 uyumsuz AsHashtable seçeneğini kullanma
   assert.match(source, /npm run lint/);
   assert.match(source, /npm run typecheck/);
   assert.match(source, /sync-version-files\.mjs/);
+  assert.match(source, /\$targetVersion -eq \$currentVersion/);
+  assert.match(source, /\$vData\.releaseDate/);
 });
 
 test("patch ve portable ortak skor motorunu içerir", () => {
@@ -90,6 +92,31 @@ test("patch ve portable Steam bz2 çalışma zamanı bağımlılıklarını comp
     assert.match(source, /createRequire/);
     assert.match(source, /require\('unbzip2-stream'\)/);
   }
+});
+
+test("patch ve portable dayanıklı Steam bağlantı katmanını zorunlu dosya sayar", () => {
+  for (const script of ["../launcher/create-patch.ps1", "../launcher/package-portable.ps1"]) {
+    const source = readFileSync(new URL(script, import.meta.url), "utf8");
+    assert.match(source, /companion\\steam_downloader\.mjs/);
+    assert.match(source, /companion\\analysis_version\.mjs/);
+    assert.match(source, /companion\\analyze-worker\.mjs/);
+    assert.match(source, /companion\\match_storage\.mjs/);
+    assert.match(source, /companion\\recent-matches-compactor\.mjs/);
+    assert.match(source, /companion\\steam_http\.mjs/);
+    assert.match(source, /companion\\steam_http_bridge\.ps1/);
+    assert.match(source, /companion\\steam_replay_url\.mjs/);
+  }
+});
+
+test("yayıncı eski portable kurulumlar için güncelleyici kurtarma paketini ekler", () => {
+  const source = readFileSync(publisher, "utf8");
+  const hotfixScript = readFileSync(join(root, "launcher", "create-updater-hotfix.ps1"), "utf8");
+
+  assert.match(source, /create-updater-hotfix\.ps1/);
+  assert.match(source, /TRACER-Guncelleyici-Duzeltmesi-v\$targetVersion\.zip/);
+  assert.match(source, /release create \$tag "\$patchZip" "\$updaterHotfix" "\$portableArchive"/);
+  assert.match(hotfixScript, /companion\\updater\.mjs/);
+  assert.match(hotfixScript, /KURULUM\.txt/);
 });
 
 test("oyuncu başlatıcısı Windows PowerShell 5.1 için UTF-8 BOM taşır", () => {

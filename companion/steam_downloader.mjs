@@ -5,8 +5,9 @@ import { EventEmitter } from "node:events";
 import { Worker } from "node:worker_threads";
 import http from "node:http";
 import https from "node:https";
-import bz2Stream from "unbzip2-stream";
 import { isAllowedReplayUrl, replayFileBase } from "./steam_replay_url.mjs";
+import { requestSteamCommunityText, requestSteamCommunityViaWindows } from "./steam_http.mjs";
+import { compactRecentMatchesForStorage } from "./match_storage.mjs";
 import { SquadStore } from "./squad/store.mjs";
 import { normalizeSteamId } from "./squad/identity.mjs";
 import {
@@ -26,6 +27,22 @@ const SCANNED_FILE = join(DATA_DIR, "scanned_matches.json");
 const DEMOS_DIR = join(DATA_DIR, "recent_demos");
 const squadStore = new SquadStore(DATA_DIR);
 const automationStore = new MatchAutomationStore(DATA_DIR);
+let bz2FactoryPromise = null;
+
+async function loadBz2Factory() {
+  if (!bz2FactoryPromise) {
+    bz2FactoryPromise = import("unbzip2-stream")
+      .then((module) => module.default || module)
+      .catch((cause) => {
+        bz2FactoryPromise = null;
+        const error = new Error("Steam demo açma bileşeni eksik. Portable paketi yeniden çıkarın.");
+        error.code = "DECOMPRESSOR_UNAVAILABLE";
+        error.cause = cause;
+        throw error;
+      });
+  }
+  return bz2FactoryPromise;
+}
 export const steamEvents = new EventEmitter();
 let gamePerformanceGuard = () => false;
 
@@ -57,9 +74,9 @@ if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 if (!existsSync(DEMOS_DIR)) mkdirSync(DEMOS_DIR, { recursive: true });
 
 // Atomik JSON yazımı: önce temp dosyaya yaz, sonra rename ile yerine koy
-function atomicWriteJson(filePath, data) {
+function atomicWriteJson(filePath, data, compact = false) {
   const tmpPath = `${filePath}.tmp`;
-  writeFileSync(tmpPath, JSON.stringify(data, null, 2), "utf-8");
+  writeFileSync(tmpPath, JSON.stringify(data, null, compact ? undefined : 2), "utf-8");
   renameSync(tmpPath, filePath);
 }
 
@@ -70,6 +87,16 @@ function removePartialQuiet(p) {
 
 // recent_matches.json read-modify-write yarışlarını önleyen basit async kuyruk (mutex)
 let recentMatchesQueue = Promise.resolve();
+let recentMatchesCache = null;
+let recentMatchesCompactionPromise = null;
+let recentMatchesStorageState = {
+  state: "pending",
+  message: "Maç geçmişi hazırlanıyor.",
+  inputBytes: 0,
+  outputBytes: 0,
+  matchCount: 0,
+};
+const LARGE_MATCH_HISTORY_BYTES = 64 * 1024 * 1024;
 
 function enqueueRecentMatchesUpdate(fn) {
   const run = recentMatchesQueue.then(fn);
@@ -79,9 +106,34 @@ function enqueueRecentMatchesUpdate(fn) {
 }
 
 // 1. Extract SteamID64 from steamLoginSecure cookie
+export function normalizeSteamLoginSecure(cookie) {
+  let value = typeof cookie === "string" ? cookie.trim() : "";
+  const namedValue = value.match(/steamLoginSecure\s*=\s*([^;\s]+)/i);
+  if (namedValue) value = namedValue[1];
+  value = value.replace(/^["']+|["']+$/g, "").split(";", 1)[0].trim();
+  return value;
+}
+
+export function normalizeSteamSessionId(sessionId) {
+  let value = typeof sessionId === "string" ? sessionId.trim() : "";
+  const namedValue = value.match(/sessionid\s*=\s*([^;\s]+)/i);
+  if (namedValue) value = namedValue[1];
+  return value.replace(/^["']+|["']+$/g, "").split(";", 1)[0].trim();
+}
+
+export function extractSteamCookieValues(input) {
+  const text = typeof input === "string" ? input.trim() : "";
+  return {
+    steamLoginSecure: normalizeSteamLoginSecure(text),
+    sessionid: /(?:^|[;\s])sessionid\s*=\s*([^;\s]+)/i.test(text)
+      ? normalizeSteamSessionId(text)
+      : "",
+  };
+}
+
 export function extractSteamIdFromCookie(cookie) {
-  if (!cookie || typeof cookie !== "string") return "";
-  const match = cookie.match(/^(\d{17})/);
+  const normalized = normalizeSteamLoginSecure(cookie);
+  const match = normalized.match(/^(\d{17})(?:%7C%7C|\|\|)/i);
   return match ? match[1] : "";
 }
 
@@ -111,28 +163,53 @@ export function getSteamSession() {
   };
 }
 
-export function saveSteamSession(sessionData) {
-  const current = getSteamSession();
-  const merged = { ...current, ...sessionData };
-  if (Object.hasOwn(sessionData || {}, "steamLoginSecure") && sessionData.steamLoginSecure !== current.steamLoginSecure) {
-    merged.lastScanStatus = sessionData.steamLoginSecure ? "pending" : "disconnected";
+export function mergeSteamSession(current = {}, sessionData = {}) {
+  const incoming = { ...(sessionData || {}) };
+  const hasNewLoginCookie = Object.hasOwn(incoming, "steamLoginSecure");
+  if (hasNewLoginCookie) {
+    const extracted = extractSteamCookieValues(incoming.steamLoginSecure);
+    incoming.steamLoginSecure = extracted.steamLoginSecure;
+    if (extracted.sessionid && !String(incoming.sessionid || "").trim()) incoming.sessionid = extracted.sessionid;
+  }
+  if (Object.hasOwn(incoming, "sessionid")) incoming.sessionid = normalizeSteamSessionId(incoming.sessionid);
+
+  const merged = { ...current, ...incoming };
+  if (hasNewLoginCookie) {
+    // Yeni çerez başka hesaba ait olabilir. Eski SteamID'yi asla yeni çerezle
+    // birleştirme; kimliği her zaman girilen çerezin kendisinden yeniden çıkar.
+    merged.steamId = extractSteamIdFromCookie(merged.steamLoginSecure);
+  }
+  if (hasNewLoginCookie && merged.steamLoginSecure !== current.steamLoginSecure) {
+    merged.lastScanStatus = merged.steamLoginSecure ? "pending" : "disconnected";
+    merged.lastScanFailureReason = "";
     merged.lastScanError = "";
   }
   if (!merged.steamId && merged.steamLoginSecure) {
     merged.steamId = extractSteamIdFromCookie(merged.steamLoginSecure);
   }
-  try {
-    atomicWriteJson(SESSION_FILE, merged);
-  } catch (err) {
-    console.error("[STEAM-GCPD] Session kaydetme hatası:", err.message);
-  }
+  return merged;
+}
+
+export function saveSteamSession(sessionData) {
+  const merged = mergeSteamSession(getSteamSession(), sessionData);
+  // Yazma başarısızsa başarılıymış gibi yanıt verme. Arayüz ancak atomik dosya
+  // gerçekten yerine geçtiğinde "kaydedildi" durumuna geçer.
+  atomicWriteJson(SESSION_FILE, merged);
   return merged;
 }
 
 export function getSteamConnectionHealth(session = getSteamSession()) {
   if (!session.steamLoginSecure) return { state: "disconnected", message: "Steam oturumu kaydedilmemiş." };
   if (session.lastScanStatus === "expired") return { state: "expired", message: session.lastScanError || "Steam oturumunun süresi dolmuş." };
-  if (session.lastScanStatus === "error") return { state: "error", message: session.lastScanError || "Steam’e son bağlantı kurulamadı." };
+  if (session.lastScanStatus === "error") {
+    const timedOut = session.lastScanFailureReason === "timeout" || /time\s*out|timeout|zamanında yanıt vermedi/i.test(session.lastScanError || "");
+    return {
+      state: "error",
+      message: timedOut
+        ? "Steam bilgilerin kayıtlı; Steam Community son taramada zamanında yanıt vermedi. Bu bir oturum reddi değil; kayıtlı çerezin korunuyor. Yeniden tara."
+        : session.lastScanError || "Steam’e son bağlantı kurulamadı.",
+    };
+  }
   if (session.lastScanStatus === "success" || (!session.lastScanStatus && session.lastScanTime)) {
     return { state: "connected", message: "Steam Community bağlantısı son taramada doğrulandı." };
   }
@@ -140,16 +217,107 @@ export function getSteamConnectionHealth(session = getSteamSession()) {
 }
 
 // 3. Recent Matches Storage (Downloaded & Fully Analyzed)
+function recentMatchesFileSize() {
+  try {
+    return existsSync(MATCHES_FILE) ? statSync(MATCHES_FILE).size : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function getRecentMatchesStorageState() {
+  return { ...recentMatchesStorageState };
+}
+
+export function prepareRecentMatchesStorage() {
+  if (recentMatchesCache) return Promise.resolve(recentMatchesCache);
+  if (recentMatchesCompactionPromise) return recentMatchesCompactionPromise;
+
+  const inputBytes = recentMatchesFileSize();
+  if (inputBytes <= LARGE_MATCH_HISTORY_BYTES) {
+    const matches = getRecentMatches();
+    return Promise.resolve(matches);
+  }
+
+  recentMatchesStorageState = {
+    state: "optimizing",
+    message: "Eski rota kayıtları arka planda küçültülüyor; uygulama açık ve kullanılabilir.",
+    inputBytes,
+    outputBytes: 0,
+    matchCount: 0,
+  };
+  console.log(`[VERİ] Büyük maç geçmişi arka planda optimize ediliyor (${Math.round(inputBytes / 1024 / 1024)} MB).`);
+
+  recentMatchesCompactionPromise = new Promise((resolvePromise, rejectPromise) => {
+    const worker = new Worker(new URL("./recent-matches-compactor.mjs", import.meta.url), {
+      workerData: { filePath: MATCHES_FILE },
+    });
+    let settled = false;
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      recentMatchesCompactionPromise = null;
+      if (error) {
+        recentMatchesStorageState = {
+          ...recentMatchesStorageState,
+          state: "error",
+          message: `Maç geçmişi optimize edilemedi: ${error.message}`,
+        };
+        rejectPromise(error);
+        return;
+      }
+      recentMatchesCache = null;
+      recentMatchesStorageState = {
+        state: "ready",
+        message: "Maç geçmişi hazır.",
+        inputBytes,
+        outputBytes: Number(result?.outputBytes) || recentMatchesFileSize(),
+        matchCount: Number(result?.matchCount) || 0,
+      };
+      const matches = getRecentMatches();
+      console.log(`[VERİ] Maç geçmişi optimize edildi: ${Math.round(inputBytes / 1024 / 1024)} MB -> ${Math.round(recentMatchesStorageState.outputBytes / 1024 / 1024)} MB.`);
+      resolvePromise(matches);
+    };
+    worker.once("message", (result) => result?.ok
+      ? finish(null, result)
+      : finish(new Error(result?.error || "Maç geçmişi optimize edilemedi.")));
+    worker.once("error", (error) => finish(error));
+    worker.once("exit", (code) => {
+      if (!settled && code !== 0) finish(new Error(`Maç geçmişi işçisi beklenmedik şekilde kapandı (${code}).`));
+    });
+  });
+  return recentMatchesCompactionPromise;
+}
+
 export function getRecentMatches() {
+  if (recentMatchesCache) return recentMatchesCache;
+  if (recentMatchesStorageState.state === "optimizing") return [];
   try {
     if (existsSync(MATCHES_FILE)) {
+      const inputBytes = recentMatchesFileSize();
+      if (inputBytes > LARGE_MATCH_HISTORY_BYTES && recentMatchesStorageState.state !== "ready") {
+        void prepareRecentMatchesStorage().catch((error) => console.error("[VERİ] Arka plan maç geçmişi optimizasyonu başarısız:", error.message));
+        return [];
+      }
       const raw = readFileSync(MATCHES_FILE, "utf-8");
       const list = JSON.parse(raw);
-      if (Array.isArray(list)) return list;
+      if (Array.isArray(list)) {
+        recentMatchesCache = list;
+        recentMatchesStorageState = {
+          state: "ready",
+          message: "Maç geçmişi hazır.",
+          inputBytes,
+          outputBytes: inputBytes,
+          matchCount: list.length,
+        };
+        return recentMatchesCache;
+      }
     }
   } catch (err) {
     console.error("[STEAM-GCPD] Maç listesi okuma hatası:", err.message);
   }
+  recentMatchesCache = [];
+  recentMatchesStorageState = { state: "ready", message: "Maç geçmişi hazır.", inputBytes: 0, outputBytes: 0, matchCount: 0 };
   return [];
 }
 
@@ -157,7 +325,17 @@ export function saveRecentMatches(matches) {
   // Paralel indirmelerde read-modify-write çakışmasını önlemek için yazmaları kuyrukta serileştir
   return enqueueRecentMatchesUpdate(() => {
     try {
-      atomicWriteJson(MATCHES_FILE, matches);
+      const compacted = compactRecentMatchesForStorage(matches);
+      atomicWriteJson(MATCHES_FILE, compacted, true);
+      recentMatchesCache = compacted;
+      const outputBytes = recentMatchesFileSize();
+      recentMatchesStorageState = {
+        state: "ready",
+        message: "Maç geçmişi hazır.",
+        inputBytes: outputBytes,
+        outputBytes,
+        matchCount: compacted.length,
+      };
     } catch (err) {
       console.error("[STEAM-GCPD] Maç listesi kaydetme hatası:", err.message);
     }
@@ -212,8 +390,18 @@ export function enforceMatchLimit(matchesInput = null, limit = 5, protectedPaths
   for (const entry of result.deleted) {
     console.log(`[STEAM-GCPD] Eski ham demo diskten silindi (kullanıcı kotası): ${entry.name}`);
   }
-  atomicWriteJson(MATCHES_FILE, result.matches);
-  return result.matches;
+  const compacted = compactRecentMatchesForStorage(result.matches);
+  atomicWriteJson(MATCHES_FILE, compacted, true);
+  recentMatchesCache = compacted;
+  const outputBytes = recentMatchesFileSize();
+  recentMatchesStorageState = {
+    state: "ready",
+    message: "Maç geçmişi hazır.",
+    inputBytes: outputBytes,
+    outputBytes,
+    matchCount: compacted.length,
+  };
+  return compacted;
 }
 
 export function getDemoStorageState() {
@@ -223,6 +411,7 @@ export function getDemoStorageState() {
 }
 
 export function applyConfiguredDemoRetention(protectedPaths = []) {
+  if (recentMatchesStorageState.state !== "ready") return getRecentMatches();
   return enforceMatchLimit(getRecentMatches(), automationStore.getSettings().demoRetentionCount, protectedPaths);
 }
 
@@ -397,36 +586,34 @@ export function parseGcpdMatchesFromHtml(html, modeLabel = "Competitive", userSt
 }
 
 // 8. Fetch GCPD AJAX endpoint for specific tab
-async function fetchGcpdTabAjax(steamId, tab, session) {
-  // Sahte sessionid gönderme: yoksa parametreyi/cookie'yi boş bırak
-  const sessionId = session.sessionid || "";
-  const url = `https://steamcommunity.com/profiles/${steamId}/gcpd/730?ajax=1&tab=${tab}${sessionId ? `&sessionid=${encodeURIComponent(sessionId)}` : ""}`;
-  const cookieHeader = `steamLoginSecure=${session.steamLoginSecure}; ${sessionId ? `sessionid=${sessionId}; ` : ""}timezoneOffset=10800,0`;
+const GCPD_REQUEST_TIMEOUT_MS = 6000;
 
-  const resp = await fetch(url, {
-    signal: AbortSignal.timeout(20000), // Tab taraması için 20sn zaman aşımı
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-      "Accept": "application/json, text/javascript, */*; q=0.01",
-      "X-Requested-With": "XMLHttpRequest",
-      "Referer": `https://steamcommunity.com/profiles/${steamId}/gcpd/730/?tab=${tab}`,
-      "Cookie": cookieHeader,
-    },
-  });
+export function buildGcpdRequestUrls(steamId, tab) {
+  const safeSteamId = /^\d{17}$/.test(String(steamId || "")) ? String(steamId) : "";
+  const safeTab = /^[a-z0-9_-]+$/i.test(String(tab || "")) ? String(tab) : "";
+  if (!safeSteamId || !safeTab) throw new Error("Steam geçmişi isteği için SteamID veya sekme geçersiz.");
+  const query = `ajax=1&tab=${encodeURIComponent(safeTab)}`;
+  return [
+    `https://steamcommunity.com/profiles/${safeSteamId}/gcpd/730/?${query}`,
+    `https://steamcommunity.com/my/gcpd/730/?${query}`,
+  ];
+}
 
-  if (!resp.ok) {
-    const error = new Error(`Steam AJAX isteği başarısız (HTTP ${resp.status})`);
-    if (resp.status === 401 || resp.status === 403) error.code = "STEAM_AUTH_EXPIRED";
+export function parseGcpdAjaxResponse(result, tab = "unknown") {
+  if (result.status < 200 || result.status >= 300) {
+    const error = new Error(`Steam AJAX isteği başarısız (HTTP ${result.status})`);
+    if (result.status === 401 || result.status === 403) error.code = "STEAM_AUTH_EXPIRED";
+    if (result.status === 429) error.code = "STEAM_RATE_LIMIT";
     throw error;
   }
 
-  const responseText = await resp.text();
   let data;
   try {
-    data = JSON.parse(responseText);
+    data = JSON.parse(result.text);
   } catch {
-    const error = new Error("Steam beklenen maç verisi yerine oturum sayfası döndürdü.");
-    if (/login|sign\s*in|g_steamid\s*=\s*false/i.test(responseText)) error.code = "STEAM_AUTH_EXPIRED";
+    const error = new Error("Steam oturum çerezini kabul etmedi; giriş sayfası döndü. Tarayıcıdaki güncel steamLoginSecure veya tam Cookie satırını yeniden yapıştırın.");
+    if (/login|sign\s*in|g_steamid\s*=\s*false/i.test(result.text)) error.code = "STEAM_AUTH_EXPIRED";
+    else error.code = "STEAM_RESPONSE_INVALID";
     throw error;
   }
   if (!data.success) {
@@ -434,8 +621,70 @@ async function fetchGcpdTabAjax(steamId, tab, session) {
     if (data.login_required || data.requires_login) error.code = "STEAM_AUTH_EXPIRED";
     throw error;
   }
-
   return data.html || "";
+}
+
+async function fetchGcpdTabAjax(steamId, tab, session) {
+  const sessionId = session.sessionid || "";
+  const cookieHeader = `steamLoginSecure=${session.steamLoginSecure}; ${sessionId ? `sessionid=${sessionId}; ` : ""}timezoneOffset=10800,0`;
+  const headers = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+    "X-Requested-With": "XMLHttpRequest",
+    "Referer": `https://steamcommunity.com/profiles/${steamId}/gcpd/730/?tab=${tab}`,
+    "Cookie": cookieHeader,
+    "Connection": "close",
+  };
+  const errors = [];
+  const requestMethods = process.platform === "win32"
+    ? [
+      // Bu makinede doğrudan IPv4 yolu ~1,2 sn, Windows köprüsü ~1,5 sn
+      // ölçüldü. Hızlı ve ek süreç gerektirmeyen yolu önce dene.
+      { name: "node", request: requestSteamCommunityText },
+      { name: "windows", request: requestSteamCommunityViaWindows },
+    ]
+    : [{ name: "node", request: requestSteamCommunityText }];
+
+  // Aynı taşıma yöntemindeki profil ve /my adresleri paralel yarışır; çalışan
+  // adres geldiği anda sekme tamamlanır. Windows yolu başarısızsa Node/IPv4
+  // yalnızca bir kez yedek olarak denenir.
+  for (const method of requestMethods) {
+    try {
+      const html = await Promise.any(buildGcpdRequestUrls(steamId, tab).map(async (url) => {
+        const result = await method.request(url, {
+          headers,
+          timeoutMs: GCPD_REQUEST_TIMEOUT_MS,
+          family: 4,
+        });
+        return parseGcpdAjaxResponse(result, tab);
+      }));
+      console.log(`[STEAM-GCPD] ${tab}: ${method.name === "node" ? "doğrudan IPv4" : "Windows sistem ağı"} üzerinden bağlandı.`);
+      return html;
+    } catch (aggregateError) {
+      const methodErrors = Array.isArray(aggregateError?.errors) && aggregateError.errors.length
+        ? aggregateError.errors
+        : [aggregateError];
+      const authError = methodErrors.find((error) => error?.code === "STEAM_AUTH_EXPIRED");
+      if (authError) throw authError;
+      const rateLimitError = methodErrors.find((error) => error?.code === "STEAM_RATE_LIMIT");
+      if (rateLimitError) throw rateLimitError;
+      for (const error of methodErrors) {
+        if (!error?.code) error.code = "STEAM_NETWORK";
+        errors.push(error);
+      }
+      if (methodErrors.every((error) => error?.code === "STEAM_WINDOWS_BRIDGE_UNAVAILABLE")) continue;
+    }
+  }
+
+  const connectionErrors = errors.filter((error) => error.code !== "STEAM_WINDOWS_BRIDGE_UNAVAILABLE");
+  const timedOut = connectionErrors.length > 0 && connectionErrors.every((error) => error.code === "STEAM_TIMEOUT");
+  const detail = errors.map((error) => error.message).filter(Boolean).join(" · ");
+  const finalError = new Error(timedOut
+    ? `Steam Community doğrudan ve Windows bağlantı yollarında yanıt vermedi (${Math.round(GCPD_REQUEST_TIMEOUT_MS / 1000)} sn/yol sınırı).`
+    : `Steam Community bağlantısı kurulamadı${detail ? `: ${detail}` : "."}`);
+  finalError.code = timedOut ? "STEAM_TIMEOUT" : "STEAM_NETWORK";
+  throw finalError;
 }
 
 // 9. Download and Decompress .dem.bz2 (Atomik .part + Retry/Backoff + Güvenli Redirect)
@@ -467,6 +716,7 @@ function sleep(ms, signal) {
 
 // 4xx kalıcı hata: retry YAPMA. 5xx ve ağ/timeout hataları: retry yap.
 function isRetryableDownloadError(err) {
+  if (err?.code === "DECOMPRESSOR_UNAVAILABLE") return false;
   if (err && typeof err.httpStatus === "number") {
     return err.httpStatus >= 500;
   }
@@ -474,7 +724,8 @@ function isRetryableDownloadError(err) {
 }
 
 // Tek denemelik indirme (redirect takibi recursion yerine döngüyle, stack overflow olmaz)
-function downloadAndDecompressBz2Once(url, partPath, signal) {
+async function downloadAndDecompressBz2Once(url, partPath, signal) {
+  const bz2Stream = await loadBz2Factory();
   return new Promise((resolve, reject) => {
     let settled = false;
     let currentRequest = null;
@@ -813,38 +1064,47 @@ export async function scanSteamGcpdMatches() {
     const successfulModes = new Set();
     const scanErrors = [];
 
-    for (const mode of MODES) {
-      if (isGamePerformanceModeActive()) {
-        console.log("[PERF] CS2 maçı başladı; Steam taramasının kalan bölümü ertelendi.");
-        return performancePausedResult("CS2 maçı başladığı için Steam taramasının kalan bölümü ertelendi.");
-      }
+    // Dört sekmeyi eşzamanlı sorgulamak toplam beklemeyi tek timeout süresiyle
+    // sınırlar. Bir sekme başarılıysa geçici olarak yavaş olan diğer sekmeler
+    // önbellekteki maçları silmeden atlanır.
+    const modeResults = await Promise.all(MODES.map(async (mode) => {
       try {
         console.log(`[STEAM-GCPD] ${mode.label} maçları sorgulanıyor...`);
         const html = await fetchGcpdTabAjax(steamId, mode.tab, session);
         const parsed = parseGcpdMatchesFromHtml(html, mode.label, steamId);
-        successfulModes.add(mode.label);
-        console.log(`[STEAM-GCPD] ${mode.label} modunda ${parsed.length} maç bulundu.`);
-
-        for (const item of parsed) {
-          if (!allFound.some((existing) => existing.id === item.id || existing.replayUrl === item.replayUrl)) {
-            const isDl = downloadedMatches.some((dm) => dm.id === item.id || dm.fileName === item.fileName);
-            item.isDownloaded = isDl;
-            allFound.push(item);
-          }
-        }
+        return { mode, parsed, error: null };
       } catch (err) {
-        scanErrors.push({ mode: mode.label, message: err.message, code: err.code || "" });
-        console.warn(`[STEAM-GCPD] ${mode.label} sorgusu atlandı:`, err.message);
+        return { mode, parsed: [], error: err };
+      }
+    }));
+
+    for (const result of modeResults) {
+      if (result.error) {
+        scanErrors.push({ mode: result.mode.label, message: result.error.message, code: result.error.code || "" });
+        console.warn(`[STEAM-GCPD] ${result.mode.label} sorgusu atlandı:`, result.error.message);
+        continue;
+      }
+
+      successfulModes.add(result.mode.label);
+      console.log(`[STEAM-GCPD] ${result.mode.label} modunda ${result.parsed.length} maç bulundu.`);
+      for (const item of result.parsed) {
+        if (!allFound.some((existing) => existing.id === item.id || existing.replayUrl === item.replayUrl)) {
+          const isDl = downloadedMatches.some((dm) => dm.id === item.id || dm.fileName === item.fileName);
+          item.isDownloaded = isDl;
+          allFound.push(item);
+        }
       }
     }
 
     if (successfulModes.size === 0) {
       const authExpired = scanErrors.some((error) => error.code === "STEAM_AUTH_EXPIRED");
+      const timedOut = scanErrors.length > 0 && scanErrors.every((error) => error.code === "STEAM_TIMEOUT");
       const lastError = scanErrors.map((error) => `${error.mode}: ${error.message}`).join(" · ").slice(0, 1000)
         || "Steam’den hiçbir maç geçmişi sekmesi okunamadı.";
       saveSteamSession({
         lastScanTime: Date.now(),
         lastScanStatus: authExpired ? "expired" : "error",
+        lastScanFailureReason: authExpired ? "auth_expired" : timedOut ? "timeout" : "network",
         lastScanError: lastError,
       });
       return {
@@ -853,7 +1113,10 @@ export async function scanSteamGcpdMatches() {
         connectionState: authExpired ? "expired" : "error",
         message: authExpired
           ? "Steam oturumunun süresi dolmuş. Bağlantı çerezini yenile; kayıtlı maçların korunuyor."
+          : timedOut
+            ? "Steam bilgilerin kayıtlı ancak Steam Community zamanında yanıt vermedi. Bu bir oturum reddi değil; kayıtlı çerezin korunuyor. Steam erişimini kontrol edip yeniden tara."
           : "Steam’e şu anda erişilemedi. Kayıtlı maçların korundu; daha sonra yeniden tarayabilirsin.",
+        failureReason: authExpired ? "auth_expired" : timedOut ? "timeout" : "network",
         scannedMatches: previouslyScanned,
         downloadedMatches: getRecentMatches(),
       };
@@ -861,7 +1124,7 @@ export async function scanSteamGcpdMatches() {
 
     if (allFound.length === 0 && previouslyScanned.length > 0) {
       const message = "Steam yanıt verdi ancak maç satırları okunamadı. Önceki maçların korundu; bağlantı/HTML biçimi yeniden doğrulanmalı.";
-      saveSteamSession({ lastScanTime: Date.now(), lastScanStatus: "error", lastScanError: message });
+      saveSteamSession({ lastScanTime: Date.now(), lastScanStatus: "error", lastScanFailureReason: "parse", lastScanError: message });
       return {
         ok: false,
         connectionState: "error",
@@ -881,6 +1144,7 @@ export async function scanSteamGcpdMatches() {
       lastScanTime: Date.now(),
       lastSuccessfulScanTime: Date.now(),
       lastScanStatus: "success",
+      lastScanFailureReason: "",
       lastScanError: scanErrors.length
         ? `${scanErrors.length} Steam sekmesi geçici olarak okunamadı; önbellekteki maçlar korundu.`
         : "",
@@ -1102,13 +1366,14 @@ export function startAutoScanScheduler(intervalMs = 5 * 60 * 1000) {
 
   console.log(`[STEAM-GCPD] 5 dakikalık otomatik maç tarayıcısı başlatıldı (${intervalMs / 1000} saniye).`);
 
-  // Run initial scan after 10 seconds if session is active
+  // Arayüz ve parser tamamen açıldıktan sonra başlangıç taramasını arka planda
+  // yap. Otomatik tarama kapalıysa kullanıcı istemeden Steam isteği atma.
   setTimeout(() => {
     const session = getSteamSession();
-    if (session.steamLoginSecure) {
+    if (session.steamLoginSecure && session.autoScanEnabled !== false) {
       scanSteamGcpdMatches().catch((e) => console.warn("[STEAM-GCPD] Başlangıç taraması hatası:", e.message));
     }
-  }, 10000);
+  }, 20000);
 
   autoScanTimer = setInterval(() => {
     const session = getSteamSession();

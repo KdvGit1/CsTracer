@@ -67,7 +67,13 @@ if ((Test-Path -LiteralPath $pkgJsonPath) -and (Test-Path -LiteralPath $pkgLockP
     throw "Paket sürümü güncelleme yardımcısı bulunamadı: $manifestUpdaterPath"
   }
 
-  $releaseDate = Get-Date -Format "yyyy-MM-dd"
+  # Aynı sürüm yalnızca yeniden paketleniyorsa özgün yayın tarihini koru.
+  # Yeni sürüm numarasında ise bugünün tarihini kullan.
+  $releaseDate = if ($targetVersion -eq $currentVersion -and $vData.releaseDate) {
+    [string]$vData.releaseDate
+  } else {
+    Get-Date -Format "yyyy-MM-dd"
+  }
   & $nodeCommand.Source $manifestUpdaterPath $versionFile $pkgJsonPath $pkgLockPath $targetVersion $releaseDate
   if ($LASTEXITCODE -ne 0) {
     throw "JSON sürüm dosyaları güncellenemedi (node çıkış kodu $LASTEXITCODE)."
@@ -102,6 +108,14 @@ if (-not (Test-Path -LiteralPath $patchZip)) {
   throw "Yama zip dosyası oluşturulamadı: $patchZip"
 }
 
+# Eski veya bozulmuş güncelleyiciyi bir kez elle onarmak için küçük kurtarma paketi.
+# Otomatik güncelleyici bu dosyayı patch sanmaz; yalnız kullanıcı gerektiğinde açar.
+& (Join-Path $PSScriptRoot "create-updater-hotfix.ps1")
+$updaterHotfix = Join-Path $root "release\TRACER-Guncelleyici-Duzeltmesi-v$targetVersion.zip"
+if (-not (Test-Path -LiteralPath $updaterHotfix)) {
+  throw "Güncelleyici düzeltme paketi oluşturulamadı: $updaterHotfix"
+}
+
 # 4b. İlk kurulum için model dahil tam portable ve GitHub asset'i hazırla
 Write-Host "Taşınabilir tam klasör (model dahil) güncelleniyor..." -ForegroundColor Yellow
 & (Join-Path $PSScriptRoot "package-portable.ps1")
@@ -130,6 +144,7 @@ Write-Host "İlk kurulum paketi hazır: $portableArchive ($portableMb MB)" -Fore
 if ($BuildOnly) {
   Write-Host "`nBUILD-ONLY tamamlandı. Git commit/tag/push ve GitHub Release çalıştırılmadı." -ForegroundColor Cyan
   Write-Host "Patch: $patchZip" -ForegroundColor Green
+  Write-Host "Güncelleyici düzeltmesi: $updaterHotfix" -ForegroundColor Green
   Write-Host "Portable: $portableArchive" -ForegroundColor Green
   return
 }
@@ -191,7 +206,7 @@ $ghPath = if ($ghCommand) {
 }
 if ($ghPath) {
   Write-Host "`n[5/5] GitHub CLI bulundu, release otomatik oluşturuluyor..." -ForegroundColor Green
-  & $ghPath release create $tag "$patchZip" "$portableArchive" --repo $repo --title "TRACER v$targetVersion Güncellemesi" --generate-notes --latest
+  & $ghPath release create $tag "$patchZip" "$updaterHotfix" "$portableArchive" --repo $repo --title "TRACER v$targetVersion Güncellemesi" --generate-notes --latest
   if ($LASTEXITCODE -ne 0) { throw "gh release create başarısız oldu (çıkış kodu $LASTEXITCODE). Etiket GitHub'da zaten yayınlanmış olabilir." }
 
   Write-Host "`n=====================================================" -ForegroundColor Green
@@ -213,8 +228,9 @@ if ($ghPath) {
   Write-Host "  TEBRİKLER! YENİ SÜRÜM HAZIRLANDI." -ForegroundColor Green
   Write-Host "=====================================================" -ForegroundColor Green
   Write-Host "1. Tarayıcınızda açılan GitHub Releases sayfasına gidin." -ForegroundColor White
-  Write-Host "2. Aşağıdaki iki dosyayı release'e ekleyin:" -ForegroundColor Yellow
+  Write-Host "2. Aşağıdaki üç dosyayı release'e ekleyin:" -ForegroundColor Yellow
   Write-Host "   - TRACER-Patch-v$targetVersion.zip (mevcut kullanıcıların tek tık güncellemesi)" -ForegroundColor Yellow
+  Write-Host "   - TRACER-Guncelleyici-Duzeltmesi-v$targetVersion.zip (eski güncelleyiciler için bir defalık kurtarma)" -ForegroundColor Yellow
   Write-Host "   - TRACER-Portable-v$targetVersion.rar (ilk kurulum)" -ForegroundColor Yellow
   Write-Host "3. 'Publish Release' butonuna basın!" -ForegroundColor Yellow
   Write-Host "`nİPUCU: 'gh' CLI kurarsanız (winget install GitHub.cli) bu adım tamamen otomatikleşir." -ForegroundColor Gray

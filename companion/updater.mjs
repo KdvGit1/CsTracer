@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
-import { mkdir, rm, readFile, readdir } from "node:fs/promises";
+import { mkdir, rm, readFile, readdir, lstat, cp as copyPathRecursive, copyFile } from "node:fs/promises";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -11,7 +11,7 @@ import { Transform } from "node:stream";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
-export const CURRENT_VERSION = "0.50.4";
+export const CURRENT_VERSION = "0.50.5";
 
 // Zip-bomb / disk doldurma koruması: indirilebilir maksimum yama boyutu
 const MAX_PATCH_BYTES = 100 * 1024 * 1024;
@@ -19,6 +19,133 @@ const MAX_PATCH_BYTES = 100 * 1024 * 1024;
 const ALLOWED_DOWNLOAD_HOSTS = new Set(["github.com", "api.github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"]);
 // Yama uygulanırken asla üzerine yazılmayacak yollar (oyuncu verileri ve çalışma ortamı)
 const PROTECTED_PATHS = ["data", "model", "runtime", "node_modules", ".git"];
+
+function errorDetail(error) {
+  if (!(error instanceof Error)) return String(error);
+  const code = typeof error.code === "string" ? ` [${error.code}]` : "";
+  return `${error.message}${code}`;
+}
+
+function isProtectedTopLevelPath(name) {
+  const normalized = String(name || "").trim().toLowerCase();
+  return PROTECTED_PATHS.some((protectedName) => protectedName.toLowerCase() === normalized);
+}
+
+async function pathInfo(path) {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function copyPath(source, destination) {
+  const sourceInfo = await lstat(source);
+  if (sourceInfo.isSymbolicLink()) {
+    throw new Error(`Sembolik bağlantı içeren yama yolu reddedildi: ${source}`);
+  }
+
+  const destinationInfo = await pathInfo(destination);
+  if (sourceInfo.isDirectory()) {
+    if (destinationInfo && !destinationInfo.isDirectory()) {
+      await rm(destination, { recursive: true, force: true });
+    }
+    await copyPathRecursive(source, destination, {
+      recursive: true,
+      force: true,
+      errorOnExist: false,
+      dereference: false,
+    });
+    return;
+  }
+
+  if (!sourceInfo.isFile()) {
+    throw new Error(`Desteklenmeyen yama dosyası türü: ${source}`);
+  }
+
+  if (destinationInfo?.isDirectory()) {
+    await rm(destination, { recursive: true, force: true });
+  }
+  await mkdir(dirname(destination), { recursive: true });
+  await copyFile(source, destination);
+}
+
+/**
+ * Açılmış bir yamayı kurulum köküne uygular. Bu fonksiyon ayrıca testlerde
+ * gerçek dosya/klasör yapısıyla çalıştırılarak portable güncelleme akışını sınar.
+ */
+export async function applyExtractedPatch(extractDir, rootDir, backupDir) {
+  const extractedTop = (await readdir(extractDir, { withFileTypes: true }))
+    .filter((entry) => !isProtectedTopLevelPath(entry.name))
+    .sort((a, b) => a.name.localeCompare(b.name, "en"));
+  const existedBefore = new Set();
+
+  await mkdir(backupDir, { recursive: true });
+  for (const entry of extractedTop) {
+    const existing = join(rootDir, entry.name);
+    if (!await pathInfo(existing)) continue;
+
+    existedBefore.add(entry.name);
+    try {
+      await copyPath(existing, join(backupDir, entry.name));
+    } catch (error) {
+      throw new Error(
+        `Yedekleme başarısız oldu; güvenlik için yama uygulanmadı. `
+        + `Yol: ${entry.name}. Ayrıntı: ${errorDetail(error)}`,
+        { cause: error },
+      );
+    }
+  }
+  console.log(`[UPDATER] ${existedBefore.size} kök öğe yedeklendi (geri alma noktası oluşturuldu).`);
+
+  try {
+    for (const entry of extractedTop) {
+      await copyPath(join(extractDir, entry.name), join(rootDir, entry.name));
+    }
+  } catch (applyError) {
+    console.error("[UPDATER] Kopyalama başarısız, önceki sürüme geri dönülüyor...", applyError);
+    const rollbackErrors = [];
+
+    for (const entry of [...extractedTop].reverse()) {
+      const target = join(rootDir, entry.name);
+      try {
+        // Yamanın eklediği dosyaları da kaldırabilmek ve tür değişikliklerini
+        // eksiksiz geri alabilmek için hedefi önce temizle.
+        await rm(target, { recursive: true, force: true });
+        if (existedBefore.has(entry.name)) {
+          await copyPath(join(backupDir, entry.name), target);
+        }
+      } catch (rollbackError) {
+        rollbackErrors.push(`${entry.name}: ${errorDetail(rollbackError)}`);
+      }
+    }
+
+    if (rollbackErrors.length > 0) {
+      const rollbackFailure = new Error(
+        `Yama uygulanamadı ve geri alma tam tamamlanamadı. `
+        + `Uygulama hatası: ${errorDetail(applyError)}. `
+        + `Geri alma hataları: ${rollbackErrors.join("; ")}. `
+        + `Kurtarma yedeği korundu: ${backupDir}`,
+        { cause: applyError },
+      );
+      rollbackFailure.preserveBackup = true;
+      throw rollbackFailure;
+    }
+
+    throw new Error(
+      `Yama dosyaları uygulanamadı; önceki sürüme otomatik geri dönüldü. `
+      + `Ayrıntı: ${errorDetail(applyError)}`,
+      { cause: applyError },
+    );
+  }
+
+  return {
+    appliedCount: extractedTop.length,
+    backedUpCount: existedBefore.size,
+    appliedEntries: extractedTop.map((entry) => entry.name),
+  };
+}
 
 export function getLocalVersionInfo() {
   const versionFile = join(ROOT, "version.json");
@@ -196,6 +323,7 @@ export async function downloadAndApplyPatch(patchUrl, options = {}) {
   const extractDir = join(workDir, `extracted-${randomUUID()}`);
   const backupDir = join(workDir, `backup-${randomUUID()}`);
   const expectedSha256 = typeof options.expectedSha256 === "string" ? options.expectedSha256 : null;
+  let preserveBackup = false;
 
   console.log(`[UPDATER] Yeni yama indiriliyor: ${patchUrl}`);
 
@@ -259,41 +387,9 @@ export async function downloadAndApplyPatch(patchUrl, options = {}) {
     }
     console.log("[UPDATER] Yama dosyaları geçici dizine açıldı.");
 
-    // 4. Yedek al (rollback noktası) — yamanın değiştireceği kök seviye öğeleri kopyala
-    await mkdir(backupDir, { recursive: true });
-    const extractedTop = await readdir(extractDir, { withFileTypes: true });
-    for (const entry of extractedTop) {
-      if (PROTECTED_PATHS.includes(entry.name)) continue;
-      const existing = join(ROOT, entry.name);
-      if (existsSync(existing)) {
-        const cp = spawnSync("robocopy.exe", [
-          `"${existing}"`, `"${join(backupDir, entry.name)}"`,
-          ...(entry.isDirectory() ? ["/E"] : []),
-          "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/R:1", "/W:1",
-        ], { windowsHide: true, timeout: 120000 });
-        if (cp.status === null || cp.status >= 8) {
-          throw new Error("Yedekleme başarısız oldu; güvenlik için yama uygulanmadı.");
-        }
-      }
-    }
-    console.log("[UPDATER] Mevcut dosyalar yedeklendi (geri alma noktası oluşturuldu).");
-
-    // 5. Korumalı yolları hariç tutarak ROOT'a uygula (robocopy /XD ile)
-    const excludeDirs = PROTECTED_PATHS.map((p) => `"${join(extractDir, p)}"`);
-    const copyResult = spawnSync("robocopy.exe", [
-      `"${extractDir}"`, `"${ROOT}"`, "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/R:2", "/W:2",
-      "/XD", ...excludeDirs,
-    ], { windowsHide: true, timeout: 180000 });
-
-    // robocopy çıkış kodları: 0-7 başarı, >=8 hata
-    if (copyResult.status === null || copyResult.status >= 8) {
-      // ROLLBACK — yedeği geri yükle
-      console.error("[UPDATER] Kopyalama başarısız, önceki sürüme geri dönülüyor...");
-      spawnSync("robocopy.exe", [
-        `"${backupDir}"`, `"${ROOT}"`, "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/R:2", "/W:2",
-      ], { windowsHide: true, timeout: 180000 });
-      throw new Error("Yama dosyaları uygulanamadı; önceki sürüme otomatik geri dönüldü.");
-    }
+    // 4-5. Kök dosyaları ve klasörleri türlerine uygun biçimde yedekle, ardından
+    // korumalı oyuncu/çalışma verilerine dokunmadan yamayı uygula.
+    await applyExtractedPatch(extractDir, ROOT, backupDir);
 
     const updatedLocal = getLocalVersionInfo();
     console.log(`[UPDATER] Yama başarıyla uygulandı! Yeni aktif sürüm: v${updatedLocal.version}`);
@@ -305,13 +401,18 @@ export async function downloadAndApplyPatch(patchUrl, options = {}) {
       message: `Yama başarıyla uygulandı (v${updatedLocal.version})! Değişikliklerin etkinleşmesi için TRACER yeniden başlatılacak...`,
     };
   } catch (err) {
+    preserveBackup = err?.preserveBackup === true;
     console.error("[UPDATER] Yama uygulama hatası:", err);
     throw err;
   } finally {
     // Geçici dosyaları temizle
     await rm(tempZipPath, { force: true }).catch(() => {});
     await rm(extractDir, { recursive: true, force: true }).catch(() => {});
-    await rm(backupDir, { recursive: true, force: true }).catch(() => {});
+    if (preserveBackup) {
+      console.error(`[UPDATER] Otomatik geri alma tamamlanamadığı için kurtarma yedeği korundu: ${backupDir}`);
+    } else {
+      await rm(backupDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }
 

@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { radarMapFor, worldToRadar } from "./map-data";
 import "./analysis.css";
 import { CompactCoachVerdict, GrowthView, ProgressMatch } from "./growth";
@@ -144,10 +144,6 @@ export default function Home() {
   const [aiInsight, setAiInsight] = useState<AiInsight | null>(null);
   const [fullMatchReport, setFullMatchReport] = useState<FullMatchReport | null>(null);
   const [fullReportModalOpen, setFullReportModalOpen] = useState(false);
-  const [steamId, setSteamId] = useState("");
-  const [steamWebApiKey, setSteamWebApiKey] = useState("");
-  const [steamAuthCode, setSteamAuthCode] = useState("");
-  const [steamKnownCode, setSteamKnownCode] = useState("");
   const [faceitNickname, setFaceitNickname] = useState("");
   const [faceitApiKey, setFaceitApiKey] = useState("");
   const [sourceMessage, setSourceMessage] = useState("");
@@ -183,18 +179,55 @@ export default function Home() {
     finally { setUpdateChecking(false); }
   }
 
+  const loadProgressMemory = useCallback(async (silent = false) => {
+    try {
+      const response = await fetch(PROGRESS_URL, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(2_500),
+      });
+      const payload = await response.json() as { profile?: PlayerIdentity | null; matches?: ProgressMatch[]; error?: string };
+      if (!response.ok) throw new Error(payload.error || "Gelişim hafızası okunamadı.");
+      const profile = payload.profile || null;
+      preferredPlayerRef.current = profile;
+      setPreferredPlayer(profile);
+      setProfileReady(Boolean(profile));
+      setProgressMatches(Array.isArray(payload.matches) ? payload.matches : []);
+      setProgressLoading(false);
+      if (profile && reportsRef.current.length) {
+        const matched = reportsRef.current.find((item) => profile.steamid ? item.player.steamid === profile.steamid : item.player.name === profile.name);
+        setSelectedPlayer(matched ? (matched.player.steamid || matched.player.name) : "");
+        setProfileOpen(!matched);
+      }
+      setProgressMessage("");
+      return true;
+    } catch (historyError) {
+      // Servis arayüzden birkaç saniye sonra hazır olabilir. Geçici bağlantı
+      // hatasında kayıtlı profili silme veya kullanıcıdan yeniden seçim isteme.
+      if (!silent) {
+        setProgressMessage(historyError instanceof Error ? historyError.message : "Gelişim hafızası okunamadı.");
+      }
+      return false;
+    }
+  }, []);
+
+  const refreshProgressMemory = useCallback(() => {
+    void loadProgressMemory(true);
+  }, [loadProgressMemory]);
+
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
+    let companionWasReady = false;
+    const probeCompanion = async () => {
       try {
-        const response = await fetch(`${COMPANION_URL}/health`);
+        const response = await fetch(`${COMPANION_URL}/health`, { signal: AbortSignal.timeout(1_500) });
         if (!cancelled) {
           if (response.ok) {
             const payload = (await response.json()) as {
               performance?: { active?: boolean };
               coach?: { model?: string; backendLabel?: string; available?: boolean };
             };
-            if (!payload.performance?.active) void checkUpdates();
+            if (!companionWasReady && !payload.performance?.active) void checkUpdates();
+            companionWasReady = true;
             if (payload.coach?.model) setEmbeddedModelName(String(payload.coach.model));
             if (payload.coach?.backendLabel) setEmbeddedBackendLabel(String(payload.coach.backendLabel));
             setCoachState(payload.coach?.available ? "online" : "offline");
@@ -208,10 +241,11 @@ export default function Home() {
       } catch {
         // Companion kapalıysa ekran mevcut verilerle açılmaya devam eder.
       }
-    })();
+    };
+    void probeCompanion();
 
     const heartbeatTimer = setInterval(() => {
-      fetch(`${COMPANION_URL}/heartbeat`, { method: "GET" }).catch(() => {});
+      void probeCompanion();
     }, 5000);
 
     return () => {
@@ -251,31 +285,20 @@ export default function Home() {
   }
 
   useEffect(() => {
-    void (async () => {
-      setProgressLoading(true);
-      try {
-        const response = await fetch(PROGRESS_URL, { cache: "no-store" });
-        const payload = await response.json() as { profile?: PlayerIdentity | null; matches?: ProgressMatch[]; error?: string };
-        if (!response.ok) throw new Error(payload.error || "Gelişim hafızası okunamadı.");
-        const profile = payload.profile || null;
-        preferredPlayerRef.current = profile;
-        setPreferredPlayer(profile);
-        setProfileReady(Boolean(profile));
-        setProgressMatches(Array.isArray(payload.matches) ? payload.matches : []);
-        if (profile && reportsRef.current.length) {
-          const matched = reportsRef.current.find((item) => profile.steamid ? item.player.steamid === profile.steamid : item.player.name === profile.name);
-          setSelectedPlayer(matched ? (matched.player.steamid || matched.player.name) : "");
-          setProfileOpen(!matched);
-        }
-        setProgressMessage("");
-      } catch (historyError) {
-        setProfileReady(false);
-        setProgressMessage(historyError instanceof Error ? historyError.message : "Gelişim hafızası okunamadı.");
-      } finally {
-        setProgressLoading(false);
-      }
-    })();
-  }, []);
+    let cancelled = false;
+    let retryTimer: number | null = null;
+    const restoreSavedPlayer = async (attempt = 0) => {
+      const loaded = await loadProgressMemory(attempt > 0);
+      if (cancelled || loaded) return;
+      const delay = Math.min(5_000, 400 * (2 ** Math.min(attempt, 4)));
+      retryTimer = window.setTimeout(() => void restoreSavedPlayer(attempt + 1), delay);
+    };
+    void restoreSavedPlayer();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
+  }, [loadProgressMemory]);
 
   const report = useMemo(() => reports.find((item) => (item.player.steamid || item.player.name) === selectedPlayer), [reports, selectedPlayer]);
   const analysisNeedsRefresh = Boolean(report && !analysisVersionAtLeast(report.analysisVersion, 3, 1));
@@ -769,19 +792,6 @@ export default function Home() {
     }
   }
 
-  async function checkSteamMatch() {
-    setSourceMessage("Valve maç geçmişi kontrol ediliyor…");
-    try {
-      const response = await fetch("/api/steam/next", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ steamid: steamId, apiKey: steamWebApiKey, authCode: steamAuthCode, knownCode: steamKnownCode }) });
-      const payload = (await response.json()) as { error?: string; nextCode?: string | null };
-      if (!response.ok) throw new Error(payload.error || "Valve sorgusu başarısız");
-      setSourceMessage(payload.nextCode ? `Yeni maç bulundu: ${payload.nextCode}` : "Yeni Valve maçı yok; geçmiş güncel.");
-      if (payload.nextCode) setSteamKnownCode(payload.nextCode);
-    } catch (sourceError) {
-      setSourceMessage(sourceError instanceof Error ? sourceError.message : "Valve bağlantısı kurulamadı.");
-    }
-  }
-
   async function checkFaceit() {
     setSourceMessage("FACEIT profili kontrol ediliyor…");
     try {
@@ -833,12 +843,12 @@ export default function Home() {
         </button>
         <button className="player-card" onClick={() => setProfileOpen(true)} aria-label="Kişisel oyuncu profilini seç">
           <div className="avatar">KD</div>
-          <div><b>{preferredPlayer?.name || "Kendini seç"}</b><small>{preferredPlayer ? `${progressMatches.length} kayıtlı maç · kişisel profil` : "Başka oyuncu verisi kullanılmaz"}</small></div>
+          <div><b>{preferredPlayer?.name || (progressLoading ? "Profil yükleniyor…" : "Kendini seç")}</b><small>{preferredPlayer ? `${progressMatches.length} kayıtlı maç · kişisel profil` : progressLoading ? "Kayıtlı oyuncu geri yükleniyor" : "Başka oyuncu verisi kullanılmaz"}</small></div>
           <span><IconSettings size={14} /></span>
         </button>
       </aside>
 
-      <NotificationCenter onSelectAnalysis={openDownloadedMatchAnalysis} />
+      <NotificationCenter onSelectAnalysis={openDownloadedMatchAnalysis} onProgressChange={refreshProgressMemory} />
 
       {activeView === "recent" ? (
         <RecentMatchesView onSelectAnalysis={openDownloadedMatchAnalysis} />
@@ -1711,20 +1721,14 @@ export default function Home() {
             <p className="eyebrow">MAÇ KAYNAKLARI</p>
             <div className="connection-wizard">
               <section className="connect-card steam-connect">
-                <header><span>01</span><div><b>Steam Premier / Competitive</b><small>SteamID64 + Web API key + Game Authentication Code + paylaşım kodu</small></div><em>Özel</em></header>
+                <header><span>01</span><div><b>Steam Premier / Competitive</b><small>Son Maçlarım içindeki kayıtlı Steam Community oturumu</small></div><em>Otomatik</em></header>
+                <p className="connect-explainer">Steam maçları yalnız <b>Son Maçlarım → Steam Bağlantısı</b> üzerinden yönetilir. Web API key, Game Authentication Code veya paylaşım kodu gerekmez.</p>
                 <div className="connect-steps">
-                  <div><span>1</span><p><b>Resmî Steam kod sayfasını aç</b><small>Steam’e giriş yap; CS2 maç geçmişi erişim kodunu oluştur veya mevcut kodunu görüntüle.</small></p><a href="https://help.steampowered.com/en/wizard/HelpWithGameIssue/?appid=730&issueid=128" target="_blank" rel="noreferrer">Steam kod sayfasını aç <IconExternalLink size={12} style={{ display: "inline-block", verticalAlign: "middle" }} /></a></div>
-                  <div><span>2</span><p><b>Steam Web API key oluştur</b><small>Valve maç geçmişi endpoint’i geliştirici API anahtarı da ister.</small></p><a href="https://steamcommunity.com/dev/apikey" target="_blank" rel="noreferrer">API key sayfasını aç <IconExternalLink size={12} style={{ display: "inline-block", verticalAlign: "middle" }} /></a></div>
-                  <div><span>3</span><p><b>Dört değeri buraya yapıştır</b><small>Anahtarlar yalnızca açık sayfadaki sorguda kullanılır; tarayıcı depolamasına yazılmaz.</small></p></div>
+                  <div><span>1</span><p><b>Son Maçlarım sekmesini aç</b><small>Sağ üstteki Steam Bağlantısı düğmesine bas.</small></p></div>
+                  <div><span>2</span><p><b>Tarayıcı oturumunu bir kez kaydet</b><small>steamLoginSecure ve sessionid değerleri sonraki açılışlarda korunur.</small></p></div>
+                  <div><span>3</span><p><b>İstediğin maçları sıraya ekle</b><small>Maçlar seçtiğin sırayla indirilir ve analiz edilir.</small></p></div>
                 </div>
-                <div className="guided-form">
-                  <label><span>SteamID64</span><input inputMode="numeric" placeholder="17 haneli SteamID64" value={steamId} onChange={(event) => setSteamId(event.target.value.trim())} /></label>
-                  <label><span>Steam Web API key</span><input type="password" autoComplete="off" placeholder="Steam geliştirici anahtarın" value={steamWebApiKey} onChange={(event) => setSteamWebApiKey(event.target.value.trim())} /></label>
-                  <label><span>Game Authentication Code</span><input type="password" autoComplete="off" placeholder="AAAA-AAAAA-AAAA" value={steamAuthCode} onChange={(event) => setSteamAuthCode(event.target.value.trim())} /></label>
-                  <label><span>Son maç paylaşım kodu</span><input placeholder="CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx" value={steamKnownCode} onChange={(event) => setSteamKnownCode(event.target.value.trim())} /></label>
-                  <button className="upload-button" onClick={checkSteamMatch}>Bağlantıyı doğrula</button>
-                </div>
-                <footer><span>?</span><p>Paylaşım kodu aynı Steam hesabına ait olmalı. Steam bu yöntemde geçersiz kod denemelerini hızla sınırlar.</p><a href="https://developer.valvesoftware.com/wiki/Counter-Strike%3A_Global_Offensive_Access_Match_History" target="_blank" rel="noreferrer">Valve rehberi <IconExternalLink size={12} style={{ display: "inline-block", verticalAlign: "middle" }} /></a></footer>
+                <footer><span>?</span><p>Kayıtlı çerez boş alan yüzünden silinmez; yalnız Steam açıkça süresi doldu yanıtı verirse yenilenmesi istenir.</p><a href="https://steamcommunity.com/my/gcpd/730/?tab=matchhistorypremier" target="_blank" rel="noreferrer">Steam geçmişini aç <IconExternalLink size={12} style={{ display: "inline-block", verticalAlign: "middle" }} /></a></footer>
               </section>
               <section className="connect-card faceit-connect">
                 <header><span>02</span><div><b>FACEIT</b><small>Herkese açık maç geçmişi için yalnızca kullanıcı adı</small></div><em>Şifresiz</em></header>

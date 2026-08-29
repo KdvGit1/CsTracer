@@ -29,7 +29,7 @@ test("server-renders the real TRACER empty state without fake match data", { ski
   assert.match(html, /Sahte istatistik gösterilmiyor/);
   assert.match(html, /Gerçek demo verisi bekleniyor/);
   assert.match(html, /Qwen3 1\.7B Q4_K_M/);
-  assert.match(html, /Başka oyuncu verisi kullanılmaz/);
+  assert.match(html, /Kayıtlı oyuncu geri yükleniyor/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/i);
 });
 

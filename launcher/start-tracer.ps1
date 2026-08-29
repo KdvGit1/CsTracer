@@ -14,8 +14,6 @@ try {
 } catch { }
 $tracerRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $appUrl = "http://127.0.0.1:43118"
-$companionUrl = "http://127.0.0.1:43119/health"
-$companionHeartbeatUrl = "http://127.0.0.1:43119/heartbeat"
 $dataRoot = if ($DataRoot) { [System.IO.Path]::GetFullPath($DataRoot) } else { Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "TRACER" }
 $logRoot = Join-Path $dataRoot "logs"
 $profilePath = Join-Path $dataRoot "window-profile"
@@ -79,16 +77,41 @@ function Find-NodeRuntime {
   throw "runtime\node.exe bulunamadı. Dağıtım klasörü eksik hazırlanmış."
 }
 
-function Wait-ForUrl([string]$url, [int]$timeoutSeconds) {
+function Test-LocalPort([int]$port, [int]$waitMilliseconds = 250) {
+  $client = New-Object System.Net.Sockets.TcpClient
+  $waitHandle = $null
+  try {
+    $pending = $client.BeginConnect("127.0.0.1", $port, $null, $null)
+    $waitHandle = $pending.AsyncWaitHandle
+    if (-not $waitHandle.WaitOne($waitMilliseconds)) { return $false }
+    $client.EndConnect($pending)
+    return $client.Connected
+  } catch {
+    return $false
+  } finally {
+    if ($null -ne $waitHandle) { $waitHandle.Close() }
+    $client.Close()
+  }
+}
+
+function Wait-ForLocalPort([int]$port, [int]$timeoutSeconds, [System.Diagnostics.Process]$process) {
   $deadline = (Get-Date).AddSeconds($timeoutSeconds)
   while ((Get-Date) -lt $deadline) {
-    try {
-      $response = Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 2
-      if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) { return $true }
-    } catch { }
-    Start-Sleep -Milliseconds 300
+    if ($process -and $process.HasExited) { return $false }
+    if (Test-LocalPort $port 200) { return $true }
+    Start-Sleep -Milliseconds 100
   }
   return $false
+}
+
+function Get-LogTail([string]$logName) {
+  $stderrPath = Join-Path $logRoot "$logName.err.log"
+  if (-not (Test-Path -LiteralPath $stderrPath)) { return "Log kaydı oluşmadı." }
+  try {
+    $tail = @(Get-Content -LiteralPath $stderrPath -Tail 8 -ErrorAction Stop) -join " "
+    if ($tail) { return $tail }
+  } catch { }
+  return "Ayrıntı okunamadı. Log: $stderrPath"
 }
 
 function Start-HiddenNode([string[]]$arguments, [string]$logName) {
@@ -129,6 +152,9 @@ function Get-AppBrowserProcesses([string]$browserPath, [string]$profilePath) {
 function Wait-ForAppBrowser([string]$browserPath, [string]$profilePath, [System.Diagnostics.Process]$companionProc) {
   Start-Sleep -Seconds 3
   $prioritizedBrowserIds = [System.Collections.Generic.HashSet[int]]::new()
+  $companionRestartCount = 0
+  $companionUnhealthyChecks = 0
+  $nextCompanionRestart = Get-Date
 
   while ($true) {
     # 1. Check if any browser window using our profile directory is still open
@@ -149,10 +175,24 @@ function Wait-ForAppBrowser([string]$browserPath, [string]$profilePath, [System.
       }
     }
 
-    # 2. Check if companion process itself has crashed / exited (never rely on HTTP network timeout under heavy demo parsing load)
-    if ($companionProc -and $companionProc.HasExited) {
-      if ($DebugMode) { Write-Host "[BİLGİ] Companion servisi durduruldu." -ForegroundColor Yellow }
-      return
+    # Companion arayüzden bağımsızdır. Çökerse TRACER penceresini kapatmak
+    # yerine sınırlı sayıda arka plan yeniden başlatması dene.
+    $companionHealthy = Test-LocalPort 43119 150
+    if ($companionHealthy) {
+      $companionUnhealthyChecks = 0
+    } else {
+      $companionUnhealthyChecks += 1
+    }
+    $companionExited = -not $companionProc -or $companionProc.HasExited
+    if (($companionExited -or $companionUnhealthyChecks -ge 5) -and $companionRestartCount -lt 3 -and (Get-Date) -ge $nextCompanionRestart) {
+      if ($companionProc -and -not $companionProc.HasExited) {
+        Stop-Process -Id $companionProc.Id -Force -ErrorAction SilentlyContinue
+      }
+      $companionRestartCount += 1
+      $companionUnhealthyChecks = 0
+      $nextCompanionRestart = (Get-Date).AddSeconds(5 * $companionRestartCount)
+      if ($DebugMode) { Write-Host "[UYARI] Yerel parser arka planda yeniden başlatılıyor ($companionRestartCount/3)..." -ForegroundColor Yellow }
+      $companionProc = Start-HiddenNode @((Join-Path $tracerRoot "companion\server.mjs")) "companion"
     }
 
     Start-Sleep -Milliseconds 1000
@@ -192,15 +232,23 @@ try {
   if (Test-Path -LiteralPath $standaloneServer) {
     $env:PORT = "43118"
     $env:HOST = "127.0.0.1"
-    Start-HiddenNode @($standaloneServer) "app" | Out-Null
+    $appProc = Start-HiddenNode @($standaloneServer) "app"
   } else {
     $vinextCli = Join-Path $tracerRoot "node_modules\vinext\dist\cli.js"
     if (-not (Test-Path -LiteralPath $vinextCli)) { throw "Uygulama çalışma dosyaları bulunamadı." }
-    Start-HiddenNode @($vinextCli, "start", "--port", "43118", "--hostname", "127.0.0.1") "app" | Out-Null
+    $appProc = Start-HiddenNode @($vinextCli, "start", "--port", "43118", "--hostname", "127.0.0.1") "app"
   }
 
-  if (-not (Wait-ForUrl $companionUrl 35)) { throw "Demo parser 35 saniye içinde hazır olmadı. Log: $logRoot" }
-  if (-not (Wait-ForUrl $appUrl 45)) { throw "Arayüz 45 saniye içinde hazır olmadı. Log: $logRoot" }
+  # Arayüz tek zorunlu başlangıç kapısıdır ve proxy/DNS kullanmadan doğrudan
+  # localhost TCP portundan kontrol edilir. Parser en fazla iki saniye gözlenir;
+  # geç hazırlanırsa veya çökerse arayüz yine açılır ve servis arka planda toparlanır.
+  if (-not (Wait-ForLocalPort 43118 15 $appProc)) {
+    throw "TRACER arayüzü başlatılamadı. $(Get-LogTail 'app') Log: $logRoot"
+  }
+  $companionReady = Wait-ForLocalPort 43119 2 $companionProc
+  if (-not $companionReady -and $DebugMode) {
+    Write-Host "[UYARI] Yerel parser henüz hazır değil; arayüz bekletilmeden açılıyor. $(Get-LogTail 'companion')" -ForegroundColor Yellow
+  }
 
   if ($DebugMode) {
     Write-Host "[3/3] Servisler hazır! TRACER açılıyor..." -ForegroundColor Green
@@ -241,7 +289,7 @@ try {
       if (-not $DebugMode) {
         Show-TracerError "TRACER normal tarayıcıda açıldı. Yerel servisleri kapatmak için TRACER-Kapat.cmd kullanabilirsin."
       }
-      while ($companionProc -and -not $companionProc.HasExited) {
+      while ($appProc -and -not $appProc.HasExited) {
         Start-Sleep -Seconds 2
       }
     }

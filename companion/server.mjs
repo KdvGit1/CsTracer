@@ -9,7 +9,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { Worker } from "node:worker_threads";
-import { ANALYSIS_VERSION, quickDemoMeta } from "./analyze.mjs";
+import { ANALYSIS_VERSION } from "./analysis_version.mjs";
 import { processGsiPacket, getLiveState, getGamePerformanceStatus } from "./gsi.mjs";
 import {
   MatchAutomationStore,
@@ -33,8 +33,11 @@ import { checkForUpdates, downloadAndApplyPatch, getLocalVersionInfo, saveLocalV
 import {
   getSteamSession,
   getSteamConnectionHealth,
+  extractSteamIdFromCookie,
   saveSteamSession,
   getRecentMatches,
+  getRecentMatchesStorageState,
+  prepareRecentMatchesStorage,
   getScannedMatches,
   syncSteamGcpdMatches,
   scanSteamGcpdMatches,
@@ -95,6 +98,8 @@ let autoDownloadRetryTimer = null;
 let previousGamePerformanceActive = false;
 let matchDownloadQueueRevision = 0;
 let matchDownloadActiveStartedAt = 0;
+let analyzerRuntimeState = "idle";
+let analyzerRuntimeError = "";
 
 setGamePerformanceGuard(() => getGamePerformanceStatus().active);
 
@@ -128,6 +133,38 @@ function safeLogArg(value) {
   } catch {
     return "[serialize edilemeyen nesne]";
   }
+}
+
+function matchSummaryForClient(match) {
+  if (!match || typeof match !== "object") return match;
+  const summary = { ...match };
+  delete summary.fullAnalysis;
+  return summary;
+}
+
+function matchSummariesForClient(matches) {
+  return Array.isArray(matches) ? matches.map(matchSummaryForClient) : [];
+}
+
+function steamResultForClient(result) {
+  if (!result || typeof result !== "object") return result;
+  return {
+    ...result,
+    ...(Array.isArray(result.downloadedMatches) ? { downloadedMatches: matchSummariesForClient(result.downloadedMatches) } : {}),
+    ...(Array.isArray(result.matches) ? { matches: matchSummariesForClient(result.matches) } : {}),
+  };
+}
+
+function historyMaintenanceResponse(response, origin) {
+  const storage = getRecentMatchesStorageState();
+  if (storage.state === "ready") return false;
+  sendJson(response, 409, {
+    error: storage.state === "error"
+      ? storage.message
+      : "Eski maç geçmişi bir kez optimize ediliyor. Uygulama açık kalacak; birkaç saniye sonra tekrar deneyin.",
+    historyStorage: storage,
+  }, origin);
+  return true;
 }
 
 console.log = (...args) => {
@@ -696,6 +733,7 @@ function scheduleQueueRetry(delayMs = 30_000) {
 }
 
 function queueMatchDownload(match, { automatic = false } = {}) {
+  if (getRecentMatchesStorageState().state !== "ready") return false;
   if (!match?.id) return false;
   const alreadyQueued = autoDownloadActiveMatchId === match.id || autoDownloadQueue.some((item) => item.match.id === match.id);
   if (alreadyQueued) return false;
@@ -813,6 +851,7 @@ function matchDownloadQueueState() {
 }
 
 async function reconcileLatestAutomaticMatch(scannedMatches = getScannedMatches()) {
+  if (getRecentMatchesStorageState().state !== "ready") return false;
   if (!matchAutomationStore.getSettings().autoDownloadLatestMatch) return false;
   const latest = latestUnanalyzedScannedMatch(scannedMatches, getRecentMatches());
   if (!latest) return false;
@@ -854,33 +893,51 @@ steamEvents.on("download-status", (event) => {
 // (GSI, koç, /health) bloklanmaz, uygulama "donmuş" gibi görünmez.
 const ANALYZE_WORKER_TIMEOUT_MS = 5 * 60 * 1000;
 
-function analyzeDemoInWorker(filePath) {
+async function runDemoWorker(filePath, operation = "analyze") {
   return new Promise((resolvePromise, rejectPromise) => {
     const workerPath = join(dirname(fileURLToPath(import.meta.url)), "analyze-worker.mjs");
-    const worker = new Worker(workerPath, { workerData: { filePath } });
+    const worker = new Worker(workerPath, { workerData: { filePath, operation } });
     activeDemoWorkers.add(worker);
+    analyzerRuntimeState = "loading";
+    analyzerRuntimeError = "";
+    let settled = false;
     const cleanupWorker = () => activeDemoWorkers.delete(worker);
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanupWorker();
+      if (error) {
+        analyzerRuntimeState = "unavailable";
+        analyzerRuntimeError = "Demo parser çalışma dosyası yüklenemedi veya analiz başarısız oldu.";
+        rejectPromise(error);
+      } else {
+        analyzerRuntimeState = "ready";
+        analyzerRuntimeError = "";
+        resolvePromise(result);
+      }
+    };
     const timer = setTimeout(() => {
-      worker.terminate();
-      rejectPromise(new Error("Demo analizi zaman aşımına uğradı (5 dk)."));
+      void worker.terminate();
+      finish(new Error("Demo analizi zaman aşımına uğradı (5 dk)."));
     }, ANALYZE_WORKER_TIMEOUT_MS);
     worker.once("message", (msg) => {
-      clearTimeout(timer);
-      cleanupWorker();
-      if (msg?.ok) resolvePromise(msg.result);
-      else rejectPromise(new Error(msg?.error || "Demo analizi başarısız oldu."));
+      if (msg?.ok) finish(null, msg.result);
+      else finish(new Error(msg?.error || "Demo analizi başarısız oldu."));
     });
-    worker.once("error", (err) => {
-      clearTimeout(timer);
-      cleanupWorker();
-      rejectPromise(err);
-    });
+    worker.once("error", (err) => finish(err));
     worker.once("exit", (code) => {
-      clearTimeout(timer);
-      cleanupWorker();
-      if (code !== 0) rejectPromise(new Error(`Analiz iş parçacığı beklenmedik şekilde kapandı (${code}).`));
+      if (!settled && code !== 0) finish(new Error(`Analiz iş parçacığı beklenmedik şekilde kapandı (${code}).`));
     });
   });
+}
+
+function analyzeDemoInWorker(filePath) {
+  return runDemoWorker(filePath, "analyze");
+}
+
+function quickDemoMetaInWorker(filePath) {
+  return runDemoWorker(filePath, "quick-meta");
 }
 
 async function waitForCoachServer(child, backend, timeoutMs = 90000) {
@@ -1032,6 +1089,18 @@ const server = createServer(async (request, response) => {
     sendJson(response, 200, {
       ok: true,
       parserVersion: "0.42.0",
+      parser: {
+        state: analyzerRuntimeState,
+        ready: analyzerRuntimeState !== "unavailable",
+        message: analyzerRuntimeState === "ready"
+          ? "Demo parser hazır."
+          : analyzerRuntimeState === "idle"
+            ? "Demo parser gerektiğinde ayrı iş parçacığında başlatılacak."
+          : analyzerRuntimeState === "loading"
+            ? "Demo parser ayrı iş parçacığında çalışıyor."
+            : analyzerRuntimeError,
+      },
+      matchHistory: getRecentMatchesStorageState(),
       mode: "local-native",
       performance,
       coach: performance.active ? lightweightCoachStatus() : coachStatus(),
@@ -1354,7 +1423,7 @@ const server = createServer(async (request, response) => {
     if (notification.status === "ready") {
       const match = getRecentMatches().find((item) => item.id === notification.matchId);
       if (match?.fullAnalysis) {
-        sendJson(response, 200, { ok: true, ready: true, match, analysis: match.fullAnalysis }, origin);
+        sendJson(response, 200, { ok: true, ready: true, match: matchSummaryForClient(match), analysis: match.fullAnalysis }, origin);
       } else {
         sendJson(response, 404, { error: "Analiz kaydı bulunamadı; bildirimi yeniden deneyin." }, origin);
       }
@@ -1407,8 +1476,22 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && request.url === "/steam/session") {
     try {
       const body = await readJsonBody(request, 16 * 1024);
+      if (Object.hasOwn(body || {}, "steamLoginSecure") && body.steamLoginSecure && !extractSteamIdFromCookie(body.steamLoginSecure)) {
+        sendJson(response, 400, {
+          error: "steamLoginSecure değeri okunamadı. Yalnız çerez değerini veya 'steamLoginSecure=...' biçimini yapıştırın; Steam Web API key bu alanda çalışmaz.",
+        }, origin);
+        return;
+      }
       const updated = saveSteamSession(body);
-      sendJson(response, 200, { ok: true, session: updated }, origin);
+      sendJson(response, 200, {
+        ok: true,
+        session: {
+          steamId: updated.steamId || "",
+          hasSession: Boolean(updated.steamLoginSecure),
+          sessionid: updated.sessionid || "",
+          autoScanEnabled: updated.autoScanEnabled !== false,
+        },
+      }, origin);
     } catch (err) {
       sendJson(response, 400, { error: err.message }, origin);
     }
@@ -1423,7 +1506,7 @@ const server = createServer(async (request, response) => {
       ok: true,
       hasSession: Boolean(session.steamLoginSecure),
       scannedMatches: scanned,
-      matches,
+      matches: matchSummariesForClient(matches),
       lastScanTime: session.lastScanTime || 0,
       autoScanEnabled: session.autoScanEnabled !== false,
     }, origin);
@@ -1434,7 +1517,7 @@ const server = createServer(async (request, response) => {
     try {
       const result = await scanSteamGcpdMatches(true);
       repairExistingMatchDates();
-      sendJson(response, 200, result, origin);
+      sendJson(response, 200, steamResultForClient(result), origin);
     } catch (err) {
       sendJson(response, 500, { error: err.message }, origin);
     }
@@ -1470,6 +1553,8 @@ const server = createServer(async (request, response) => {
         return;
       }
 
+      if (historyMaintenanceResponse(response, origin)) return;
+
       const match = getScannedMatches().find((item) => item.id === matchId) || body.matchMeta;
       if (!match?.id || !match?.replayUrl) {
         sendJson(response, 404, { error: "Maçın replay bilgisi bulunamadı." }, origin);
@@ -1484,6 +1569,7 @@ const server = createServer(async (request, response) => {
   }
 
   if (request.method === "POST" && request.url === "/steam/download-match") {
+    if (historyMaintenanceResponse(response, origin)) return;
     if (pauseHeavyOperation(response, origin, "replay indirme ve demo analizi")) return;
     try {
       const body = await readJsonBody(request, 64 * 1024);
@@ -1492,7 +1578,7 @@ const server = createServer(async (request, response) => {
         return;
       }
       const result = await downloadSingleMatch(body.matchId, body.replayUrl || "", body.matchMeta || {});
-      sendJson(response, result.ok ? 200 : 400, result, origin);
+      sendJson(response, result.ok ? 200 : 400, steamResultForClient(result), origin);
     } catch (err) {
       sendJson(response, 500, { error: err.message }, origin);
     }
@@ -1503,7 +1589,7 @@ const server = createServer(async (request, response) => {
     if (pauseHeavyOperation(response, origin, "Steam eşitleme ve replay indirme")) return;
     try {
       const result = await syncSteamGcpdMatches();
-      sendJson(response, 200, result, origin);
+      sendJson(response, 200, steamResultForClient(result), origin);
     } catch (err) {
       sendJson(response, 500, { error: err.message }, origin);
     }
@@ -1518,13 +1604,14 @@ const server = createServer(async (request, response) => {
     const automationSettings = matchAutomationStore.getSettings();
     sendJson(response, 200, {
       ok: true,
-      matches,
+      matches: matchSummariesForClient(matches),
       scannedMatches: scanned,
       hasSession: Boolean(session.steamLoginSecure),
       connection,
       downloadQueue: matchDownloadQueueState(),
       demoStorage: getDemoStorageState(),
       demoRetentionCount: automationSettings.demoRetentionCount,
+      historyStorage: getRecentMatchesStorageState(),
       session: {
         sessionid: session.sessionid || "",
         lastSyncTime: session.lastSyncTime || 0,
@@ -1814,7 +1901,7 @@ const server = createServer(async (request, response) => {
         || (found.fullAnalysis.reports || []).some((report) => report.sprayStats?.method !== "bullet-damage-event-tick-v2");
       sendJson(response, 200, {
         ok: true,
-        match: found,
+        match: matchSummaryForClient(found),
         analysis: found.fullAnalysis,
         reanalyzed,
         needsReanalysis,
@@ -1832,7 +1919,7 @@ const server = createServer(async (request, response) => {
     sendJson(response, ok ? 200 : 404, {
       ok,
       message: ok ? "Maç silindi" : "Maç bulunamadı",
-      matches: getRecentMatches(),
+      matches: matchSummariesForClient(getRecentMatches()),
       scannedMatches: getScannedMatches(),
       demoStorage: getDemoStorageState(),
     }, origin);
@@ -1859,7 +1946,7 @@ const server = createServer(async (request, response) => {
       });
       await pipeline(request, limiter, createWriteStream(tempPath, { flags: "wx" }));
       console.log(`[PARSER] Hızlı demo bilgisi okunuyor: ${safeName}`);
-      const meta = quickDemoMeta(tempPath);
+      const meta = await quickDemoMetaInWorker(tempPath);
       console.log(`[PARSER] Hızlı demo bilgisi hazır: ${meta.map || "Bilinmeyen harita"}`);
       sendJson(response, 200, { ok: true, meta }, origin);
     } catch (error) {
@@ -1926,14 +2013,16 @@ const server = createServer(async (request, response) => {
 server.listen(PORT, HOST, () => {
   console.log(`TRACER yerel parser hazır: http://${HOST}:${PORT}`);
   console.log("Bu pencere açık kaldığı sürece güncel Valve demoları analiz edilebilir.");
-  try {
-    repairExistingMatchDates();
-    applyConfiguredDemoRetention();
-    resumePendingMatchDownloads();
-    void reconcileLatestAutomaticMatch().catch((error) => console.warn("[BİLDİRİM] Başlangıç otomatik son maç telafisi başarısız:", error.message));
-  } catch (e) {
-    console.warn("[STEAM-GCPD] Başlangıç veri bakımı uyarısı:", e.message);
-  }
+  // Büyük eski geçmişler ayrı iş parçacığında küçültülür. HTTP/GSI servisi bu
+  // sırada hazır kalır; bakım ve otomatik indirme ancak kayıt güvenle açılınca başlar.
+  void prepareRecentMatchesStorage()
+    .then(() => {
+      repairExistingMatchDates();
+      applyConfiguredDemoRetention();
+      resumePendingMatchDownloads();
+      return reconcileLatestAutomaticMatch();
+    })
+    .catch((error) => console.warn("[STEAM-GCPD] Başlangıç veri bakımı uyarısı:", error.message));
   if (process.env.TRACER_SKIP_GSI_AUTO_OPTIMIZE !== "1") {
     void optimizeInstalledGsiConfig()
       .then((result) => {

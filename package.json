@@ -1,6 +1,6 @@
 {
   "name": "tracer-cs2-coach",
-  "version": "0.50.4",
+  "version": "0.50.5",
   "private": true,
   "engines": {
     "node": ">=22.13.0"

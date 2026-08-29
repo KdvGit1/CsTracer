@@ -1,10 +1,12 @@
 // Demo analiz worker'ı: ağır senkron parse işlemini ana HTTP sunucusundan ayırır.
 // server.mjs bu dosyayı worker_threads ile çalıştırır; sonuç parentPort üzerinden döner.
 import { workerData, parentPort } from "node:worker_threads";
-import { analyzeDemo } from "./analyze.mjs";
+import { analyzeDemo, quickDemoMeta } from "./analyze.mjs";
 
 try {
-  const result = analyzeDemo(workerData.filePath);
+  const result = workerData.operation === "quick-meta"
+    ? quickDemoMeta(workerData.filePath)
+    : analyzeDemo(workerData.filePath);
   parentPort.postMessage({ ok: true, result });
 } catch (error) {
   const raw = error instanceof Error ? error.message : String(error);
