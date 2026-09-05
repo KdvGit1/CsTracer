@@ -3,6 +3,10 @@
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { radarMapFor, worldToRadar } from "./map-data";
 import "./analysis.css";
+import "./experience.css";
+import HomeOverview from "./components/HomeOverview";
+import AnalysisGuide from "./components/AnalysisGuide";
+import { downloadedDemoMeta, validMatchDate } from "../shared/match_dates.mjs";
 import { CompactCoachVerdict, GrowthView, ProgressMatch } from "./growth";
 import { HitboxMannequin } from "./components/HitboxMannequin";
 import {
@@ -23,7 +27,6 @@ import {
   IconClock,
   IconPower,
   IconTerminal,
-  IconRocket,
   IconClose,
   IconExternalLink,
   IconRefresh,
@@ -77,7 +80,7 @@ export type {
   FullMatchReport,
 } from "./lib/types";
 
-type CurrentDemoMeta = { fileName: string; lastModified: number; size: number; matchId?: string };
+type CurrentDemoMeta = { fileName: string; lastModified: number; size: number; matchId?: string; matchDate?: number };
 
 const sampleMetrics = [
   { label: "K / D", value: "—", delta: "demo gerekli", tone: "warn" },
@@ -151,7 +154,8 @@ export default function Home() {
   const [showRoutePaths, setShowRoutePaths] = useState(true);
   const [selectedRouteRound, setSelectedRouteRound] = useState<number | "all">("all");
   const [activeSection, setActiveSection] = useState("dashboard");
-  const [activeView, setActiveView] = useState<"recent" | "analysis" | "growth" | "live" | "team">("analysis");
+  const [activeView, setActiveView] = useState<"home" | "recent" | "analysis" | "growth" | "live" | "team">("home");
+  useEffect(() => { window.scrollTo({ top: 0, behavior: "instant" }); }, [activeView]);
   const [profileOpen, setProfileOpen] = useState(false);
   const [preferredPlayer, setPreferredPlayer] = useState<PlayerIdentity | null>(null);
   const [profileReady, setProfileReady] = useState(false);
@@ -419,7 +423,7 @@ export default function Home() {
     savedSummaryRef.current = summaryKey;
     const summary = buildCompactSummary(report);
     const savedMatch: ProgressMatch = {
-      id: summaryKey, date: currentDemoMeta.lastModified || Date.now(), fileName: currentDemoMeta.fileName,
+      id: summaryKey, date: validMatchDate(currentDemoMeta.matchDate ?? currentDemoMeta.lastModified), fileName: currentDemoMeta.fileName,
       map: report.map, playerSteamId: report.player.steamid, playerName: report.player.name, summary,
     };
     void (async () => {
@@ -428,9 +432,10 @@ export default function Home() {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ matchId: summaryKey, matchDate: savedMatch.date, fileName: savedMatch.fileName, map: savedMatch.map, player: report.player, summary }),
         });
-        const payload = await response.json() as { error?: string };
+        const payload = await response.json() as { error?: string; match?: ProgressMatch };
         if (!response.ok) throw new Error(payload.error || "Maç özeti kaydedilemedi.");
-        setProgressMatches((current) => [savedMatch, ...current.filter((item) => item.id !== savedMatch.id)].sort((a, b) => b.date - a.date).slice(0, 90));
+        const confirmedMatch = payload.match || savedMatch;
+        setProgressMatches((current) => [confirmedMatch, ...current.filter((item) => item.id !== confirmedMatch.id)].sort((a, b) => b.date - a.date).slice(0, 90));
         setProgressMessage("Maç özeti gelişim hafızasına kaydedildi.");
       } catch (saveError) {
         savedSummaryRef.current = "";
@@ -771,7 +776,7 @@ export default function Home() {
       const updatedSummary = buildCompactSummary(report, compactVerdict);
       const updatedMatch: ProgressMatch = {
         id: summaryKey,
-        date: currentDemoMeta.lastModified || Date.now(),
+        date: validMatchDate(currentDemoMeta.matchDate ?? currentDemoMeta.lastModified),
         fileName: currentDemoMeta.fileName,
         map: report.map,
         playerSteamId: report.player.steamid,
@@ -782,8 +787,11 @@ export default function Home() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ matchId: summaryKey, matchDate: updatedMatch.date, fileName: updatedMatch.fileName, map: updatedMatch.map, player: report.player, summary: updatedSummary }),
-      }).then(() => {
-        setProgressMatches((current) => [updatedMatch, ...current.filter((item) => item.id !== updatedMatch.id)].sort((a, b) => b.date - a.date).slice(0, 90));
+      }).then(async (response) => {
+        if (!response.ok) throw new Error("Koç özeti kaydedilemedi.");
+        const payload = await response.json() as { match?: ProgressMatch };
+        const confirmedMatch = payload.match || updatedMatch;
+        setProgressMatches((current) => [confirmedMatch, ...current.filter((item) => item.id !== confirmedMatch.id)].sort((a, b) => b.date - a.date).slice(0, 90));
       }).catch(() => {});
     }
 
@@ -807,12 +815,7 @@ export default function Home() {
   function openDownloadedMatchAnalysis(analysis: import("./components/RecentMatchesView").RecentMatchAnalysis, match?: ScannedMatchItem) {
     if (analysis?.reports) applyReports(analysis.reports, analysis.analysisVersion);
     setFileName(analysis.header?.map_name ? `de_${analysis.header.map_name.replace(/^de_/, "")}` : "Otomatik CS2 Maçı");
-    setCurrentDemoMeta({
-      fileName: analysis.header?.map_name || "auto_match.dem",
-      lastModified: analysis.timestamp || 1,
-      size: 1024 * 1024,
-      matchId: match?.id,
-    });
+    setCurrentDemoMeta(downloadedDemoMeta(match));
     setActiveView("analysis");
     navigateTo("dashboard");
   }
@@ -822,11 +825,14 @@ export default function Home() {
       <aside className="sidebar">
         <div className="brand"><span>TR</span><strong>TRACER</strong></div>
         <nav aria-label="Ana menü">
+          <button className={`nav-item ${activeView === "home" ? "active" : ""}`} onClick={() => { setActiveView("home"); setActiveSection("home"); }}><IconDashboard size={15} /> Başlangıç</button>
+          <span className="nav-group-label">MAÇ MERKEZİ</span>
           <button className={`nav-item ${activeView === "recent" ? "active" : ""}`} onClick={() => { setActiveView("recent"); setActiveSection("recent"); }}><IconClock size={15} /> Son Maçlarım</button>
           <button className={`nav-item ${activeView === "team" ? "active" : ""}`} onClick={() => { setActiveView("team"); setActiveSection("team"); }}><IconPlan size={15} /> Takım Koçu</button>
           <button className={`nav-item nav-item-live ${activeView === "live" ? "active" : ""}`} onClick={() => { setActiveView("live"); setActiveSection("live"); }}><span className="live-nav-dot" /> Canlı Koç (Live)</button>
-          <button className={`nav-item ${activeView === "analysis" && activeSection === "dashboard" ? "active" : ""}`} onClick={() => { setActiveView("analysis"); navigateTo("dashboard"); }}><IconDashboard size={15} /> Genel bakış</button>
           <button className={`nav-item ${activeView === "growth" ? "active" : ""}`} onClick={() => { setActiveView("growth"); setActiveSection("growth"); }}><IconGrowth size={15} /> Gelişim</button>
+          <span className="nav-group-label">DEMO ANALİZİ</span>
+          <button className={`nav-item ${activeView === "analysis" && activeSection === "dashboard" ? "active" : ""}`} onClick={() => { setActiveView("analysis"); navigateTo("dashboard"); }}><IconDashboard size={15} /> Genel bakış</button>
           <button className={`nav-item ${activeSection === "aim-precision" ? "active" : ""}`} onClick={() => navigateTo("aim-precision")}><IconCrosshair size={15} /> Nişangah & İsabet</button>
           <button className={`nav-item ${activeSection === "duel-reaction" ? "active" : ""}`} onClick={() => navigateTo("duel-reaction")}><IconDuel size={15} /> Düello & Reaksiyon</button>
           <button className={`nav-item ${activeSection === "economy-view" ? "active" : ""}`} onClick={() => navigateTo("economy-view")}><IconEconomy size={15} /> Ekonomi & Bakiye</button>
@@ -834,15 +840,15 @@ export default function Home() {
           <button className={`nav-item ${activeSection === "weapon-profile" ? "active" : ""}`} onClick={() => navigateTo("weapon-profile")}><IconWeapon size={15} /> Silah profili</button>
           <button className={`nav-item ${activeSection === "map-analysis" ? "active" : ""}`} onClick={() => navigateTo("map-analysis")}><IconMap size={15} /> Harita olayları</button>
           <button className={`nav-item ${activeSection === "development" ? "active" : ""}`} onClick={() => navigateTo("development")}><IconPlan size={15} /> Gelişim planı</button>
-          <button className="nav-item" onClick={shutdownTracer} style={{ color: "#ff6b6b", marginTop: "4px" }} title="TRACER ve tüm arka plan servislerini tamamen kapat"><IconPower size={14} style={{ marginRight: "6px" }} /> TRACER’ı Kapat</button>
         </nav>
         <div className="sidebar-spacer" />
+        <div className="sidebar-tools"><button onClick={() => setSettingsOpen(true)} title="Koç ve kaynak ayarları"><IconSettings size={14} /> Ayarlar</button><button onClick={() => setUpdateModalOpen(true)} title="Güncelleme merkezi">v{updateInfo?.currentVersion || APP_VERSION}{updateInfo?.hasUpdate ? " ↑" : ""}</button><button onClick={shutdownTracer} aria-label="TRACER’ı ve arka plan servislerini kapat"><IconPower size={14} /></button></div>
         <button className={`ai-status ${coachState}`} onClick={() => setSettingsOpen(true)}>
           <span className="pulse" />
           <div><b>{coachState === "released" ? "KAYNAKLAR BIRAKILDI" : coachState === "online" ? (coachEngine === "embedded" ? "GÖMÜLÜ KOÇ HAZIR" : "OLLAMA BAĞLI") : coachState === "thinking" ? "KOÇ DÜŞÜNÜYOR" : "YEREL KOÇU AYARLA"}</b><small>{coachEngine === "embedded" ? `${embeddedModelName} · ${embeddedBackendLabel}` : ollamaModel} · cihazda</small></div>
         </button>
         <button className="player-card" onClick={() => setProfileOpen(true)} aria-label="Kişisel oyuncu profilini seç">
-          <div className="avatar">KD</div>
+          <div className="avatar">{preferredPlayer?.name.slice(0, 2).toLocaleUpperCase("tr-TR") || "?"}</div>
           <div><b>{preferredPlayer?.name || (progressLoading ? "Profil yükleniyor…" : "Kendini seç")}</b><small>{preferredPlayer ? `${progressMatches.length} kayıtlı maç · kişisel profil` : progressLoading ? "Kayıtlı oyuncu geri yükleniyor" : "Başka oyuncu verisi kullanılmaz"}</small></div>
           <span><IconSettings size={14} /></span>
         </button>
@@ -850,7 +856,9 @@ export default function Home() {
 
       <NotificationCenter onSelectAnalysis={openDownloadedMatchAnalysis} onProgressChange={refreshProgressMemory} />
 
-      {activeView === "recent" ? (
+      {activeView === "home" ? (
+        <HomeOverview playerName={preferredPlayer?.name} matches={progressMatches} loading={progressLoading} hasAnalysis={Boolean(report)} onNavigate={(view) => { setActiveView(view); setActiveSection(view === "analysis" ? "dashboard" : view); window.scrollTo({ top: 0 }); }} onUpload={(event) => { setActiveView("analysis"); setActiveSection("dashboard"); void handleDemo(event); }} onProfile={() => setProfileOpen(true)} />
+      ) : activeView === "recent" ? (
         <RecentMatchesView onSelectAnalysis={openDownloadedMatchAnalysis} />
       ) : activeView === "team" ? (
         <TeamCoachView />
@@ -866,22 +874,6 @@ export default function Home() {
             <h1>{report ? `${report.player.name} için analiz hazır.` : "Demo analizine hazır."}</h1>
           </div>
           <div className="top-actions">
-            <button
-              className="topbar-recent-toggle-btn"
-              onClick={() => setActiveView("recent")}
-              title="Steam'den Otomatik İndirilen Son 5 Maçım"
-            >
-              <IconClock size={13} style={{ marginRight: "4px" }} />
-              <span>SON MAÇLARIM</span>
-            </button>
-            <button
-              className="topbar-live-toggle-btn"
-              onClick={() => setActiveView("live")}
-              title="Canlı CS2 Maç Koçluğuna Geç"
-            >
-              <span className="live-btn-dot" />
-              <span>CANLI KOÇ (LIVE)</span>
-            </button>
             <button
               className={`topbar-coach-btn ${fullMatchReport ? "has-report" : ""}`}
               onClick={() => {
@@ -903,10 +895,10 @@ export default function Home() {
                 {coachState === "thinking"
                   ? "Maç Analiz Ediliyor…"
                   : fullMatchReport
-                  ? "Full Koç Raporunu Aç"
+                  ? "Koç Raporunu Aç"
                   : report
-                  ? "Full Maç Analizi Yap & Rapor"
-                  : "Full Maç Analizi (Demo Seç)"}
+                  ? "Koç Raporu Oluştur"
+                  : "Analiz İçin Maç Seç"}
               </span>
             </button>
             <button className="ghost-button" onClick={() => setSettingsOpen(true)}><IconSettings size={14} /> Kaynakları bağla</button>
@@ -917,29 +909,6 @@ export default function Home() {
             >
               <IconTerminal size={13} style={{ marginRight: "5px" }} />
               <span>Terminal</span>
-            </button>
-            <button
-              className={`ghost-button update-nav-btn ${updateInfo?.hasUpdate ? "has-new-update" : ""}`}
-              onClick={() => setUpdateModalOpen(true)}
-              title={updateInfo?.hasUpdate ? `Yeni v${updateInfo.latestVersion} güncellemesi mevcut!` : "TRACER sürüm & yama merkezi"}
-            >
-              {updateInfo?.hasUpdate ? (
-                <>
-                  <IconRocket size={13} style={{ marginRight: "4px" }} />
-                  <span>Güncelleme</span>
-                </>
-              ) : (
-                <span>v{updateInfo?.currentVersion || APP_VERSION}</span>
-              )}
-            </button>
-            <button
-              className="ghost-button shutdown-nav-btn"
-              onClick={shutdownTracer}
-              title="TRACER'ı ve tüm arka plan servislerini tamamen kapat"
-              style={{ color: "#ff6b6b", borderColor: "rgba(255, 107, 107, 0.35)", fontWeight: 700 }}
-            >
-              <IconPower size={13} style={{ marginRight: "4px" }} />
-              <span>Kapat</span>
             </button>
             <label className="upload-button">
               <input type="file" accept=".dem,.bz2" onChange={handleDemo} />
@@ -1009,6 +978,8 @@ export default function Home() {
             </div>
           </div>
         )}
+
+        {report && <AnalysisGuide report={report} onNavigate={navigateTo} />}
 
         <div className="metrics-row">
           {metrics.map((metric) => (
@@ -1428,6 +1399,7 @@ export default function Home() {
                 <small>{hitboxSchemaCurrent && report?.sprayStats ? `${report.sprayStats.hitboxSampleCount ?? Object.values(report.sprayStats.hitboxCounts).reduce((sum, count) => sum + (count || 0), 0)} Hitgroup Örneği` : report ? "Güncel hitgroup analizi gerekli" : "Demo analizi bekleniyor"}</small>
               </header>
               <HitboxMannequin
+                available={hitboxSchemaCurrent && report?.sprayStats?.hitboxStatus === "measured"}
                 counts={hitboxSchemaCurrent ? report?.sprayStats?.hitboxCounts : undefined}
                 percents={hitboxSchemaCurrent ? report?.sprayStats?.hitboxPercents : undefined}
                 totalHits={hitboxSchemaCurrent && report?.sprayStats ? (report.sprayStats.hitboxSampleCount ?? Object.values(report.sprayStats.hitboxCounts).reduce((sum, count) => sum + (count || 0), 0)) : 0}

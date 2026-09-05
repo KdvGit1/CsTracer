@@ -90,6 +90,15 @@ test("takım keşif endpoint'i Steam oturumu yokken güvenli önbellek sonucu d�
 
   try {
     await waitForCompanion(companionUrl);
+    const scanStartedAt = Date.now();
+    const scanStart = await post(companionUrl, "/steam/scan", {});
+    assert.equal(scanStart.status, 202);
+    assert.ok(Date.now() - scanStartedAt < 2000, "tarama isteği uzak Steam yanıtını beklememeli");
+    const scanState = await (await fetch(`${companionUrl}/steam/scan`)).json();
+    assert.equal(scanState.hasSession, false);
+    assert.equal(scanState.connection.state, "disconnected");
+    assert.ok(scanState.scan.revision >= 1);
+    assert.equal(Object.hasOwn(scanState, "session"), false, "durum endpoint'i çerez taşımamalı");
     const recentResponse = await fetch(`${companionUrl}/matches/recent`);
     const recent = await recentResponse.json();
     const dates = new Map(recent.matches.map((match) => [match.id, match.formattedDate]));
@@ -103,6 +112,17 @@ test("takım keşif endpoint'i Steam oturumu yokken güvenli önbellek sonucu d�
     assert.equal(progress.matches[0].id, "date-a", "Steam maç kimliği gelişim kaydında sabit kalmalı");
     assert.equal(progress.matches[0].summary.weapons[0].score, 4.1);
     assert.equal(progress.matches[0].summary.aimMetrics.earlyAccuracy, 20);
+    for (const wrongDate of [1, Date.now()]) {
+      const saved = await post(companionUrl, "/progress", {
+        matchId: "date-a", matchDate: wrongDate, fileName: "date-a.dem", map: "dust2",
+        player: { steamid: personalSteamId, name: "Tester" }, summary: progress.matches[0].summary,
+      });
+      assert.equal(saved.status, 200);
+      assert.equal((await saved.json()).match.date, 200_001, "rapor yeniden kaydedilince gerçek maç tarihi korunmalı");
+    }
+    const afterReopen = await (await fetch(`${companionUrl}/progress`)).json();
+    assert.equal(afterReopen.matches.length, 1);
+    assert.equal(afterReopen.matches[0].date, 200_001);
 
     const automationResponse = await fetch(`${companionUrl}/automation/state`);
     assert.equal(automationResponse.status, 200);
@@ -119,6 +139,20 @@ test("takım keşif endpoint'i Steam oturumu yokken güvenli önbellek sonucu d�
     const settings = await settingsResponse.json();
     assert.equal(settings.settings.demoRetentionCount, 3, "takım koçu için en az üç demo korunmalı");
     assert.equal(settings.settings.autoDownloadLatestMatch, true);
+
+    const discordInitialResponse = await fetch(`${companionUrl}/discord/state`);
+    assert.equal(discordInitialResponse.status, 200);
+    assert.equal((await discordInitialResponse.json()).connection.status, "disabled");
+    const discordWebhook = "https://discord.com/api/webhooks/123456789012345678/abcdefghijklmnopqrstuvwxyzABCDEFGH123456";
+    const discordSettingsResponse = await fetch(`${companionUrl}/discord/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Origin: appOrigin },
+      body: JSON.stringify({ enabled: true, mode: "webhook", webhookUrl: discordWebhook }),
+    });
+    assert.equal(discordSettingsResponse.status, 200);
+    const discordSettings = await discordSettingsResponse.json();
+    assert.equal(discordSettings.settings.hasWebhookUrl, true);
+    assert.equal(JSON.stringify(discordSettings).includes("abcdefghijklmnopqrstuvwxyz"), false, "Discord sırrı API yanıtına sızmamalı");
 
     const readAllResponse = await post(companionUrl, "/notifications/read-all", {});
     assert.equal(readAllResponse.status, 200);

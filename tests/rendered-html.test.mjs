@@ -25,9 +25,10 @@ test("server-renders the real TRACER empty state without fake match data", { ski
 
   const html = await response.text();
   assert.match(html, /<title>TRACER — CS2 Performance Lab<\/title>/i);
-  assert.match(html, /Demo analizine hazır\./);
-  assert.match(html, /Sahte istatistik gösterilmiyor/);
-  assert.match(html, /Gerçek demo verisi bekleniyor/);
+  assert.match(html, /Oyunu oyna/);
+  assert.match(html, /Son 5 maçın nabzı/);
+  assert.match(html, /Henüz ölçüm yok/);
+  assert.match(html, /Metrikleri nasıl okumalıyım/);
   assert.match(html, /Qwen3 1\.7B Q4_K_M/);
   assert.match(html, /Kayıtlı oyuncu geri yükleniyor/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape|Building your site/i);
@@ -112,7 +113,13 @@ test("maç sonu bildirim merkezi depolama ve otomasyon sözleşmesini gösterir"
   assert.match(notifications, /Ham demo saklama adedi/);
   assert.match(notifications, /Son maçı her zaman otomatik indir/);
   assert.match(notifications, /İndir ve analiz et/);
+  assert.match(notifications, /DISCORD MAÇ RAPORLAYICISI/);
+  assert.match(notifications, /Takım karnesini kanala otomatik gönder/);
+  assert.match(notifications, /\/discord\/test/);
+  assert.match(notifications, /\/discord\/send-match/);
   assert.match(companion, /\/automation\/settings/);
+  assert.match(companion, /\/discord\/settings/);
+  assert.match(companion, /discordReporter\.enqueue/);
   assert.match(companion, /notificationActionMatch/);
   assert.match(companion, /queueMatchDownload\(scannedMatch/);
   assert.match(companion, /reconcileLatestAutomaticMatch/);

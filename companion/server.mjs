@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { createWriteStream, existsSync, statSync } from "node:fs";
+import { progressMatchDate } from "../shared/match_dates.mjs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -29,10 +30,12 @@ import {
   selectionSteamIds,
 } from "./squad/identity.mjs";
 import { checkGsiStatus, installGsiConfig, optimizeInstalledGsiConfig } from "./integrator.mjs";
+import { DiscordReporter } from "./discord_reporter.mjs";
 import { checkForUpdates, downloadAndApplyPatch, getLocalVersionInfo, saveLocalVersionInfo, restartApplication } from "./updater.mjs";
 import {
   getSteamSession,
   getSteamConnectionHealth,
+  getSteamScanState,
   extractSteamIdFromCookie,
   saveSteamSession,
   getRecentMatches,
@@ -65,6 +68,7 @@ const DATA_DIR = process.env.TRACER_DATA_DIR || join(process.env.LOCALAPPDATA ||
 const PROGRESS_PATH = join(DATA_DIR, "progress.json");
 const squadStore = new SquadStore(DATA_DIR);
 const matchAutomationStore = new MatchAutomationStore(DATA_DIR);
+const discordReporter = new DiscordReporter(DATA_DIR);
 const MODEL_PATH = process.env.TRACER_MODEL_PATH || join(ROOT, "model", "coach.gguf");
 const SQUAD_MINIMUM_MATCHES = 3;
 const CPU_LLAMA_SERVER_PATH = process.env.TRACER_LLAMA_SERVER || [
@@ -548,14 +552,14 @@ async function updateProgressStore(mutator) {
   return progressWriteQueue;
 }
 
-function cleanProgressMatch(body, profile) {
+function cleanProgressMatch(body, profile, existing = []) {
   const player = cleanIdentity(body?.player);
   if (!samePlayer(player, profile)) throw Object.assign(new Error("Seçili kişisel oyuncu dışında bir oyuncunun maçı kaydedilemez."), { statusCode: 409 });
   const summary = body?.summary;
   if (!summary || typeof summary !== "object" || Array.isArray(summary)) throw new Error("Maç özeti eksik.");
   return {
     id: String(body.matchId || "").slice(0, 400),
-    date: Number(body.matchDate) || Date.now(),
+    date: progressMatchDate(String(body.matchId || ""), body.matchDate, getRecentMatches(), getScannedMatches(), existing),
     fileName: String(body.fileName || "match.dem").slice(0, 260),
     map: String(body.map || "Bilinmeyen harita").slice(0, 80),
     playerSteamId: player.steamid,
@@ -568,7 +572,7 @@ function progressMatchFromAnalyzedMatch(match, report, summary = buildCompactSum
   if (!match?.id || !report?.player || !summary) return null;
   return {
     id: String(match.id).slice(0, 400),
-    date: Number(match.timestamp) || Date.now(),
+    date: progressMatchDate(match.id, match.timestamp, [match], getScannedMatches()),
     fileName: String(match.fileName || `${match.map || "match"}.dem`).slice(0, 260),
     map: String(report.map || match.map || "Bilinmeyen harita").slice(0, 80),
     playerSteamId: String(report.player.steamid || "").slice(0, 32),
@@ -617,15 +621,17 @@ async function handleProgress(request, response, origin) {
   if (request.method === "POST") {
     const body = await readJsonBody(request);
     let count = 0;
+    let savedMatch = null;
     await updateProgressStore((store) => {
       if (!store.profile) throw new Error("Önce demodaki kişisel oyuncunu seç.");
-      const match = cleanProgressMatch(body, store.profile);
+      const match = cleanProgressMatch(body, store.profile, store.matches);
+      savedMatch = match;
       if (!match.id) throw new Error("Maç kimliği eksik.");
       upsertPersonalProgressMatch(store, match);
       count = store.matches.filter((item) => samePlayer({ steamid: item.playerSteamId, name: item.playerName }, store.profile)).length;
       return store;
     });
-    sendJson(response, 200, { ok: true, count }, origin);
+    sendJson(response, 200, { ok: true, count, match: savedMatch }, origin);
     return;
   }
   sendJson(response, 405, { error: "Desteklenmeyen yöntem." }, origin);
@@ -722,6 +728,24 @@ async function handleMatchDownloadStatus(event) {
     read: false,
     error: "",
   });
+
+  // Discord gönderimi analiz akışını hiçbir zaman bekletmez. Rapor küçük ve
+  // kalıcı bir outbox kaydına çevrilir; ağ/Discord kesintisinde sonraki açılışta
+  // kaldığı mesajdan devam eder.
+  try {
+    const scannedMatch = getScannedMatches().find((item) => item.id === event.matchId) || null;
+    const discordMatch = {
+      ...(scannedMatch || {}),
+      ...event.match,
+      mode: event.match?.mode || scannedMatch?.mode || "CS2",
+      players: Array.isArray(event.match?.players) && event.match.players.length ? event.match.players : scannedMatch?.players,
+      score: event.match?.score || scannedMatch?.score,
+    };
+    const discordResult = discordReporter.enqueue(discordMatch, { profile: progress.profile });
+    if (discordResult.queued) console.log(`[DISCORD] ${event.matchId} maç raporu gönderim kuyruğuna alındı.`);
+  } catch (error) {
+    console.warn(`[DISCORD] Maç raporu kuyruğa alınamadı: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function scheduleQueueRetry(delayMs = 30_000) {
@@ -1391,6 +1415,86 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  // --- Discord Maç Sonu Raporlayıcısı ---
+  if (request.method === "GET" && request.url === "/discord/state") {
+    sendJson(response, 200, { ok: true, ...discordReporter.publicState() }, origin);
+    return;
+  }
+
+  if (request.method === "PUT" && request.url === "/discord/settings") {
+    try {
+      const body = await readJsonBody(request, 32 * 1024);
+      const state = discordReporter.saveSettings(body);
+      sendJson(response, 200, { ok: true, ...state }, origin);
+    } catch (error) {
+      sendJson(response, 422, { error: error instanceof Error ? error.message : String(error) }, origin);
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/discord/test") {
+    try {
+      const latestAnalysis = [...getRecentMatches()]
+        .filter((item) => item?.fullAnalysis)
+        .sort((left, right) => Number(right.timestamp || 0) - Number(left.timestamp || 0))[0] || null;
+      const scanned = latestAnalysis ? getScannedMatches().find((item) => item.id === latestAnalysis.id) || null : null;
+      const latestAnalyzed = latestAnalysis ? {
+        ...(scanned || {}),
+        ...latestAnalysis,
+        mode: latestAnalysis.mode || scanned?.mode || "CS2",
+        players: Array.isArray(latestAnalysis.players) && latestAnalysis.players.length ? latestAnalysis.players : scanned?.players,
+        score: latestAnalysis.score || scanned?.score,
+      } : null;
+      const progress = await progressContext();
+      const state = await discordReporter.sendTest({ match: latestAnalyzed, profile: progress.profile });
+      sendJson(response, 200, {
+        ok: true,
+        message: latestAnalyzed ? "Son maçın Discord tablo görseli gönderildi." : "Discord örnek tablo görseli gönderildi.",
+        ...state,
+      }, origin);
+    } catch (error) {
+      sendJson(response, 502, { error: error instanceof Error ? error.message : String(error), ...discordReporter.publicState() }, origin);
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/discord/send-match") {
+    try {
+      const body = await readJsonBody(request, 16 * 1024);
+      const recent = getRecentMatches();
+      const analyzed = body?.matchId
+        ? recent.find((item) => item.id === String(body.matchId))
+        : [...recent].sort((left, right) => Number(right.timestamp || 0) - Number(left.timestamp || 0))[0];
+      if (!analyzed?.fullAnalysis) {
+        sendJson(response, 404, { error: "Gönderilecek tamamlanmış maç analizi bulunamadı." }, origin);
+        return;
+      }
+      const scanned = getScannedMatches().find((item) => item.id === analyzed.id) || null;
+      const progress = await progressContext();
+      const result = discordReporter.enqueue({
+        ...(scanned || {}),
+        ...analyzed,
+        mode: analyzed.mode || scanned?.mode || "CS2",
+        players: Array.isArray(analyzed.players) && analyzed.players.length ? analyzed.players : scanned?.players,
+        score: analyzed.score || scanned?.score,
+      }, { profile: progress.profile, force: true });
+      if (!result.queued) {
+        sendJson(response, 409, { error: "Discord maç gönderimi kapalı. Önce Bildirimler içinden bağlantıyı açın." }, origin);
+        return;
+      }
+      sendJson(response, 202, { ok: true, ...result, message: "Maç raporu Discord gönderim kuyruğuna alındı." }, origin);
+    } catch (error) {
+      sendJson(response, 422, { error: error instanceof Error ? error.message : String(error) }, origin);
+    }
+    return;
+  }
+
+  if (request.method === "DELETE" && request.url === "/discord/settings") {
+    const state = discordReporter.disconnect();
+    sendJson(response, 200, { ok: true, message: "Discord bağlantısı ve yerel sırları kaldırıldı.", ...state }, origin);
+    return;
+  }
+
   if (request.method === "POST" && request.url === "/notifications/read-all") {
     const notifications = matchAutomationStore.markAllRead();
     sendJson(response, 200, { ok: true, notifications, unreadCount: 0 }, origin);
@@ -1458,6 +1562,7 @@ const server = createServer(async (request, response) => {
       ok: true,
       hasSession: Boolean(session.steamLoginSecure),
       connection,
+      scan: getSteamScanState(),
       session: {
         steamLoginSecureMasked: session.steamLoginSecure ? `${session.steamLoginSecure.substring(0, 8)}...` : "",
         sessionid: session.sessionid || "",
@@ -1485,6 +1590,7 @@ const server = createServer(async (request, response) => {
       const updated = saveSteamSession(body);
       sendJson(response, 200, {
         ok: true,
+        connection: getSteamConnectionHealth(updated),
         session: {
           steamId: updated.steamId || "",
           hasSession: Boolean(updated.steamLoginSecure),
@@ -1521,6 +1627,22 @@ const server = createServer(async (request, response) => {
     } catch (err) {
       sendJson(response, 500, { error: err.message }, origin);
     }
+    return;
+  }
+
+  // Non-blocking scan API: no remote Steam request is awaited on this route.
+  if ((request.method === "GET" || request.method === "POST") && request.url === "/steam/scan") {
+    if (request.method === "POST") {
+      void scanSteamGcpdMatches().catch((error) => console.warn("[STEAM] Arka plan taraması:", error.message));
+    }
+    const session = getSteamSession();
+    sendJson(response, request.method === "POST" ? 202 : 200, {
+      ok: true,
+      scan: getSteamScanState(),
+      connection: getSteamConnectionHealth(session),
+      hasSession: Boolean(session.steamLoginSecure),
+      autoScanEnabled: session.autoScanEnabled !== false,
+    }, origin);
     return;
   }
 
@@ -2013,6 +2135,7 @@ const server = createServer(async (request, response) => {
 server.listen(PORT, HOST, () => {
   console.log(`TRACER yerel parser hazır: http://${HOST}:${PORT}`);
   console.log("Bu pencere açık kaldığı sürece güncel Valve demoları analiz edilebilir.");
+  discordReporter.start();
   // Büyük eski geçmişler ayrı iş parçacığında küçültülür. HTTP/GSI servisi bu
   // sırada hazır kalır; bakım ve otomatik indirme ancak kayıt güvenle açılınca başlar.
   void prepareRecentMatchesStorage()
@@ -2035,6 +2158,7 @@ server.listen(PORT, HOST, () => {
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, async () => {
+    discordReporter.stop();
     await stopCoachProcess();
     server.close(() => process.exit(0));
   });

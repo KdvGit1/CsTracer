@@ -8,6 +8,7 @@ import type {
   MovementProfile,
   PlayerReport,
 } from "./types";
+import { movementEvidence } from "../../shared/experience.mjs";
 import { getAngleTier, getSprayTier } from "./format";
 
 // Bu eşikler profesyonel benchmark değildir. Yalnız aynı maç içinde video
@@ -36,21 +37,19 @@ export const SEVERITY_LABEL: Record<ErrorSeverity, string> = {
 export const SEVERITY_RANK: Record<ErrorSeverity, number> = { critical: 0, high: 1, moderate: 2, minor: 3, info: 4, strong: 5 };
 
 export function explainMovement(profile: MovementProfile) {
-  const fastShotsPerTen = Math.max(0, Math.min(10, Math.round(profile.fastPercent / 10)));
+  const movementFacts = movementEvidence(profile);
+  const fastShotsPerTen = movementFacts.invalidPerTen;
   const severityMeaning = profile.status !== "measured"
     ? "Hız veya max_speed alanı çıkmadığı için hareket sonucu üretilmedi."
     : `Ölçülen atışların %${profile.invalidShotPercent} kadarı silahın max_speed değerinin %34'lük doğruluk sınırını aştı veya havadayken atıldı.`;
-  const rifleMov = profile.byCategory?.rifle?.movingPercent ?? 0;
-  const sniperMov = profile.byCategory?.sniper?.movingPercent ?? 0;
-  const smgMov = profile.byCategory?.smg?.movingPercent ?? 0;
   return {
-    summary: `Basitçe: Her 10 atışın yaklaşık ${fastShotsPerTen} tanesinde duruş hız sınırını aştın. ${severityMeaning}`,
+    summary: movementFacts.measured ? `Basitçe: Her 10 atışın yaklaşık ${fastShotsPerTen} tanesinde duruş hız sınırını aştın. ${severityMeaning}` : "Atış anındaki duruş için yeterli ölçüm yok; eksik veriyi sıfır hata saymıyoruz.",
     average: `Ortalama ${profile.averageSpeed} u/s: Tetiğe bastığın anlardaki ortalama hareket hızın; silahın hızı veya FPS değil.`,
     p90: `P90 ${profile.p90Speed} u/s: Atışlarının %90'ında bu hızda ya da daha yavaştın.`,
     micro: `Mikro %${profile.microPercent}: Küçük ayak kaymaları.`,
     fast: `Yüksek Hız %${profile.fastPercent}: Belirgin biçimde hareket ederken atılan mermiler.`,
     score: `%${profile.invalidShotPercent} doğrudan sınır üstü atış payıdır; birleşik veya profesyonel puan değildir. ${profile.unmeasuredShots} atış eksik veri nedeniyle dışarıda tutuldu.`,
-    byWeaponNote: `Tüfek sınır üstü: %${rifleMov} · Sniper: %${sniperMov} · SMG: %${smgMov}. Her kategori kendi tick max_speed değerine göre ölçülür.`,
+    byWeaponNote: `Tüfek sınır üstü: ${movementFacts.rifle} · Sniper: ${movementFacts.sniper} · SMG: ${movementFacts.smg}. Her kategori kendi tick max_speed değerine göre ölçülür.`,
   };
 }
 
@@ -151,7 +150,11 @@ export function buildCoachPacket(report: PlayerReport): CoachPacket {
   const rounds = Math.max(1, report.rounds);
   const deaths = Math.max(1, report.deaths);
   const zoneCounts = new Map<string, number>();
-  for (const detail of report.deathDetails) zoneCounts.set(detail.zone, (zoneCounts.get(detail.zone) || 0) + 1);
+  for (const detail of report.deathDetails || []) {
+    if (detail.zone?.trim() && !/unknown|bilinm|veri yok|n\/a|tanımsız/i.test(detail.zone)) zoneCounts.set(detail.zone, (zoneCounts.get(detail.zone) || 0) + 1);
+  }
+  const locatedDeaths = [...zoneCounts.values()].reduce((sum, count) => sum + count, 0);
+  const completePositionCoverage = report.deaths > 0 && locatedDeaths >= report.deaths;
   const positionZones = [...zoneCounts.entries()].map(([zone, count]) => ({ zone, deaths: count, share: Math.round(count / deaths * 100) })).sort((a, b) => b.deaths - a.deaths);
   const topZone = positionZones[0] || { zone: report.topZone || "Bilinmeyen bölge", deaths: report.topZoneDeaths || 0, share: 0 };
   const utilityPerRound = report.utilityDamage / rounds;
@@ -221,12 +224,12 @@ export function buildCoachPacket(report: PlayerReport): CoachPacket {
     },
     {
       id: "position", area: "Harita Pozisyonu",
-      title: topZone.deaths >= 3 ? `${topZone.zone} tekrar eden risk alanı` : "Belirgin ölüm kümesi yok",
-      evidence: `${topZone.zone}: ${topZone.deaths} ölüm (%${topZone.share}). Taranan bölgeler: ${positionZones.slice(0, 4).map((item) => `${item.zone} ${item.deaths}`).join(", ") || "veri yok"}.`,
-      interpretation: topZone.deaths >= 3 ? "Aynı açı, yeniden peek, utility eksikliği veya geç rotasyon ihtimalleri round görüntüsüyle ayrıştırılmalı." : "Ölümler tek bir pozisyona aşırı yığılmamış.",
+      title: !locatedDeaths ? "Ölüm konumu ölçülemedi" : topZone.deaths >= 3 ? `${topZone.zone} tekrar eden risk alanı` : completePositionCoverage ? "Belirgin ölüm kümesi yok" : "Konum örnekleri sınırlı",
+      evidence: locatedDeaths ? `${locatedDeaths}/${report.deaths} ölümün bölgesi biliniyor. ${topZone.zone}: ${topZone.deaths} ölüm (%${topZone.share}). Taranan bölgeler: ${positionZones.slice(0, 4).map((item) => `${item.zone} ${item.deaths}`).join(", ")}.` : "Geçerli ölüm bölgesi kaydı yok. Bu durum iyi pozisyon aldığın anlamına gelmez.",
+      interpretation: !locatedDeaths ? "Bölge verisi olmadan pozisyon kalitesi hakkında hüküm üretilmez." : topZone.deaths >= 3 ? "Aynı açı, yeniden peek, utility eksikliği veya geç rotasyon ihtimalleri round görüntüsüyle ayrıştırılmalı." : completePositionCoverage ? "Ölümler tek bir pozisyona aşırı yığılmamış." : "Eksik bölgeler nedeniyle genel konum başarısı yorumlanamaz.",
       action: topZone.deaths >= 3 ? `${topZone.zone} ölümlerini sırayla izle; her biri için ilk temas, kaçış rotası, takım görüşü ve rakip utility sütunlarını işaretle.` : "Yeni demolarla konum örneğini büyüt; iki maç üst üste tekrarlayan bölgeleri önceliklendir.",
-      severity: topZone.deaths >= 5 && topZone.share >= 45 ? "critical" : topZone.deaths >= 4 || topZone.share >= 40 ? "high" : topZone.deaths >= 3 ? "moderate" : topZone.deaths >= 2 ? "minor" : "strong",
-      confidence: report.deaths >= 8 ? sampleConfidence : 62,
+      severity: !locatedDeaths ? "info" : topZone.deaths >= 5 && topZone.share >= 45 ? "critical" : topZone.deaths >= 4 || topZone.share >= 40 ? "high" : topZone.deaths >= 3 ? "moderate" : topZone.deaths >= 2 ? "minor" : completePositionCoverage && report.deaths >= 3 ? "strong" : "info",
+      confidence: !locatedDeaths ? 0 : Math.min(sampleConfidence, Math.round(locatedDeaths / deaths * 100)),
     },
     {
       id: "utility", area: "Utility & Flash",

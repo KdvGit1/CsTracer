@@ -128,16 +128,20 @@ $rarCandidates = @(
 ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
 $rarPath = $rarCandidates | Select-Object -First 1
 if (-not $rarPath) { throw "Tam ilk kurulum paketini oluşturmak için WinRAR/Rar.exe bulunamadı." }
-if (Test-Path -LiteralPath $portableArchive) { Remove-Item -LiteralPath $portableArchive -Force }
+$buildingArchive = Join-Path $root "release\TRACER-Portable-v$targetVersion-building.rar"
+if (Test-Path -LiteralPath $buildingArchive) { Remove-Item -LiteralPath $buildingArchive -Force }
 Write-Host "İlk kurulum arşivi oluşturuluyor: TRACER-Portable-v$targetVersion.rar" -ForegroundColor Yellow
-& $rarPath a -idq -r -ep1 -m3 $portableArchive "$portableDir\*"
-if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $portableArchive)) {
+& $rarPath a -idq -r -ep1 -m1 $buildingArchive "$portableDir\*"
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $buildingArchive)) {
   throw "Tam portable RAR paketi oluşturulamadı."
 }
-$portableBytes = (Get-Item -LiteralPath $portableArchive).Length
+$portableBytes = (Get-Item -LiteralPath $buildingArchive).Length
 if ($portableBytes -ge [long]2GB) {
   throw "Tam portable arşivi GitHub'ın dosya başına 2 GiB sınırını aşıyor: $portableBytes bayt."
 }
+& $rarPath t -idq $buildingArchive
+if ($LASTEXITCODE -ne 0) { throw "Portable arşiv bütünlük testi başarısız; önceki paket korundu." }
+Move-Item -LiteralPath $buildingArchive -Destination $portableArchive -Force
 $portableMb = [Math]::Round($portableBytes / 1MB, 2)
 Write-Host "İlk kurulum paketi hazır: $portableArchive ($portableMb MB)" -ForegroundColor Green
 

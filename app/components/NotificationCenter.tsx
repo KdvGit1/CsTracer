@@ -60,11 +60,51 @@ type AutomationState = {
   unreadCount: number;
 };
 
+type DiscordSettings = {
+  enabled: boolean;
+  mode: "webhook" | "bot";
+  channelId: string;
+  threadId: string;
+  notifyRoleId: string;
+  hasWebhookUrl: boolean;
+  webhookMasked: string;
+  hasBotToken: boolean;
+  botTokenMasked: string;
+};
+
+type DiscordState = {
+  settings: DiscordSettings;
+  connection: {
+    status: "disabled" | "unverified" | "connected" | "sending" | "error";
+    pendingCount: number;
+    lastAttemptAt: number;
+    lastSuccessAt: number;
+    lastFailureAt: number;
+    lastMatchId: string;
+    lastError: string;
+  };
+};
+
 const DEFAULT_STATE: AutomationState = {
   settings: { demoRetentionCount: 5, autoDownloadLatestMatch: false, desktopNotifications: false },
   storage: { retentionCount: 5, demoCount: 0, totalBytes: 0, averageDemoBytes: 0, estimatedBytes: 0, estimateSource: "fallback" },
   notifications: [],
   unreadCount: 0,
+};
+
+const DEFAULT_DISCORD_STATE: DiscordState = {
+  settings: {
+    enabled: false,
+    mode: "webhook",
+    channelId: "",
+    threadId: "",
+    notifyRoleId: "",
+    hasWebhookUrl: false,
+    webhookMasked: "",
+    hasBotToken: false,
+    botTokenMasked: "",
+  },
+  connection: { status: "disabled", pendingCount: 0, lastAttemptAt: 0, lastSuccessAt: 0, lastFailureAt: 0, lastMatchId: "", lastError: "" },
 };
 
 const STATUS_LABELS: Record<MatchNotification["status"], string> = {
@@ -109,7 +149,7 @@ export function NotificationCenter({
   onSelectAnalysis,
   onProgressChange,
 }: {
-  onSelectAnalysis: (analysis: RecentMatchAnalysis) => void;
+  onSelectAnalysis: (analysis: RecentMatchAnalysis, match?: import("./RecentMatchesView").ScannedMatchItem) => void;
   onProgressChange?: () => void;
 }) {
   const toast = useToast();
@@ -117,6 +157,11 @@ export function NotificationCenter({
   const [open, setOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsDraft, setSettingsDraft] = useState(DEFAULT_STATE.settings);
+  const [discordState, setDiscordState] = useState<DiscordState>(DEFAULT_DISCORD_STATE);
+  const [discordDraft, setDiscordDraft] = useState<DiscordSettings>(DEFAULT_DISCORD_STATE.settings);
+  const [webhookInput, setWebhookInput] = useState("");
+  const [botTokenInput, setBotTokenInput] = useState("");
+  const [discordActing, setDiscordActing] = useState<"" | "test" | "send" | "disconnect">("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [actingId, setActingId] = useState("");
@@ -125,12 +170,20 @@ export function NotificationCenter({
 
   const fetchState = useCallback(async () => {
     try {
-      const response = await fetch(`${COMPANION_URL}/automation/state`, { cache: "no-store" });
+      const [response, discordResponse] = await Promise.all([
+        fetch(`${COMPANION_URL}/automation/state`, { cache: "no-store" }),
+        fetch(`${COMPANION_URL}/discord/state`, { cache: "no-store" }),
+      ]);
       const payload = await response.json() as Partial<AutomationState> & { error?: string };
       if (!response.ok) throw new Error(payload.error || "Bildirim merkezi okunamadı.");
       const next = { ...DEFAULT_STATE, ...payload } as AutomationState;
       setState(next);
-      setSettingsDraft(next.settings);
+      if (!settingsOpen) setSettingsDraft(next.settings);
+      if (discordResponse.ok) {
+        const discordPayload = await discordResponse.json() as DiscordState;
+        setDiscordState(discordPayload);
+        if (!settingsOpen) setDiscordDraft(discordPayload.settings);
+      }
 
       // Arka planda tamamlanan analiz gelişim hafızasına companion tarafından
       // yazılır. Hazır bildirim değiştiğinde ana ekran yerel hafızayı tazeler.
@@ -169,7 +222,7 @@ export function NotificationCenter({
     } finally {
       setLoading(false);
     }
-  }, [onProgressChange]);
+  }, [onProgressChange, settingsOpen]);
 
   useEffect(() => {
     const initialFetch = window.setTimeout(() => void fetchState(), 0);
@@ -192,10 +245,10 @@ export function NotificationCenter({
     setActingId(item.id);
     try {
       const response = await fetch(`${COMPANION_URL}/notifications/${encodeURIComponent(item.id)}/action`, { method: "POST" });
-      const payload = await response.json() as { error?: string; analysis?: RecentMatchAnalysis; ready?: boolean };
+      const payload = await response.json() as { error?: string; analysis?: RecentMatchAnalysis; ready?: boolean; match?: import("./RecentMatchesView").ScannedMatchItem };
       if (!response.ok) throw new Error(payload.error || "Bildirim işlemi başlatılamadı.");
       if (payload.ready && payload.analysis) {
-        onSelectAnalysis(payload.analysis);
+        onSelectAnalysis(payload.analysis, payload.match);
         setOpen(false);
       } else {
         toast.success(item.status === "failed" || item.status === "cancelled" ? "Maç yeniden sıraya alındı." : "Maç indiriliyor ve analiz ediliyor.");
@@ -224,13 +277,100 @@ export function NotificationCenter({
       });
       const payload = await response.json() as { error?: string };
       if (!response.ok) throw new Error(payload.error || "Ayarlar kaydedilemedi.");
-      toast.success("Depolama ve otomasyon ayarları kaydedildi.");
+      const discordResponse = await fetch(`${COMPANION_URL}/discord/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...discordDraft,
+          ...(webhookInput.trim() ? { webhookUrl: webhookInput.trim() } : {}),
+          ...(botTokenInput.trim() ? { botToken: botTokenInput.trim() } : {}),
+        }),
+      });
+      const discordPayload = await discordResponse.json() as DiscordState & { error?: string };
+      if (!discordResponse.ok) throw new Error(discordPayload.error || "Discord ayarları kaydedilemedi.");
+      setDiscordState(discordPayload);
+      setWebhookInput("");
+      setBotTokenInput("");
+      toast.success("Depolama, otomasyon ve Discord ayarları kaydedildi.");
       setSettingsOpen(false);
       await fetchState();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Ayarlar kaydedilemedi.");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveDiscordDraft = async () => {
+    const response = await fetch(`${COMPANION_URL}/discord/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...discordDraft,
+        ...(webhookInput.trim() ? { webhookUrl: webhookInput.trim() } : {}),
+        ...(botTokenInput.trim() ? { botToken: botTokenInput.trim() } : {}),
+      }),
+    });
+    const payload = await response.json() as DiscordState & { error?: string };
+    if (!response.ok) throw new Error(payload.error || "Discord ayarları kaydedilemedi.");
+    setDiscordState(payload);
+    setDiscordDraft(payload.settings);
+    setWebhookInput("");
+    setBotTokenInput("");
+    return payload;
+  };
+
+  const testDiscord = async () => {
+    setDiscordActing("test");
+    try {
+      await saveDiscordDraft();
+      const response = await fetch(`${COMPANION_URL}/discord/test`, { method: "POST" });
+      const payload = await response.json() as DiscordState & { error?: string; message?: string };
+      if (!response.ok) throw new Error(payload.error || "Discord test mesajı gönderilemedi.");
+      setDiscordState(payload);
+      toast.success("Discord tablo görseli kanala ulaştı.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Discord bağlantısı test edilemedi.");
+    } finally {
+      setDiscordActing("");
+    }
+  };
+
+  const sendLatestToDiscord = async () => {
+    setDiscordActing("send");
+    try {
+      await saveDiscordDraft();
+      const response = await fetch(`${COMPANION_URL}/discord/send-match`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      const payload = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Son maç Discord sırasına alınamadı.");
+      toast.success("Son tamamlanan maç Discord sırasına alındı.");
+      await fetchState();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Maç Discord'a gönderilemedi.");
+    } finally {
+      setDiscordActing("");
+    }
+  };
+
+  const disconnectDiscord = async () => {
+    setDiscordActing("disconnect");
+    try {
+      const response = await fetch(`${COMPANION_URL}/discord/settings`, { method: "DELETE" });
+      const payload = await response.json() as DiscordState & { error?: string };
+      if (!response.ok) throw new Error(payload.error || "Discord bağlantısı kaldırılamadı.");
+      setDiscordState(payload);
+      setDiscordDraft(payload.settings);
+      setWebhookInput("");
+      setBotTokenInput("");
+      toast.success("Discord bağlantısı ve yerel sırlar kaldırıldı.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Discord bağlantısı kaldırılamadı.");
+    } finally {
+      setDiscordActing("");
     }
   };
 
@@ -287,6 +427,81 @@ export function NotificationCenter({
             <input id="desktop-notifications" type="checkbox" checked={settingsDraft.desktopNotifications} onChange={(event) => setSettingsDraft((current) => ({ ...current, desktopNotifications: event.target.checked }))} />
             <span><label htmlFor="desktop-notifications">Windows bildirimi göster</label><small>Uygulama içi bildirim merkezi bu seçenek kapalıyken de çalışır.</small></span>
           </div>
+
+          <section className="discord-settings-card">
+            <header>
+              <div><span>DISCORD MAÇ RAPORLAYICISI</span><b>Takım karnesini kanala otomatik gönder</b></div>
+              <em className={`discord-state ${discordState.connection.status}`}>
+                {discordState.connection.status === "disabled" ? "KAPALI" : discordState.connection.status === "sending" ? "GÖNDERİLİYOR" : discordState.connection.status === "error" ? "KONTROL GEREKLİ" : discordState.connection.status === "unverified" ? "TEST BEKLİYOR" : "BAĞLI"}
+              </em>
+            </header>
+
+            <label className="discord-master-toggle">
+              <input
+                type="checkbox"
+                aria-label="Maç bitince Discord'a gönder"
+                checked={discordDraft.enabled}
+                onChange={(event) => {
+                  const enabled = event.target.checked;
+                  setDiscordDraft((current) => ({ ...current, enabled }));
+                  if (enabled) setSettingsDraft((current) => ({ ...current, autoDownloadLatestMatch: true }));
+                }}
+              />
+              <span><b>Maç bitince Discord&apos;a gönder</b><small>Açıldığında son maçı otomatik indirme de etkinleşir. Analiz beklemez; Discord çevrimdışıysa rapor diskte sıraya alınıp yeniden denenir.</small></span>
+            </label>
+
+            <div className="discord-mode-tabs" role="group" aria-label="Discord bağlantı yöntemi">
+              <button className={discordDraft.mode === "webhook" ? "active" : ""} onClick={() => setDiscordDraft((current) => ({ ...current, mode: "webhook" }))}>Kolay · Webhook</button>
+              <button className={discordDraft.mode === "bot" ? "active" : ""} onClick={() => setDiscordDraft((current) => ({ ...current, mode: "bot" }))}>Gelişmiş · Bot</button>
+            </div>
+
+            {discordDraft.mode === "webhook" ? <div className="discord-connection-fields">
+              <label htmlFor="discord-webhook">Webhook adresi</label>
+              <input
+                id="discord-webhook"
+                type="password"
+                autoComplete="off"
+                value={webhookInput}
+                placeholder={discordDraft.hasWebhookUrl ? `Kayıtlı: ${discordDraft.webhookMasked}` : "https://discord.com/api/webhooks/…"}
+                onChange={(event) => setWebhookInput(event.target.value)}
+              />
+              <small>Discord&apos;da <b>Sunucu Ayarları → Entegrasyonlar → Webhook&apos;lar → Yeni Webhook</b> yolundan kanalı seçip URL&apos;yi kopyala. <a href="https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks" target="_blank" rel="noreferrer">Resmî anlatım</a></small>
+              <label htmlFor="discord-thread">Alt kanal / forum gönderi kimliği <i>isteğe bağlı</i></label>
+              <input id="discord-thread" inputMode="numeric" value={discordDraft.threadId} placeholder="Boşsa webhookun ana kanalı" onChange={(event) => setDiscordDraft((current) => ({ ...current, threadId: event.target.value.replace(/\D/g, "") }))} />
+            </div> : <div className="discord-connection-fields">
+              <label htmlFor="discord-bot-token">Bot tokenı</label>
+              <input
+                id="discord-bot-token"
+                type="password"
+                autoComplete="off"
+                value={botTokenInput}
+                placeholder={discordDraft.hasBotToken ? `Kayıtlı: ${discordDraft.botTokenMasked}` : "Discord Developer Portal bot tokenı"}
+                onChange={(event) => setBotTokenInput(event.target.value)}
+              />
+              <label htmlFor="discord-channel">Kanal kimliği</label>
+              <input id="discord-channel" inputMode="numeric" value={discordDraft.channelId} placeholder="Örn. 123456789012345678" onChange={(event) => setDiscordDraft((current) => ({ ...current, channelId: event.target.value.replace(/\D/g, "") }))} />
+              <small><a href="https://discord.com/developers/applications" target="_blank" rel="noreferrer">Developer Portal</a>&apos;da uygulama ve bot oluştur; botu <b>Mesaj Gönder</b> ve <b>Bağlantı Yerleştir</b> izinleriyle sunucuya ekle. Discord geliştirici modunu açıp hedef kanala sağ tıklayarak kimliği kopyala. Gateway veya Message Content Intent gerekmez.</small>
+            </div>}
+
+            <p className="discord-security"><b>Rapor biçimi:</b> Tek PNG tablo görseli gönderilir. Senin takımın ayrıntılı oyuncu satırlarıyla, rakip takım ise kısa K/D/A, ADR ve round katkısı satırlarıyla aynı görselde özetlenir.</p>
+
+            <div className="discord-connection-fields compact">
+              <label htmlFor="discord-role">Bildirim rolü kimliği <i>isteğe bağlı</i></label>
+              <input id="discord-role" inputMode="numeric" value={discordDraft.notifyRoleId} placeholder="@everyone kullanılmaz; yalnız seçilen rol" onChange={(event) => setDiscordDraft((current) => ({ ...current, notifyRoleId: event.target.value.replace(/\D/g, "") }))} />
+            </div>
+
+            {discordState.connection.lastError && <p className="discord-error">{discordState.connection.lastError}</p>}
+            <div className="discord-runtime">
+              <span><b>{discordState.connection.pendingCount}</b> rapor sırada</span>
+              <span>{discordState.connection.lastSuccessAt ? `Son başarılı gönderim ${new Date(discordState.connection.lastSuccessAt).toLocaleString("tr-TR")}` : "Henüz başarılı gönderim yok"}</span>
+            </div>
+            <div className="discord-actions">
+              {(discordDraft.hasWebhookUrl || discordDraft.hasBotToken) && <button className="danger" onClick={disconnectDiscord} disabled={Boolean(discordActing)}>{discordActing === "disconnect" ? "Kaldırılıyor…" : "Bağlantıyı kaldır"}</button>}
+              <button onClick={testDiscord} disabled={Boolean(discordActing) || !discordDraft.enabled}>{discordActing === "test" ? "Görsel hazırlanıyor…" : "Test görseli gönder"}</button>
+              <button className="primary" onClick={sendLatestToDiscord} disabled={Boolean(discordActing) || !discordDraft.enabled}>{discordActing === "send" ? "Sıraya alınıyor…" : "Son raporu gönder"}</button>
+            </div>
+            <p className="discord-security">Webhook URL&apos;si ve bot tokenı yalnız bu bilgisayardaki TRACER veri klasöründe tutulur; arayüze veya loglara açık hâliyle geri gönderilmez.</p>
+          </section>
           <div className="automation-actions"><button onClick={() => setSettingsOpen(false)}>Vazgeç</button><button className="save" onClick={saveSettings} disabled={saving}>{saving ? "Kaydediliyor…" : "Ayarları kaydet"}</button></div>
         </div> : <>
           <div className="notification-summary">

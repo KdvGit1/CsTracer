@@ -98,7 +98,10 @@ test("patch ve portable dayanıklı Steam bağlantı katmanını zorunlu dosya s
   for (const script of ["../launcher/create-patch.ps1", "../launcher/package-portable.ps1"]) {
     const source = readFileSync(new URL(script, import.meta.url), "utf8");
     assert.match(source, /companion\\steam_downloader\.mjs/);
+    assert.match(source, /shared\\match_dates\.mjs/);
     assert.match(source, /companion\\analysis_version\.mjs/);
+    assert.match(source, /companion\\discord_reporter\.mjs/);
+    assert.match(source, /companion\\render_discord_report\.ps1/);
     assert.match(source, /companion\\analyze-worker\.mjs/);
     assert.match(source, /companion\\match_storage\.mjs/);
     assert.match(source, /companion\\recent-matches-compactor\.mjs/);

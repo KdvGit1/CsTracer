@@ -10,6 +10,7 @@ import { requestSteamCommunityText, requestSteamCommunityViaWindows } from "./st
 import { compactRecentMatchesForStorage } from "./match_storage.mjs";
 import { SquadStore } from "./squad/store.mjs";
 import { normalizeSteamId } from "./squad/identity.mjs";
+import { createSteamScanJob, sameSteamScanSession } from "./steam_scan_job.mjs";
 import {
   ANALYSIS_HISTORY_LIMIT,
   MatchAutomationStore,
@@ -183,6 +184,9 @@ export function mergeSteamSession(current = {}, sessionData = {}) {
     merged.lastScanStatus = merged.steamLoginSecure ? "pending" : "disconnected";
     merged.lastScanFailureReason = "";
     merged.lastScanError = "";
+    // Eski kimlik doğrulaması yeni çerezin doğrulandığı anlamına gelmez.
+    merged.lastScanTime = 0;
+    merged.lastSuccessfulScanTime = 0;
   }
   if (!merged.steamId && merged.steamLoginSecure) {
     merged.steamId = extractSteamIdFromCookie(merged.steamLoginSecure);
@@ -199,6 +203,15 @@ export function saveSteamSession(sessionData) {
 }
 
 export function getSteamConnectionHealth(session = getSteamSession()) {
+  const timing = {
+    lastAttemptAt: Number(session.lastScanTime) || 0,
+    lastSuccessAt: Number(session.lastSuccessfulScanTime) || (session.lastScanStatus === "success" ? Number(session.lastScanTime) || 0 : 0),
+  };
+  const health = steamConnectionHealth(session);
+  return { ...health, ...timing, partial: health.state === "connected" && Boolean(session.lastScanError) };
+}
+
+function steamConnectionHealth(session) {
   if (!session.steamLoginSecure) return { state: "disconnected", message: "Steam oturumu kaydedilmemiş." };
   if (session.lastScanStatus === "expired") return { state: "expired", message: session.lastScanError || "Steam oturumunun süresi dolmuş." };
   if (session.lastScanStatus === "error") {
@@ -211,7 +224,7 @@ export function getSteamConnectionHealth(session = getSteamSession()) {
     };
   }
   if (session.lastScanStatus === "success" || (!session.lastScanStatus && session.lastScanTime)) {
-    return { state: "connected", message: "Steam Community bağlantısı son taramada doğrulandı." };
+    return { state: "connected", message: session.lastScanError || "Steam Community bağlantısı son taramada doğrulandı. Bu sürekli açık bir bağlantı değildir." };
   }
   return { state: "unverified", message: "Steam bilgileri kayıtlı; bağlantı henüz doğrulanmadı." };
 }
@@ -1009,8 +1022,19 @@ export async function processDownloadedDemo(
 
 // 11. Scan Steam GCPD for Match Summaries (Ranked, Premier, Rekabetçi, Yoldaş)
 let scanRunning = false;
+const steamScanJob = createSteamScanJob(performSteamScan);
 
-export async function scanSteamGcpdMatches() {
+export function getSteamScanState() {
+  return steamScanJob.snapshot();
+}
+
+// Bütün tetikleyiciler aynı işi paylaşır. HTTP istemcisi bu sözü beklemek
+// zorunda değildir; /steam/scan anında döner ve durumu ayrı okunabilir.
+export function scanSteamGcpdMatches() {
+  return steamScanJob.start();
+}
+
+async function performSteamScan() {
   if (scanRunning) {
     return {
       ok: true,
@@ -1077,6 +1101,15 @@ export async function scanSteamGcpdMatches() {
         return { mode, parsed: [], error: err };
       }
     }));
+
+    // Tarama sürerken yeni çerez kaydedildiyse eski yanıtın yeni oturumun
+    // durumunu/geçmişini ezmesine izin verme. Yeni bilgilerle tekrar tara.
+    if (!sameSteamScanSession(session, getSteamSession())) {
+      setTimeout(() => {
+        if (getSteamSession().steamLoginSecure) void scanSteamGcpdMatches().catch(() => {});
+      }, 0);
+      return { ok: false, message: "Steam bilgileri değişti; yeni oturumla tarama yeniden başlatılıyor.", superseded: true };
+    }
 
     for (const result of modeResults) {
       if (result.error) {

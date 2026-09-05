@@ -128,15 +128,26 @@ $leakedSession = @(Get-ChildItem -LiteralPath $releaseRoot -Recurse -Filter "ste
 if ($leakedSession.Count -gt 0) {
   throw "GÜVENLİK HATASI: Pakete Steam oturum dosyası sızmış: $($leakedSession[0].FullName). Paketleme durduruldu."
 }
+$leakedDiscordSecrets = @(
+  Get-ChildItem -LiteralPath $releaseRoot -Recurse -File -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -in @("discord_config.json", "discord_outbox.json") }
+)
+if ($leakedDiscordSecrets.Count -gt 0) {
+  throw "GÜVENLİK HATASI: Pakete Discord bağlantı verisi sızmış: $($leakedDiscordSecrets[0].FullName). Paketleme durduruldu."
+}
 
 $requiredPortableFiles = @(
   "app-runtime\server.js",
   "companion\analyze.mjs",
   "companion\analyze-worker.mjs",
   "companion\analysis_version.mjs",
+    "companion\discord_reporter.mjs",
+    "companion\render_discord_report.ps1",
   "companion\match_storage.mjs",
   "companion\recent-matches-compactor.mjs",
   "companion\steam_downloader.mjs",
+  "companion\steam_scan_job.mjs",
+  "shared\match_dates.mjs",
   "companion\steam_http.mjs",
   "companion\steam_http_bridge.ps1",
   "companion\steam_replay_url.mjs",

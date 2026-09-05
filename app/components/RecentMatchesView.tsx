@@ -1,6 +1,8 @@
 "use client";
 
 import { useCallback, useState, useEffect, useMemo, useRef, type FormEvent, type MouseEvent } from "react";
+import { filterMatchLibrary, formatMeasuredNumber } from "../../shared/experience.mjs";
+import { scanTimeLabel, steamStatusLabel, useSteamStatus, type SteamHealth, type SteamSnapshot } from "../lib/useSteamStatus";
 import {
   IconCheck,
   IconSettings,
@@ -84,10 +86,7 @@ interface RecentMatchesViewProps {
   onSelectAnalysis: (analysis: RecentMatchAnalysis, match?: ScannedMatchItem) => void;
 }
 
-type SteamConnection = {
-  state: "connected" | "unverified" | "error" | "expired" | "disconnected";
-  message: string;
-};
+type SteamConnection = SteamHealth;
 
 type DownloadQueueState = {
   activeMatchId: string | null;
@@ -109,7 +108,6 @@ const EMPTY_DOWNLOAD_QUEUE: DownloadQueueState = {
   revision: 0,
 };
 
-const AUTO_SCAN_INTERVAL = 300; // 5 minutes in seconds
 
 function hasCurrentShotSchema(analysis?: RecentMatchAnalysis): boolean {
   return analysis?.analysisVersion === "3.2.0"
@@ -159,18 +157,27 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
   const [scannedMatches, setScannedMatches] = useState<ScannedMatchItem[]>([]);
   const [activeTab, setActiveTab] = useState<"all" | "available" | "downloaded">("all");
   const [loading, setLoading] = useState(true);
-  const [scanning, setScanning] = useState(false);
+  const [scanStarting, setScanStarting] = useState(false);
+  const { snapshot: steamSnapshot, service: localService, accept: acceptSteamStatus } = useSteamStatus();
+  const scanning = scanStarting || Boolean(steamSnapshot?.scan.running);
+  const scanRequestBusy = useRef(false);
+  const completedScanRef = useRef(0);
+  const [search, setSearch] = useState("");
+  const [mapFilter, setMapFilter] = useState("all");
+  const [resultFilter, setResultFilter] = useState("all");
+  const [sort, setSort] = useState("newest");
   const [downloadQueue, setDownloadQueue] = useState<DownloadQueueState>(EMPTY_DOWNLOAD_QUEUE);
   const [downloadElapsed, setDownloadElapsed] = useState(0);
   const [statusMessage, setStatusMessage] = useState("");
-  const [hasSession, setHasSession] = useState(false);
-  const [steamConnection, setSteamConnection] = useState<SteamConnection>({ state: "disconnected", message: "Steam oturumu kaydedilmemiş." });
+  const [savedHasSession, setHasSession] = useState(false);
+  const [savedSteamConnection, setSteamConnection] = useState<SteamConnection>({ state: "disconnected", message: "Steam oturumu kaydedilmemiş." });
+  const hasSession = steamSnapshot?.hasSession ?? savedHasSession;
+  const steamConnection = steamSnapshot?.connection || savedSteamConnection;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [cookieInput, setCookieInput] = useState("");
   const [sessionidInput, setSessionidInput] = useState("");
   const [savingSettings, setSavingSettings] = useState(false);
   const [selectedMatchLoadingId, setSelectedMatchLoadingId] = useState<string | null>(null);
-  const [countdown, setCountdown] = useState(AUTO_SCAN_INTERVAL);
   const [autoScanEnabled, setAutoScanEnabled] = useState(true);
   const [demoStorage, setDemoStorage] = useState({ demoCount: 0, retentionCount: 5, totalBytes: 0 });
   const [historyStorage, setHistoryStorage] = useState<HistoryStorageState>({ state: "pending", message: "Maç geçmişi hazırlanıyor." });
@@ -198,6 +205,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
           isDownloaded: true,
           timestamp: sm.timestamp || existing.timestamp,
           formattedDate: sm.formattedDate || existing.formattedDate,
+          players: existing.players?.length ? existing.players : sm.players,
         });
       } else {
         map.set(sm.id, { ...sm, isDownloaded: false });
@@ -207,13 +215,12 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
     return Array.from(map.values()).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
   }, [downloadedMatches, scannedMatches]);
 
-  const filteredMatches = useMemo(() => {
-    if (activeTab === "downloaded") return allDisplayMatches.filter((m) => m.isDownloaded);
-    if (activeTab === "available") return allDisplayMatches.filter((m) => !m.isDownloaded);
-    return allDisplayMatches;
-  }, [allDisplayMatches, activeTab]);
+  const filteredMatches = useMemo(() => filterMatchLibrary(allDisplayMatches, { search, map: mapFilter, result: resultFilter, sort, tab: activeTab }), [allDisplayMatches, activeTab, search, mapFilter, resultFilter, sort]);
+  const libraryMaps = useMemo(() => [...new Set(allDisplayMatches.map((m) => m.map).filter(Boolean))].sort(), [allDisplayMatches]);
+  const filtersActive = Boolean(search || mapFilter !== "all" || resultFilter !== "all");
+  const resetFilters = () => { setSearch(""); setMapFilter("all"); setResultFilter("all"); };
 
-  const availableCount = allDisplayMatches.filter((m) => !m.isDownloaded).length;
+  const availableCount = allDisplayMatches.filter((m) => !m.isDownloaded && m.replayUrl).length;
   const analyzedCount = allDisplayMatches.filter((m) => m.isDownloaded).length;
   const visibleStatusMessage = statusMessage || (historyStorage.state === "optimizing" ? historyStorage.message : "");
 
@@ -306,7 +313,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
     const poll = window.setInterval(() => {
       void (async () => {
         try {
-          const response = await fetch(`${COMPANION_URL}/steam/download-queue`, { cache: "no-store" });
+          const response = await fetch(`${COMPANION_URL}/steam/download-queue`, { cache: "no-store", signal: AbortSignal.timeout(2500) });
           if (!response.ok) return;
           const next = await response.json() as DownloadQueueState;
           const previous = downloadQueueRef.current;
@@ -323,77 +330,32 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
   }, [applyDownloadQueue, downloadQueue.activeMatchId, downloadQueue.queuedMatchIds.length, fetchMatches]);
 
   const triggerScan = useCallback(async (isManual = true) => {
+    if (scanRequestBusy.current) return;
+    scanRequestBusy.current = true;
     try {
-      setScanning(true);
-      if (isManual) {
-        setStatusMessage("Steam maç geçmişiniz (Ranked, Premier, Rekabetçi, Yoldaş) taranıyor...");
-      }
-      const res = await fetch(`${COMPANION_URL}/steam/scan-now`, {
+      setScanStarting(true);
+      const res = await fetch(`${COMPANION_URL}/steam/scan`, {
         method: "POST",
-        // Steam yavaşlasa bile arayüz sonsuza kadar "taranıyor" durumunda kalmaz.
-        // İstek kesilse de companion kendi taramasını ve önbellek güncellemesini tamamlar.
-        signal: AbortSignal.timeout(28_000),
+        signal: AbortSignal.timeout(3000),
       });
-      const data = (await res.json()) as {
-        ok?: boolean;
-        scannedMatches?: ScannedMatchItem[];
-        downloadedMatches?: ScannedMatchItem[];
-        message?: string;
-        requiresLogin?: boolean;
-        connectionState?: SteamConnection["state"];
-        failureReason?: "auth_expired" | "timeout" | "network";
-      };
-      if (data.connectionState) {
-        setSteamConnection({ state: data.connectionState, message: data.message || "Steam bağlantı durumu güncellendi." });
-      } else if (data.requiresLogin) {
-        setSteamConnection({ state: "expired", message: data.message || "Steam oturumunu yenilemek gerekiyor." });
-      }
-      if (data.ok) {
-        if (Array.isArray(data.scannedMatches)) {
-          setScannedMatches(data.scannedMatches);
-        }
-        if (Array.isArray(data.downloadedMatches)) {
-          setDownloadedMatches(data.downloadedMatches);
-        }
-        setStatusMessage(data.message || "Tarama tamamlandı.");
-        setCountdown(AUTO_SCAN_INTERVAL);
-      } else {
-        if (data.requiresLogin && isManual) {
-          setSettingsOpen(true);
-        }
-        setStatusMessage(data.message || "Tarama başarısız.");
-      }
+      if (!res.ok) throw new Error("Yerel tarama servisi yanıt vermedi.");
+      setStatusMessage("Tarama arka planda başladı. Beklemeden maçlarını açabilir veya indirme sırasına ekleyebilirsin.");
+      acceptSteamStatus(await res.json() as SteamSnapshot);
     } catch (err: unknown) {
-      const timedOut = err instanceof DOMException && err.name === "TimeoutError";
-      if (timedOut) {
-        setStatusMessage("Steam yavaş yanıt veriyor; kayıtlı maçların hazır, yeni tarama arka planda tamamlanacak.");
-        window.setTimeout(() => void fetchMatches(true), 5_000);
-      } else if (isManual) {
-        setStatusMessage(`Tarama hatası: ${err instanceof Error ? err.message : String(err)}`);
-      }
+      if (isManual) setStatusMessage(`Yerel servise tarama isteği iletilemedi. Çerezi değiştirme; bağlantı durumunu kontrol et. ${err instanceof Error ? err.message : ""}`);
     } finally {
-      setScanning(false);
-      setTimeout(() => setStatusMessage(""), 7000);
+      scanRequestBusy.current = false;
+      setScanStarting(false);
     }
-  }, [fetchMatches]);
+  }, [acceptSteamStatus]);
 
-  // 5-minute Auto-Scan Countdown Timer
   useEffect(() => {
-    if (!hasSession || !autoScanEnabled) return;
-
-    const timer = setInterval(() => {
-      if (document.visibilityState !== "visible") return;
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          void triggerScan(false);
-          return AUTO_SCAN_INTERVAL;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [hasSession, autoScanEnabled, triggerScan]);
+    if (!steamSnapshot) return;
+    if (steamSnapshot.scan.finishedAt && steamSnapshot.scan.finishedAt !== completedScanRef.current) {
+      completedScanRef.current = steamSnapshot.scan.finishedAt;
+      void fetchMatches(true).then(() => setStatusMessage(steamSnapshot.scan.message));
+    }
+  }, [steamSnapshot, fetchMatches]);
 
   // Download & Analysis active elapsed timer
   useEffect(() => {
@@ -435,6 +397,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
 
       const res = await fetch(`${COMPANION_URL}/steam/download-queue`, {
         method: "POST",
+        signal: AbortSignal.timeout(5000),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           matchId: match.id,
@@ -499,12 +462,12 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
         // taraması bu kaydetme işleminin parçası değildir ve arayüzü kilitlemez.
         signal: AbortSignal.timeout(8_000),
       });
-      const data = await res.json() as { error?: string };
+      const data = await res.json() as { error?: string; connection?: SteamConnection };
       if (!res.ok) {
         throw new Error(data.error || "Steam bilgileri kaydedilemedi.");
       }
       setHasSession(true);
-      setSteamConnection({ state: "unverified", message: "Steam bilgileri kaydedildi; bağlantı doğrulanıyor." });
+      setSteamConnection(data.connection || { state: "unverified", message: "Steam bilgileri kaydedildi; bağlantı doğrulanıyor." });
       setSettingsOpen(false);
       setCookieInput("");
       setStatusMessage("Steam bilgileri kaydedildi. Kayıtlı maçlar kullanılabilir; yeni tarama arka planda başladı.");
@@ -596,7 +559,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
           <div className="recent-badge-row">
             <span className="sync-chip-badge">
               <IconClock size={12} style={{ marginRight: "4px", display: "inline-block", verticalAlign: "middle" }} />
-              OTOMATİK MAÇ TARAYICI (5 DK)
+              KİŞİSEL MAÇ KÜTÜPHANESİ
             </span>
             {hasSession ? (
               <span
@@ -604,13 +567,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
                 title={steamConnection.message}
               >
                 <span className="chip-dot" />
-                {steamConnection.state === "connected"
-                  ? "STEAM GEÇMİŞİ BAĞLI"
-                  : steamConnection.state === "expired"
-                    ? "STEAM OTURUMUNU YENİLE"
-                    : steamConnection.state === "error"
-                      ? "STEAM ERİŞİM SORUNU"
-                      : "STEAM BAĞLANTISI DOĞRULANMADI"}
+                {localService === "offline" ? "YEREL SERVİS ÇEVRİMDIŞI" : steamStatusLabel(steamConnection)}
               </span>
             ) : (
               <span className="account-chip idle" title="Steam Oturumu Bağlanmadı">
@@ -620,23 +577,23 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
           </div>
           <h1 className="recent-title">Son Maçlarım</h1>
           <p className="recent-subtitle">
-            Premier, Ranked, Rekabetçi veya Yoldaş maçların; ham demo kotası artık Bildirimler içindeki depolama ayarından yönetilir.
+            Maçını bul, indirme sırasına ekle ve katkını incele. Steam’e ulaşılamasa da kayıtlı analizlerin burada kalır.
           </p>
         </div>
 
         <div className="recent-actions-row">
           {hasSession && (
-            <div className="auto-scan-status-widget" title="Her 5 dakikada bir arka planda otomatik yeni maç taraması yapılır">
-              <span className="scan-dot-pulse" />
+            <div className="auto-scan-status-widget" title="Otomatik tarama yalnız yerel servis tarafından yönetilir; yeni sekmeler fazladan tarama başlatmaz.">
+              {autoScanEnabled && <span className="scan-dot-pulse" />}
               <span className="scan-timer-text">
-                Otomatik Tarama: <b>{formatSeconds(countdown)}</b>
+                Otomatik tarama: <b>{autoScanEnabled ? "5 dakikada bir" : "Kapalı"}</b>
               </span>
             </div>
           )}
 
           <button
             className={`sync-refresh-btn ${scanning ? "loading" : ""}`}
-            onClick={() => triggerScan(true)}
+            onClick={() => hasSession ? void triggerScan(true) : setSettingsOpen(true)}
             disabled={scanning}
             title="Steam'den tüm modlardaki yeni maçlarınızı tarayın"
           >
@@ -654,6 +611,12 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
           </button>
         </div>
       </header>
+
+      <div className={`library-connection-strip ${localService === "offline" ? "warning" : steamConnection.state}`} role="status">
+        <span className="connection-indicator" />
+        <div><b>{localService === "offline" ? "Yerel servis yeniden bekleniyor" : scanning ? "Steam arka planda taranıyor" : steamStatusLabel(steamConnection)}</b><p>{localService === "offline" ? "Bu bir Steam oturum hatası değil. Bağlantı otomatik yeniden denenecek; ekrandaki kayıtlar korunuyor." : scanning ? "Bu sayfada kalmak zorunda değilsin. Sonuçlar hazır olunca geçmişin yenilenecek." : steamConnection.message}</p></div>
+        <small>Son başarılı tarama<br /><b>{scanTimeLabel(steamConnection.lastSuccessAt)}</b></small>
+      </div>
 
       {/* Tabs Row */}
       <div className="recent-tabs-row">
@@ -682,6 +645,17 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
           HAM DEMO: <b>{demoStorage.demoCount}/{demoStorage.retentionCount}</b>
         </span>
       </div>
+
+      <div className="library-filters" role="search" aria-label="Maç kütüphanesinde ara">
+        <label className="library-search"><span>MAÇ ARA</span><input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Harita, oyuncu veya tarih…" /></label>
+        <label><span>HARİTA</span><select value={mapFilter} onChange={(e) => setMapFilter(e.target.value)}><option value="all">Tüm haritalar</option>{libraryMaps.map((map) => <option key={map} value={map}>{formatMapTitle(map)}</option>)}</select></label>
+        <label><span>SONUÇ</span><select value={resultFilter} onChange={(e) => setResultFilter(e.target.value)}><option value="all">Tüm sonuçlar</option><option value="win">Galibiyet</option><option value="loss">Mağlubiyet</option><option value="tie">Beraberlik</option></select></label>
+        <label><span>SIRALAMA</span><select value={sort} onChange={(e) => setSort(e.target.value)}><option value="newest">En yeni önce</option><option value="oldest">En eski önce</option></select></label>
+        {filtersActive && <button onClick={resetFilters}>Temizle</button>}
+      </div>
+      <div className="library-result-count"><span><b>{filteredMatches.length}</b> maç gösteriliyor</span><span>İstediğin kadar maçı sıraya ekle · tekrar tıklayarak iptal et</span></div>
+
+      {(downloadQueue.activeMatchId || downloadQueue.queuedMatchIds.length > 0) && <div className="library-queue" role="status"><IconDownload size={18} /><div><b>{downloadQueue.activeMatchId ? `${formatMapTitle(allDisplayMatches.find((m) => m.id === downloadQueue.activeMatchId)?.map || "CS2")} · ${downloadQueue.items?.find((item) => item.matchId === downloadQueue.activeMatchId)?.status === "analyzing" ? "Analiz ediliyor" : "İndiriliyor"}` : "Sıra hazırlanıyor"}</b><span>{downloadQueue.queuedMatchIds.length} maç sırada · işlemler tek tek yürütülür</span></div><small>{formatSeconds(downloadElapsed)}</small></div>}
 
       {/* Alert / Status Bar */}
       {visibleStatusMessage && (
@@ -713,19 +687,19 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
             <IconGame size={44} color="var(--acid)" />
           </div>
           <h3>
-            {activeTab === "downloaded"
+            {filtersActive ? "Bu filtrelerle eşleşen maç yok" : activeTab === "downloaded"
               ? "Henüz İndirilmiş Maç Yok"
               : activeTab === "available"
               ? "Tüm Taranan Maçlar Zaten İndirilmiş"
               : "Henüz Maç Bulunamadı"}
           </h3>
           <p>
-            {hasSession
-              ? "Steam oturumunuz bağlı. Yukarıdaki 'Şimdi Tara' butonuna basarak maç geçmişinizi güncelleyebilirsiniz."
+            {filtersActive ? "Farklı bir oyuncu, harita veya sonuç dene. Filtreler hiçbir kaydı silmez." : hasSession
+              ? "Steam bilgilerin kayıtlı. 'Şimdi Tara' ile geçmişi kontrol edebilirsin; bağlantı durumunu yukarıda görebilirsin."
               : "Steam'den maçlarınızı taramak ve tek tıkla indirmek için sağ üstteki 'Steam Bağlantısı' butonundan oturumunuzu bağlayın."}
           </p>
           <div className="empty-actions">
-            {hasSession ? (
+            {filtersActive ? <button className="primary-btn" onClick={resetFilters}>Filtreleri temizle</button> : hasSession ? (
               <button className="primary-btn" onClick={() => triggerScan(true)} disabled={scanning}>
                 <IconZap size={14} style={{ marginRight: "6px" }} /> Maçlarımı Şimdi Tara
               </button>
@@ -836,7 +810,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
                   <div className="stat-box">
                     <span className="stat-label">K/D</span>
                     <span className="stat-val">
-                      {match.userStats.kd ?? "—"}
+                      {formatMeasuredNumber(match.userStats.kd, 2)}
                     </span>
                   </div>
 
@@ -850,7 +824,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
                   <div className="stat-box">
                     <span className="stat-label">KAFA (HS)</span>
                     <span className="stat-val">
-                      %{match.userStats.hsPercent}
+                      {typeof match.userStats.hsPercent === "number" && Number.isFinite(match.userStats.hsPercent) ? `%${formatMeasuredNumber(match.userStats.hsPercent)}` : "—"}
                     </span>
                   </div>
 
@@ -877,7 +851,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
                     </div>
                   )}
 
-                  {isDownloaded && match.userStats.adr ? (
+                  {isDownloaded && typeof match.userStats.adr === "number" && Number.isFinite(match.userStats.adr) ? (
                     <div className="stat-box">
                       <span className="stat-label">ADR</span>
                       <span className={`stat-val ${match.userStats.adr >= 130 ? "good" : "mid"}`}>
@@ -924,6 +898,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
                     className={`match-download-btn ${isDownloadingThis ? "downloading" : ""} ${isQueuedThis ? "queued" : ""}`}
                     onClick={(e) => handleDownloadMatch(e, match)}
                     aria-pressed={isDownloadingThis || isQueuedThis}
+                    disabled={!match.replayUrl && !isDownloadingThis && !isQueuedThis}
                     title={isDownloadingThis || isQueuedThis ? "Bir kez daha tıklayarak iptal et" : "Maçı sıralı indirme ve analiz kuyruğuna ekle"}
                   >
                     {isDownloadingThis ? (
@@ -945,7 +920,7 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
                     ) : (
                       <>
                         <IconDownload size={14} />
-                        <span>Sıraya Ekle & Analiz Et</span>
+                        <span>{match.replayUrl ? "Sıraya Ekle & Analiz Et" : "Steam replay bağlantısı yok"}</span>
                       </>
                     )}
                   </button>

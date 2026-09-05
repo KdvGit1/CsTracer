@@ -1,0 +1,10 @@
+import type { ProgressMatch } from "../app/growth";
+import type { PlayerReport } from "../app/lib/types";
+import type { MovementProfile } from "../app/lib/types";
+import type { ScannedMatchItem } from "../app/components/RecentMatchesView";
+type SummaryMetric = { value: number | null; count: number; delta: number | null };
+export function formatMeasuredNumber(value: unknown, digits?: number): string;
+export function movementEvidence(profile: MovementProfile): { measured: boolean; invalidPerTen: number | null; rifle: string; sniper: string; smg: string };
+export function summarizeProgress(matches: ProgressMatch[]): { recent: ProgressMatch[]; adr: SummaryMetric; kast: SummaryMetric; hs: SummaryMetric };
+export function filterMatchLibrary(matches: ScannedMatchItem[], options?: { search?: string; map?: string; result?: string; sort?: string; tab?: string }): ScannedMatchItem[];
+export function reportCoverage(report: PlayerReport): Array<{ key: string; label: string; available: boolean; count: number; unit: string; reason: string; target: string }>;

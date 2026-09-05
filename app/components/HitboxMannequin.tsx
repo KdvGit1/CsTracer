@@ -24,14 +24,19 @@ export const HitboxMannequin = React.memo(function HitboxMannequin({
   counts,
   percents,
   totalHits,
+  available = true,
 }: {
   counts?: HitboxData;
   percents?: HitboxPercents;
   totalHits?: number;
+  available?: boolean;
 }) {
   const c = counts || { head: 0, chest: 0, stomach: 0, arms: 0, legs: 0, other: 0 };
   const p = percents || { head: 0, chest: 0, stomach: 0, arms: 0, legs: 0, other: 0 };
   const total = totalHits ?? (c.head + c.chest + c.stomach + c.arms + c.legs + (c.other || 0));
+  if (!available || !counts || !percents || total <= 0) {
+    return <div className="hitbox-unavailable"><span>◎</span><b>Hitbox dağılımı ölçülemedi</b><p>Geçerli isabet bölgesi örneği yok. Bu, bütün vuruşlarının %0 olduğu anlamına gelmez.</p><small>Güncel demo analizi ve player_hurt hitgroup verisi gerekli.</small></div>;
+  }
 
   const getTheme = (pct: number, baseColor: string) => {
     if (pct === 0) {

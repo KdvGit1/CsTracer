@@ -18,6 +18,20 @@ Model yalnızca “Koçtan tavsiye al” düğmesine basıldığında ayrı bir 
 
 Önerilen model yaklaşık 1.28 GB'tır: `ggml-org/Qwen3-1.7B-GGUF` deposundaki `Qwen3-1.7B-Q4_K_M.gguf`. İndirme betiği resmî llama.cpp Windows x64 CPU, CUDA 12.4 ve CUDA çalışma DLL paketlerini GitHub'ın yayımladığı SHA-256 özetleriyle doğrular.
 
+## Discord takım karnesi
+
+Bildirimler düğmesinden **Depolama ve Otomasyon → Discord Maç Raporlayıcısı** açılır. Önerilen kurulum webhook modudur:
+
+1. Discord sunucusunda **Sunucu Ayarları → Entegrasyonlar → Webhook'lar → Yeni Webhook** yolunu açın.
+2. Raporların gönderileceği kanalı seçin ve webhook URL'sini kopyalayın.
+3. URL'yi TRACER'a yapıştırın, **Maç bitince Discord'a gönder** seçeneğini açın ve **Test görseli gönder** düğmesine basın. Tamamlanmış bir analiz varsa son maçın gerçek tablosu, yoksa örnek tablo PNG olarak gönderilir.
+
+Webhook kurulumunun resmî anlatımı: `https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks`
+
+Gelişmiş bot modu için `https://discord.com/developers/applications` adresinde bir uygulama/bot oluşturulur. Bot sunucuya **Mesaj Gönder** ve **Bağlantı Yerleştir** izinleriyle eklenir; token ve hedef kanal kimliği TRACER'a girilir. Bu yalnız dışarı mesaj atan yerel bir bot olduğundan Gateway ve Message Content Intent gerekmez.
+
+Discord özelliği açıldığında son maçı otomatik indirme de açılır. Analiz tamamlanınca tüm rapor tek bakışta okunabilen PNG tablo olarak gönderilir: kullanıcının kendi takımındaki en fazla beş oyuncu ayrıntılı sütunlarla, rakip oyuncular ise aynı görseldeki tek kısa rakip takım bölümünde gösterilir. Discord yanıt vermese bile demo analizi bitmeye devam eder; kuyruk `%LOCALAPPDATA%\TRACER\data\discord_outbox.json` içinde korunup sonraki açılışta sürdürülür. Webhook URL'si veya bot tokenı `%LOCALAPPDATA%\TRACER\data\discord_config.json` içinde yalnız yerel olarak tutulur; portable ve patch paketlerine dahil edilmez.
+
 ## Dağıtım klasörünü hazırlama
 
 Geliştirici bilgisayarında PowerShell ile `launcher\package-portable.ps1` çalıştırılır. Sonuç `release\TRACER-Portable` altında oluşur. Bu klasör RAR/ZIP yapılabilir; kaynak kodu veya kurulu Node.js gerektirmez.
@@ -29,14 +43,14 @@ Model ve llama.cpp dosyaları kaynak klasörde yoksa önce `launcher\download-em
 Git'e veya GitHub'a hiçbir şey göndermeden testleri, lint kontrolünü, üretim build'ini, patch ZIP'i ve model dahil portable RAR'ı üretmek için:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\launcher\publish-release.ps1 -NewVersion 0.50.5 -BuildOnly
+powershell -ExecutionPolicy Bypass -File .\launcher\publish-release.ps1 -NewVersion 0.51.0 -BuildOnly
 ```
 
 Komut başarılı olduğunda şu üç dosya hazır olmalıdır:
 
-- `release\TRACER-Patch-v0.50.5.zip`
-- `release\TRACER-Guncelleyici-Duzeltmesi-v0.50.5.zip`
-- `release\TRACER-Portable-v0.50.5.rar`
+- `release\TRACER-Patch-v0.51.0.zip`
+- `release\TRACER-Guncelleyici-Duzeltmesi-v0.51.0.zip`
+- `release\TRACER-Portable-v0.51.0.rar`
 
 `release\TRACER-Portable` klasörü de RAR ile aynı sürümün açılmış, doğrudan çalıştırılabilir kopyasıdır. `BuildOnly` hiçbir commit, tag, push veya GitHub Release oluşturmaz.
 
@@ -45,7 +59,7 @@ Komut başarılı olduğunda şu üç dosya hazır olmalıdır:
 GitHub CLI bir kez kurulup `gh auth login` ile giriş yapıldıktan sonra yeni sürüm tek komutla yayınlanır:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\launcher\publish-release.ps1 -NewVersion 0.50.5
+powershell -ExecutionPolicy Bypass -File .\launcher\publish-release.ps1 -NewVersion 0.51.0
 ```
 
 Betik sürümü senkronize eder; test, lint ve TypeScript kontrollerini geçmeden devam etmez; üretim build'ini alır ve GitHub Release'e üç dosya yükler:
@@ -64,8 +78,8 @@ Kullanıcı ilk kurulumu yalnızca bir kez `https://github.com/KdvGit1/CsTracer/
 powershell -ExecutionPolicy Bypass -File .\launcher\create-updater-hotfix.ps1
 ```
 
-Oluşan `release\TRACER-Guncelleyici-Duzeltmesi-v0.50.5.zip` dosyası GitHub'daki v0.50.5 sürümüne eklenir. v0.50.3 veya v0.50.4 kullanan kişi TRACER'ı kapatır, ZIP içeriğini mevcut portable klasörünün üzerine çıkarır ve yalnızca `companion\updater.mjs` dosyasının değiştirilmesini onaylar. Ardından uygulamayı açıp normal Güncelle düğmesiyle doğrudan v0.50.5'e geçer. Oyuncu verileri ile model pakete dahil değildir.
+Oluşan `release\TRACER-Guncelleyici-Duzeltmesi-v0.50.6.zip` dosyası GitHub'daki v0.50.6 sürümüne eklenir. v0.50.3 veya v0.50.4 kullanan kişi TRACER'ı kapatır, ZIP içeriğini mevcut portable klasörünün üzerine çıkarır ve yalnızca `companion\updater.mjs` dosyasının değiştirilmesini onaylar. Ardından uygulamayı açıp normal Güncelle düğmesiyle doğrudan v0.50.6'ya geçer. Oyuncu verileri ile model pakete dahil değildir.
 
 ## Yerel veriler
 
-Oyuncu seçimi, son 90 maçın analiz geçmişi ve Bildirim Merkezi verileri `%LOCALAPPDATA%\TRACER\data` altında saklanır. Steam'den indirilen ham `.dem` dosyalarının adedi kullanıcı tarafından 3-50 arasında ayarlanır; kota aşılınca yalnızca en eski ham demolar temizlenir, analiz ve Takım Koçu kanıtları korunur. Tarayıcı pencere profili ve hata logları da `%LOCALAPPDATA%\TRACER` altındadır.
+Oyuncu seçimi, son 90 maçın analiz geçmişi, Bildirim Merkezi verileri ve Discord gönderim ayar/kuyruğu `%LOCALAPPDATA%\TRACER\data` altında saklanır. Steam'den indirilen ham `.dem` dosyalarının adedi kullanıcı tarafından 3-50 arasında ayarlanır; kota aşılınca yalnızca en eski ham demolar temizlenir, analiz ve Takım Koçu kanıtları korunur. Tarayıcı pencere profili ve hata logları da `%LOCALAPPDATA%\TRACER` altındadır.
