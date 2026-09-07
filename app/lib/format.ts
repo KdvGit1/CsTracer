@@ -12,22 +12,22 @@ export function clampScore(value: number) {
 }
 
 export function getAngleTier(angle: number | null, type: "head" | "body" = "head") {
-  if (!Number.isFinite(angle)) return { label: "Ölçülemedi", tone: "normal" as const, range: "—", hint: "Eksik veri yerine değer üretilmedi" };
+  if (!Number.isFinite(angle)) return { label: "Ölçülemedi", tone: "normal" as const, range: "—", hint: "Bu açı için yeterli konum verisi yok" };
   const value = Number(angle);
   if (type === "head") {
-    if (value <= 3.5) return { label: "Çok iyi hizalı", tone: "pro" as const, range: "≤ 3.5°", hint: "Kill anında çok düşük kafa açısı sapması" };
-    if (value <= 5) return { label: "İyi hizalı", tone: "good" as const, range: "3.6°–5.0°", hint: "Kill anında düşük kafa açısı sapması" };
-    if (value <= 7) return { label: "Orta", tone: "normal" as const, range: "5.1°–7.0°", hint: "Kill anında mikro düzeltme payı var" };
-    return { label: "Geliştirilebilir", tone: "poor" as const, range: "> 7.0°", hint: "Kill anında kafa doğrultusundan geniş sapma" };
+    if (value <= 3.5) return { label: "Çok iyi hizalı", tone: "pro" as const, range: "≤ 3.5°", hint: "Öldürme anında çok düşük kafa açısı sapması" };
+    if (value <= 5) return { label: "İyi hizalı", tone: "good" as const, range: "3.6°–5.0°", hint: "Öldürme anında düşük kafa açısı sapması" };
+    if (value <= 7) return { label: "Orta", tone: "normal" as const, range: "5.1°–7.0°", hint: "Öldürme anında mikro düzeltme payı var" };
+    return { label: "Geliştirilebilir", tone: "poor" as const, range: "> 7.0°", hint: "Öldürme anında kafa doğrultusundan geniş sapma" };
   }
-  if (value <= 5.5) return { label: "Çok iyi hizalı", tone: "pro" as const, range: "≤ 5.5°", hint: "Kill anında çok düşük gövde açısı sapması" };
-  if (value <= 8.5) return { label: "İyi hizalı", tone: "good" as const, range: "5.6°–8.5°", hint: "Kill anında düşük gövde açısı sapması" };
-  if (value <= 12) return { label: "Orta", tone: "normal" as const, range: "8.6°–12.0°", hint: "Kill anında gövde doğrultusunda düzeltme payı var" };
-  return { label: "Geliştirilebilir", tone: "poor" as const, range: "> 12.0°", hint: "Kill anında gövde doğrultusundan geniş sapma" };
+  if (value <= 5.5) return { label: "Çok iyi hizalı", tone: "pro" as const, range: "≤ 5.5°", hint: "Öldürme anında çok düşük gövde açısı sapması" };
+  if (value <= 8.5) return { label: "İyi hizalı", tone: "good" as const, range: "5.6°–8.5°", hint: "Öldürme anında düşük gövde açısı sapması" };
+  if (value <= 12) return { label: "Orta", tone: "normal" as const, range: "8.6°–12.0°", hint: "Öldürme anında gövde doğrultusunda düzeltme payı var" };
+  return { label: "Geliştirilebilir", tone: "poor" as const, range: "> 12.0°", hint: "Öldürme anında gövde doğrultusundan geniş sapma" };
 }
 
 export function getSprayTier(value: number | null, type: "overall" | "early" | "late" | "head") {
-  if (!Number.isFinite(value)) return { label: "Ölçülemedi", tone: "normal" as const, hint: "Eksik bullet_damage verisi yerine değer üretilmedi" };
+  if (!Number.isFinite(value)) return { label: "Ölçülemedi", tone: "normal" as const, hint: "Atış ve hasar kayıtları eşleştirilemedi" };
   const measured = Number(value);
   if (type === "overall") {
     if (measured >= 26) return { label: "Çok iyi", tone: "pro" as const, hint: "Bu maçta doğrudan isabet / silahlı atış oranı çok yüksek" };

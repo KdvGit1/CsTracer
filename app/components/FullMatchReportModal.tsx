@@ -107,22 +107,22 @@ export default function FullMatchReportModal({
               <i><em style={{ width: `${card.impactScore ?? 0}%`, background: "var(--acid)" }} /></i>
             </div>
             <div className="scorecard-dim-box">
-              <span>Headshot Oranı</span>
+              <span>Kafadan öldürme oranı</span>
               <b>{percentMetric(card.aimScore)}</b>
               <i><em style={{ width: `${card.aimScore ?? 0}%`, background: "#52e389" }} /></i>
             </div>
             <div className="scorecard-dim-box">
-              <span>Atış Anı Hareket Uygunluğu</span>
+              <span>Atışta hareket kontrolü</span>
               <b>{percentMetric(card.movementScore)}</b>
               <i><em style={{ width: `${card.movementScore ?? 0}%`, background: "#68d4ff" }} /></i>
             </div>
             <div className="scorecard-dim-box">
-              <span>Takım & Trade</span>
+              <span>Takım oyunu ve takas</span>
               <b>{percentMetric(card.teamworkScore)}</b>
               <i><em style={{ width: `${card.teamworkScore ?? 0}%`, background: "#b99cff" }} /></i>
             </div>
             <div className="scorecard-dim-box">
-              <span>Utility Etkili Round</span>
+              <span>Bomba veya flaşla katkı sağlanan round</span>
               <b>{percentMetric(card.utilityScore)}</b>
               <i><em style={{ width: `${card.utilityScore ?? 0}%`, background: "#ffb761" }} /></i>
             </div>

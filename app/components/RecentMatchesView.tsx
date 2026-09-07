@@ -688,15 +688,15 @@ export function RecentMatchesView({ onSelectAnalysis }: RecentMatchesViewProps) 
           </div>
           <h3>
             {filtersActive ? "Bu filtrelerle eşleşen maç yok" : activeTab === "downloaded"
-              ? "Henüz İndirilmiş Maç Yok"
+              ? "Henüz indirilmiş maç yok"
               : activeTab === "available"
-              ? "Tüm Taranan Maçlar Zaten İndirilmiş"
-              : "Henüz Maç Bulunamadı"}
+              ? "Bulunan tüm maçlar indirilmiş"
+              : "Henüz maç bulunamadı"}
           </h3>
           <p>
             {filtersActive ? "Farklı bir oyuncu, harita veya sonuç dene. Filtreler hiçbir kaydı silmez." : hasSession
               ? "Steam bilgilerin kayıtlı. 'Şimdi Tara' ile geçmişi kontrol edebilirsin; bağlantı durumunu yukarıda görebilirsin."
-              : "Steam'den maçlarınızı taramak ve tek tıkla indirmek için sağ üstteki 'Steam Bağlantısı' butonundan oturumunuzu bağlayın."}
+              : "Maçlarını bulmak için sağ üstteki 'Steam Bağlantısı' düğmesinden oturumunu bağla."}
           </p>
           <div className="empty-actions">
             {filtersActive ? <button className="primary-btn" onClick={resetFilters}>Filtreleri temizle</button> : hasSession ? (

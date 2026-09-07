@@ -1,6 +1,6 @@
 @import "tailwindcss";
 
-:root { --ink:#f4f5f0; --muted:#a6b3ad; --panel:#111515; --panel2:#161b1b; --line:#252b2a; --acid:#c8f54d; --orange:#ff784e; --red:#ff525c; --bg:#090c0c; }
+:root { --ink:#f4f5f0; --muted:#a6b3ad; --panel:#111515; --panel2:#161b1b; --line:#252b2a; --acid:#c8f54d; --orange:#ff784e; --red:#ff525c; --bg:#090c0c; --motion-fast:160ms; --motion-enter:420ms; --motion-ease:cubic-bezier(.22,1,.36,1); --surface-raised:#17201c; }
 * { box-sizing: border-box; }
 html { background:var(--bg); color:var(--ink); }
 body { margin:0; background:radial-gradient(circle at 85% 5%,rgba(200,245,77,.045),transparent 25%),var(--bg); color:var(--ink); font-family:system-ui,-apple-system,Arial,sans-serif; font-size:13px;line-height:1.4; }

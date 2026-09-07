@@ -4,6 +4,8 @@ import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "
 import { radarMapFor, worldToRadar } from "./map-data";
 import "./analysis.css";
 import "./experience.css";
+import "./motion.css";
+import MotionSettings from "./components/MotionSettings";
 import HomeOverview from "./components/HomeOverview";
 import AnalysisGuide from "./components/AnalysisGuide";
 import { downloadedDemoMeta, validMatchDate } from "../shared/match_dates.mjs";
@@ -664,7 +666,7 @@ export default function Home() {
       const messages = [
         { role: "system", content: useEmbeddedCoach
           ? "Görev: Aşağıdaki demo kanıtından oyuncuya doğrudan ve ayrıntılı bir CS2 maç raporu yaz. Yanıt görev tanımını değil maçtaki sonucu anlatarak başlasın; başlıkta TRACER, model, koç veya analiz kelimelerini kullanma. deterministicAssessment ve kural kitabındaki bütün dalları karşılaştır; kanıtta olmayan sebebi kesinleştirme. Kill anı hizasını pre-aim diye adlandırma; approximate-spotted TTD'yi reaksiyon veya profesyonel seviye puanı yapma. bullet_damage ile ölçülen ilk 3/4+ mermi, max_speed tabanlı hareket, CT/T, ölüm bölgeleri, trade, utility, opening, silahlar ve KAST arasından yalnız doğrulanmış en önemli üç önceliği seç. Eksik/null metriği yorumlama ve ekonomi verisini puanlama. Her öncelikte sayısal/round kanıtı, oyuncu için anlamı ve uygulanabilir çalışma/drill ver. strengths yalnızca deterministicAssessment.strengths içinde bulunan alanlardan oluşsun. Doğrudan geçerli JSON döndür."
-          : "Sen TRACER'ın CS2 koç editörüsün; hükmü deterministicAssessment ve kural kitabı verir. Veride olmayan sebebi uydurma. Kill anı hizası pre-aim değildir; approximate-spotted TTD profesyonel reaksiyon puanı değildir; ekonomi yalnız bilgi tablosudur. Null/ölçülemedi metriği yorumlama. En fazla 3 doğrulanmış öncelik, güçlü alanlar ve tek antrenman planı yaz. Kısa, anlaşılır Türkçe ve yalnız istenen JSON alanlarını döndür." },
+          : "Sen TRACER'ın CS2 koç editörüsün; hükmü deterministicAssessment ve kural kitabı verir. Veride olmayan sebebi uydurma. Kill anı hizası pre-aim değildir; approximate-spotted TTD profesyonel reaksiyon puanı değildir; ekonomi yalnız bilgi tablosudur. Null/ölçülemedi metriği yorumlama. En fazla 3 doğrulanmış öncelik, güçlü alanlar ve tek antrenman planı yaz. Oyuncuya sen diye hitap et. Kısa, doğal Türkçe kullan; birebir çeviri, süslü slogan ve hüküm/kanıt kümesi gibi ağır ifadelerden kaçın. Teknik terimi ilk kullanımda kısaca açıkla. Yalnız istenen JSON alanlarını döndür." },
         { role: "user", content: `KURAL KİTABI VE MAÇ KANITI:\n${JSON.stringify(fullCoachInput)}` },
       ];
 
@@ -829,13 +831,13 @@ export default function Home() {
           <span className="nav-group-label">MAÇ MERKEZİ</span>
           <button className={`nav-item ${activeView === "recent" ? "active" : ""}`} onClick={() => { setActiveView("recent"); setActiveSection("recent"); }}><IconClock size={15} /> Son Maçlarım</button>
           <button className={`nav-item ${activeView === "team" ? "active" : ""}`} onClick={() => { setActiveView("team"); setActiveSection("team"); }}><IconPlan size={15} /> Takım Koçu</button>
-          <button className={`nav-item nav-item-live ${activeView === "live" ? "active" : ""}`} onClick={() => { setActiveView("live"); setActiveSection("live"); }}><span className="live-nav-dot" /> Canlı Koç (Live)</button>
+          <button className={`nav-item nav-item-live ${activeView === "live" ? "active" : ""}`} onClick={() => { setActiveView("live"); setActiveSection("live"); }}><span className="live-nav-dot" /> Canlı Koç</button>
           <button className={`nav-item ${activeView === "growth" ? "active" : ""}`} onClick={() => { setActiveView("growth"); setActiveSection("growth"); }}><IconGrowth size={15} /> Gelişim</button>
           <span className="nav-group-label">DEMO ANALİZİ</span>
           <button className={`nav-item ${activeView === "analysis" && activeSection === "dashboard" ? "active" : ""}`} onClick={() => { setActiveView("analysis"); navigateTo("dashboard"); }}><IconDashboard size={15} /> Genel bakış</button>
-          <button className={`nav-item ${activeSection === "aim-precision" ? "active" : ""}`} onClick={() => navigateTo("aim-precision")}><IconCrosshair size={15} /> Nişangah & İsabet</button>
-          <button className={`nav-item ${activeSection === "duel-reaction" ? "active" : ""}`} onClick={() => navigateTo("duel-reaction")}><IconDuel size={15} /> Düello & Reaksiyon</button>
-          <button className={`nav-item ${activeSection === "economy-view" ? "active" : ""}`} onClick={() => navigateTo("economy-view")}><IconEconomy size={15} /> Ekonomi & Bakiye</button>
+          <button className={`nav-item ${activeSection === "aim-precision" ? "active" : ""}`} onClick={() => navigateTo("aim-precision")}><IconCrosshair size={15} /> Nişangah ve isabet</button>
+          <button className={`nav-item ${activeSection === "duel-reaction" ? "active" : ""}`} onClick={() => navigateTo("duel-reaction")}><IconDuel size={15} /> Düello ve ilk hasar</button>
+          <button className={`nav-item ${activeSection === "economy-view" ? "active" : ""}`} onClick={() => navigateTo("economy-view")}><IconEconomy size={15} /> Ekonomi</button>
           <button className={`nav-item ${activeSection === "side-analysis" ? "active" : ""}`} onClick={() => navigateTo("side-analysis")}><IconSideAnalysis size={15} /> Taraf analizi</button>
           <button className={`nav-item ${activeSection === "weapon-profile" ? "active" : ""}`} onClick={() => navigateTo("weapon-profile")}><IconWeapon size={15} /> Silah profili</button>
           <button className={`nav-item ${activeSection === "map-analysis" ? "active" : ""}`} onClick={() => navigateTo("map-analysis")}><IconMap size={15} /> Harita olayları</button>
@@ -843,13 +845,14 @@ export default function Home() {
         </nav>
         <div className="sidebar-spacer" />
         <div className="sidebar-tools"><button onClick={() => setSettingsOpen(true)} title="Koç ve kaynak ayarları"><IconSettings size={14} /> Ayarlar</button><button onClick={() => setUpdateModalOpen(true)} title="Güncelleme merkezi">v{updateInfo?.currentVersion || APP_VERSION}{updateInfo?.hasUpdate ? " ↑" : ""}</button><button onClick={shutdownTracer} aria-label="TRACER’ı ve arka plan servislerini kapat"><IconPower size={14} /></button></div>
+        <MotionSettings />
         <button className={`ai-status ${coachState}`} onClick={() => setSettingsOpen(true)}>
           <span className="pulse" />
-          <div><b>{coachState === "released" ? "KAYNAKLAR BIRAKILDI" : coachState === "online" ? (coachEngine === "embedded" ? "GÖMÜLÜ KOÇ HAZIR" : "OLLAMA BAĞLI") : coachState === "thinking" ? "KOÇ DÜŞÜNÜYOR" : "YEREL KOÇU AYARLA"}</b><small>{coachEngine === "embedded" ? `${embeddedModelName} · ${embeddedBackendLabel}` : ollamaModel} · cihazda</small></div>
+          <div><b>{coachState === "released" ? "KOÇ BEKLEMEDE" : coachState === "online" ? (coachEngine === "embedded" ? "GÖMÜLÜ KOÇ HAZIR" : "OLLAMA BAĞLI") : coachState === "thinking" ? "KOÇ DÜŞÜNÜYOR" : "YEREL KOÇU AYARLA"}</b><small>{coachEngine === "embedded" ? `${embeddedModelName} · ${embeddedBackendLabel}` : ollamaModel} · cihazda</small></div>
         </button>
         <button className="player-card" onClick={() => setProfileOpen(true)} aria-label="Kişisel oyuncu profilini seç">
           <div className="avatar">{preferredPlayer?.name.slice(0, 2).toLocaleUpperCase("tr-TR") || "?"}</div>
-          <div><b>{preferredPlayer?.name || (progressLoading ? "Profil yükleniyor…" : "Kendini seç")}</b><small>{preferredPlayer ? `${progressMatches.length} kayıtlı maç · kişisel profil` : progressLoading ? "Kayıtlı oyuncu geri yükleniyor" : "Başka oyuncu verisi kullanılmaz"}</small></div>
+          <div><b>{preferredPlayer?.name || (progressLoading ? "Profil yükleniyor…" : "Kendini seç")}</b><small>{preferredPlayer ? `${progressMatches.length} kayıtlı maç · kişisel profil` : progressLoading ? "Kayıtlı oyuncu geri yükleniyor" : "Demo listesinden oyuncunu seç"}</small></div>
           <span><IconSettings size={14} /></span>
         </button>
       </aside>
@@ -922,13 +925,13 @@ export default function Home() {
           <div><p>{report ? "YÜKLENEN DEMO" : "ANALİZ BEKLİYOR"}</p><b>{report ? `${report.map || "Bilinmeyen harita"} · ${fileName}` : "Son Maçlarım’dan bir maç aç veya demo yükle"}</b></div>
           <span className="win-pill">{report ? `${report.rounds} ROUND` : "HAZIR"}</span>
           <b className="score">{report ? report.kills : "—"} <i>:</i> {report ? report.deaths : "—"}</b>
-          <div className="match-meta"><span>{report ? "Cihazında yerel analiz" : "Sahte istatistik gösterilmiyor"}</span><span>{report ? `${report.assists} asist · ${report.adr} ADR` : "Gerçek demo verisi bekleniyor"}</span></div>
+          <div className="match-meta"><span>{report ? "Cihazında yerel analiz" : "Henüz maç seçilmedi"}</span><span>{report ? `${report.assists} asist · ${report.adr} ADR` : "Bir demo seçerek başlayabilirsin"}</span></div>
           {report && fullMatchReport && (
             <button
               className="growth-coach-tag"
               style={{ cursor: "pointer", border: "1px solid rgba(227, 246, 77, 0.4)" }}
               onClick={() => setFullReportModalOpen(true)}
-              title="Full Maç Koçluk Raporunu Aç"
+              title="Maçın koç raporunu aç"
             >
               <IconSparkles size={12} style={{ marginRight: "4px", display: "inline-block", verticalAlign: "middle" }} />
               {fullMatchReport.matchScorecard.overallScore === null ? "KAST ölçülemedi" : `%${fullMatchReport.matchScorecard.overallScore} KAST`}
@@ -939,9 +942,9 @@ export default function Home() {
         {report && (
           <section className="player-switcher" aria-label="Analiz edilecek oyuncu">
             <div className="player-switcher-avatar">{report.player.name.slice(0, 2).toLocaleUpperCase("tr-TR")}</div>
-            <div className="player-switcher-copy"><span>KİŞİSEL OYUNCU · KALICI</span><b>{report.player.name}</b><small>Bu SteamID/ad sonraki demolarla eşleştirilir; diğer oyuncular gelişim hafızasına girmez.</small></div>
+            <div className="player-switcher-copy"><span>SEÇİLİ OYUNCUN</span><b>{report.player.name}</b><small>Sonraki demolarda aynı oyuncu otomatik seçilir. Gelişim ekranına yalnızca senin sonuçların kaydedilir.</small></div>
             <label>
-              <span>Demodaki ben</span>
+              <span>Oyuncun</span>
               <select value={selectedPlayer} onChange={(event) => void chooseOwnPlayer(event.target.value)}>
                 {reports.map((item) => <option key={playerKey(item)} value={playerKey(item)}>{item.player.name}</option>)}
               </select>
@@ -1013,7 +1016,7 @@ export default function Home() {
 
         <div className="dashboard-grid">
           <article className="coach-card">
-            <div className="card-kicker"><span className="spark"><IconSparkles size={13} style={{ display: "inline-block", verticalAlign: "middle" }} /></span> {aiInsight ? "KURAL MOTORU + YEREL AI KOÇ" : "KANITA DAYALI KURAL MOTORU"} {report && coachConfidence !== undefined && <em>%{coachConfidence} güven · LLM hüküm vermez</em>}</div>
+            <div className="card-kicker"><span className="spark"><IconSparkles size={13} style={{ display: "inline-block", verticalAlign: "middle" }} /></span> {aiInsight ? "MAÇ DEĞERLENDİRMESİ VE KOÇ YORUMU" : "MAÇ DEĞERLENDİRMESİ"} {report && coachConfidence !== undefined && <em>%{coachConfidence} güven · ölçümlere göre</em>}</div>
             {coachPacket && <><div className="classification-head"><span>TÜM HATA SINIFLANDIRMASI</span><b>Kritik → yüksek → orta → küçük → güçlü</b></div><div className="coach-dimensions">{coachPacket.dimensions.map((item) => <span className={item.status} key={item.area}><i />{item.area}<b>{item.label}</b></span>)}</div></>}
             {report && coachPacket ? <>
               <h2>{coachTitle}<br/><span>maçın tamamından çıkarılan koç raporu.</span></h2>
@@ -1080,8 +1083,8 @@ export default function Home() {
                   {coachState === "thinking"
                     ? "Koç maçın genelini yorumluyor…"
                     : fullMatchReport
-                    ? "Full Maç Analizini Yenile"
-                    : "Tek Tuşla Full Maç Analizi & Rapor"}
+                    ? "Koç raporunu yenile"
+                    : "Maçın koç raporunu oluştur"}
                 </button>
                 {fullMatchReport && (
                   <button
@@ -1089,7 +1092,7 @@ export default function Home() {
                     onClick={() => setFullReportModalOpen(true)}
                     style={{ color: "var(--acid)", borderColor: "rgba(227, 246, 77, 0.35)", fontWeight: 700 }}
                   >
-                    <IconFileText size={14} /> Full Raporu Aç
+                    <IconFileText size={14} /> Koç raporunu aç
                   </button>
                 )}
               </div>
@@ -1384,19 +1387,19 @@ export default function Home() {
         <section className="aim-precision-section" id="aim-precision">
           <div className="section-title-row">
             <div>
-              <p className="eyebrow">NİŞANGAH & İSABET DERİNLİĞİ</p>
-              <h2>Kill Anı Kafa/Gövde Açısı ve Hitbox Dağılımı</h2>
-              <p>Açı yalnız öldürme tick’inde ölçülür; pre-aim veya ilk görünür temas metriği değildir.</p>
+              <p className="eyebrow">NİŞANGAH VE İSABET</p>
+              <h2>Nişangah açısı ve isabet bölgeleri</h2>
+              <p>Açı, rakibi öldürdüğün anda ölçülür. Rakibi görmeden önceki nişangah yerleşimini göstermez.</p>
             </div>
-            <span>{analysisNeedsRefresh ? "Eski analiz · yeniden çalıştır" : measuredCrosshairSamples > 0 ? `${getAngleTier(report?.crosshairStats?.headErrorAngle ?? null, "head").label} (kill anı)` : report ? "Geçerli kill örneği yok" : "Demo bekleniyor"}</span>
+            <span>{analysisNeedsRefresh ? "Eski analiz · yeniden çalıştır" : measuredCrosshairSamples > 0 ? `${getAngleTier(report?.crosshairStats?.headErrorAngle ?? null, "head").label} (öldürme anı)` : report ? "Öldürme anına ait ölçüm yok" : "Demo bekleniyor"}</span>
           </div>
 
           <div className="aim-precision-grid">
             {/* İNSAN HEDEF HİTBOX MAKETİ (MANNEQUIN) */}
             <article className="aim-stat-card mannequin-card">
               <header>
-                <span>HEDEF İNSAN MAKETİ (HITBOX SİLUETİ)</span>
-                <small>{hitboxSchemaCurrent && report?.sprayStats ? `${report.sprayStats.hitboxSampleCount ?? Object.values(report.sprayStats.hitboxCounts).reduce((sum, count) => sum + (count || 0), 0)} Hitgroup Örneği` : report ? "Güncel hitgroup analizi gerekli" : "Demo analizi bekleniyor"}</small>
+                <span>İSABET EDEN BÖLGELER</span>
+                <small>{hitboxSchemaCurrent && report?.sprayStats ? `${report.sprayStats.hitboxSampleCount ?? Object.values(report.sprayStats.hitboxCounts).reduce((sum, count) => sum + (count || 0), 0)} isabet kaydı` : report ? "İsabet bölgeleri için yeniden analiz gerekli" : "Demo analizi bekleniyor"}</small>
               </header>
               <HitboxMannequin
                 available={hitboxSchemaCurrent && report?.sprayStats?.hitboxStatus === "measured"}
@@ -1409,7 +1412,7 @@ export default function Home() {
             <div className="aim-side-cards">
               <article className="aim-stat-card">
                 <header>
-                  <span>KAFA & GÖVDE AÇI SAPMASI</span>
+                  <span>KAFA VE GÖVDEYE GÖRE AÇI</span>
                   <em className="rating-pill">{analysisNeedsRefresh ? "Eski analiz" : measuredCrosshairSamples > 0 ? getAngleTier(report?.crosshairStats?.headErrorAngle ?? null, "head").label : report ? "Örnek yok" : "Hazır"}</em>
                 </header>
                 {(() => {
@@ -1434,13 +1437,13 @@ export default function Home() {
                           <small>{bodyTier.hint}</small>
                         </div>
                         <div className="dev-box highlight">
-                          <span>GEÇERLİ KILL ÖRNEĞİ</span>
+                          <span>İNCELENEN ÖLDÜRME</span>
                           <b>{measuredCrosshairSamples > 0 ? measuredCrosshairSamples : "—"}</b>
                           <em className="tier-badge normal">{analysisNeedsRefresh ? "Eski analiz" : measuredCrosshairSamples > 0 ? "Maç örneği" : "Örnek yok"}</em>
-                          <small>{analysisNeedsRefresh ? "Eski raporda örnek sayısı güvenilir değil" : measuredCrosshairSamples > 0 ? "kill-tick-alignment-v2" : report?.crosshairStats?.reason || "Geçerli saldırgan/hedef tick konumu bulunamadı"}</small>
+                          <small>{analysisNeedsRefresh ? "Eski raporda örnek sayısı güvenilir değil" : measuredCrosshairSamples > 0 ? "Öldürme anındaki konumlar eşleştirildi" : report?.crosshairStats?.reason || "Öldürme anında iki oyuncunun konumu eşleştirilemedi"}</small>
                         </div>
                       </div>
-                      <p className="data-caveat">İyi–orta–geliştirilebilir etiketi yalnız kill anındaki açı sapmasına verilen maç içi koçluk yorumudur. Harita geometrisi/raycast olmadığı için pre-aim veya profesyonel seviye sonucu değildir.</p>
+                      <p className="data-caveat">Etiketler yalnızca öldürme anındaki açıya göre verilir. Görüş hattı kesin olarak hesaplanmadığından, bu sonuç nişangahı önceden doğru yerleştirdiğini veya profesyonel seviyede olduğunu göstermez.</p>
                     </>
                   );
                 })()}
@@ -1494,11 +1497,11 @@ export default function Home() {
                           <span>Kafa Vuruş Payı</span>
                           <b>{headShare === null ? "—" : `%${headShare}`}</b>
                           <em className={`tier-badge ${headShare === null ? "normal" : headShareTier.tone}`}>{headShare === null ? (report && !hitboxSchemaCurrent ? "Yeniden analiz" : "Ölçülemedi") : headShareTier.label}</em>
-                          <small>{hitboxMeasured ? `${spray.hitboxCounts.head}/${spray.hitboxSampleCount || 0} isabet · ${headShareTier.hint}` : spray?.hitboxReason || (report ? "Güncel hitgroup örneği yok." : "Demo bekleniyor")}</small>
+                          <small>{hitboxMeasured ? `${spray.hitboxCounts.head}/${spray.hitboxSampleCount || 0} isabet · ${headShareTier.hint}` : spray?.hitboxReason || (report ? "Güncel isabet bölgesi kaydı yok." : "Demo bekleniyor")}</small>
                         </div>
                       </div>
 
-                      <p className="data-caveat">İsabetler attacker SteamID + normal demo tick’iyle weapon_fire ve bullet_damage arasında birebir bağlanır. Eşleşme yoksa player_hurt yakınlığıyla tahmin veya rastgele fallback yapılmaz.</p>
+                      <p className="data-caveat">İsabet oranı, aynı oyuncunun atış ve hasar kayıtları eşleştirilerek hesaplanır. Eşleştirilemeyen atışlar için tahmini sonuç üretilmez.</p>
 
                       <div className="hitbox-bars">
                         <div className="hb-row"><span>Kafa (Head)</span><i><em style={{ width: `${hitboxMeasured ? spray.hitboxPercents.head : 0}%` }} /></i><b>{hitboxMeasured ? `%${spray.hitboxPercents.head} (${spray.hitboxCounts.head})` : "—"}</b></div>
@@ -1595,8 +1598,8 @@ export default function Home() {
           <div className="section-title-row">
             <div>
               <p className="eyebrow">EKONOMİ BİLGİ TABLOSU · PUANLANMAZ</p>
-              <h2>Round Başlangıcı Bakiye ve Harcama</h2>
-              <p>Yalnız demoda ölçülen oyuncu parası gösterilir; takım uyumu veya hero-buy hükmü üretilmez.</p>
+              <h2>Round başındaki para ve harcamalar</h2>
+              <p>Demoda kayıtlı para ve harcamalar gösterilir. Bu bölüm puanını etkilemez; satın alma kararlarına iyi veya kötü etiketi vermez.</p>
             </div>
             <span>{report?.economyStats?.totalCashSpent === null || report?.economyStats?.totalCashSpent === undefined ? "Ölçüm bekleniyor" : `$${report.economyStats.totalCashSpent.toLocaleString()} ölçülen harcama`}</span>
           </div>
@@ -1638,9 +1641,9 @@ export default function Home() {
         </section>
 
         <section className="development-plan" id="development">
-          <div className="development-intro"><div><p className="eyebrow">GELİŞİM PLANI</p><h2>İstatistiği bir sonraki çalışma seansına çevir</h2><p>Bu bölüm yalnızca “kötü oynadın” demez. Öncelikli hatayı, kullanılacak drill’i, taraf incelemesini ve başarı ölçütünü tek sıraya koyar.</p></div><span>{report ? `Toplam ${developmentSteps.reduce((sum, item) => sum + Number.parseInt(item.duration), 0)} dk` : "Plan bekliyor"}</span></div>
+          <div className="development-intro"><div><p className="eyebrow">GELİŞİM PLANI</p><h2>Bir sonraki antrenmanını planla</h2><p>Neye çalışacağını, hangi egzersizi yapacağını ve gelişimini nasıl takip edeceğini sırayla incele.</p></div><span>{report ? `Toplam ${developmentSteps.reduce((sum, item) => sum + Number.parseInt(item.duration), 0)} dk` : "Plan bekliyor"}</span></div>
           {developmentSteps.length ? <div className="plan-grid">{developmentSteps.map((step) => <article key={step.number}><header><span>{step.number}</span><em>{step.duration}</em></header><h3>{step.title}</h3><p><b>Neden?</b>{step.reason}</p><p><b>Ne yapacaksın?</b>{step.work}</p><footer><span>Başarı ölçütü</span><b>{step.success}</b></footer></article>)}</div> : <div className="plan-empty"><b>Kişisel plan için bir demo analiz et.</b><span>TRACER taraf, pozisyon, silah ve koç bulgularını tek çalışma sırasına dönüştürecek.</span><button onClick={() => setActiveView("recent")}>Son Maçlarım’ı aç</button></div>}
-          {report && <div className="plan-protocol"><span>Profesyonel gelişim döngüsü</span><b>Analiz et → tek davranış hedefi seç → 30–40 dk çalış → sonraki demoda aynı metriği yeniden ölç</b><p>Bir maç rastlantı olabilir. “Uzmanlık” veya kalıcı zayıflık etiketi için aynı haritada en az 5 demo karşılaştır.</p></div>}
+          {report && <div className="plan-protocol"><span>Gelişimini nasıl takip edebilirsin?</span><b>Analiz et → tek davranış hedefi seç → 30–40 dk çalış → sonraki demoda aynı metriği yeniden ölç</b><p>Bir maç rastlantı olabilir. “Uzmanlık” veya kalıcı zayıflık etiketi için aynı haritada en az 5 demo karşılaştır.</p></div>}
         </section>
       </section>
       )}
@@ -1649,7 +1652,7 @@ export default function Home() {
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setProfileOpen(false); }}>
           <section className="settings-modal profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title">
             <button className="modal-close" onClick={() => setProfileOpen(false)} aria-label="Oyuncu seçimini kapat">×</button>
-            <p className="eyebrow">KİŞİSEL OYUNCU KİLİDİ</p>
+            <p className="eyebrow">OYUNCU PROFİLİN</p>
             <h2 id="profile-title">Demoda hangisi sensin?</h2>
             <p>Bir kez seçtiğinde SteamID varsa onunla, yoksa tam oyuncu adıyla sonraki maçlarda otomatik eşleştirilirsin. Başka oyuncuların analizi gelişim geçmişine asla yazılmaz.</p>
             {reports.length ? <div className="profile-player-list">{reports.map((item) => {
@@ -1670,7 +1673,7 @@ export default function Home() {
             </button>
             <p className="eyebrow">YEREL AI</p>
             <h2 id="settings-title">Yerel koç motoru</h2>
-          <p>Demo dosyası hiçbir yere gönderilmez. Koça kural motorunun çıkardığı kapsamlı rapor gider: tüm analiz dalları, CT/T, silahlar, ölüm örüntüleri ve pozisyon kanıtları korunur. Varsayılan motor internet olmadan bu cihazda çalışır.</p>
+          <p>Koç, demodan çıkarılan istatistikleri bu bilgisayarda yorumlar. Raporda CT/T performansı, silah kullanımı, ölümler ve konum bilgileri yer alır. Varsayılan model internet bağlantısı gerektirmez.</p>
             <div className="engine-selector" role="radiogroup" aria-label="Yerel koç motoru">
               <button className={coachEngine === "embedded" ? "selected" : ""} role="radio" aria-checked={coachEngine === "embedded"} onClick={() => { setCoachEngine("embedded"); setCoachState("unknown"); }}><b>Gömülü model</b><span>Ollama gerekmez · RAR içinde</span></button>
               <button className={coachEngine === "ollama" ? "selected" : ""} role="radio" aria-checked={coachEngine === "ollama"} onClick={() => { setCoachEngine("ollama"); setCoachState("unknown"); }}><b>Ollama</b><span>İsteğe bağlı alternatif</span></button>
@@ -1683,7 +1686,7 @@ export default function Home() {
               <datalist id="ollama-models"><option value="qwen3:1.7b">Önerilen · dengeli</option><option value="qwen3.5:0.8b">En hafif</option><option value="qwen3:4b">Daha kaliteli</option></datalist>
             </>}
             <div className="settings-actions"><button className="ghost-button" onClick={testCoachEngine}>{coachState === "checking" ? "Kontrol ediliyor…" : "Motoru test et"}</button><button className="upload-button" onClick={() => setSettingsOpen(false)}>Kaydet</button></div>
-            <div className={`connection-result ${coachState}`}>{coachState === "released" ? coachResourceMessage : coachState === "online" ? `Yerel koç hazır · ${coachResourceMessage}` : coachState === "offline" ? coachResourceMessage : coachEngine === "embedded" ? "Beklemede: model bellekte değil ve CS2 performansını etkilemiyor." : "Varsayılan: http://127.0.0.1:11434 · 4096 context · anında unload"}</div>
+            <div className={`connection-result ${coachState}`}>{coachState === "released" ? coachResourceMessage : coachState === "online" ? `Yerel koç hazır · ${coachResourceMessage}` : coachState === "offline" ? coachResourceMessage : coachEngine === "embedded" ? "Beklemede: model bellekte değil ve CS2 performansını etkilemiyor." : "Varsayılan adres: http://127.0.0.1:11434 · Yanıt bitince model bellekten çıkarılır"}</div>
             <details className="demo-help">
               <summary>Demo dosyasını nerede bulurum?</summary>
               <ol><li>CS2 içinde İzle → Maçların bölümünü aç.</li><li>Premier/Competitive maçını seçip indirme okuna bas.</li><li><code>…\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo\replays</code> klasöründeki <code>.dem</code> dosyasını yükle.</li></ol>

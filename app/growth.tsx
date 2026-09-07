@@ -151,7 +151,7 @@ function ScoreChart({
           <text x="2" y={y(tick) + 4} fill="#788680" fontSize="9" fontFamily="monospace">{metricLabel(tick)}{unit}</text>
         </g>
       ))}
-      <polyline points={points} style={{ stroke: color, strokeWidth: "2.5", fill: "none" }} />
+      <polyline points={points} pathLength={1} style={{ stroke: color, strokeWidth: "2.5", fill: "none" }} />
       {values.map((score, index) => (
         <circle key={ordered[index].id} cx={x(index)} cy={y(score)} r="4.5" style={{ fill: color, stroke: "#0d1210", strokeWidth: "2" }}>
           <title>{dateLabel(ordered[index].date)} · {metricLabel(score)} {unit}</title>
@@ -213,24 +213,24 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
     }
   };
 
-  if (loading) return <section className="growth-view"><div className="growth-loading">Gelişim hafızası yükleniyor…</div></section>;
+  if (loading) return <section className="growth-view"><div className="growth-loading">Gelişim kayıtların yükleniyor…</div></section>;
 
   return <section className="growth-view">
     <header className="growth-topbar">
-      <div><button onClick={onBack}>← Analize dön</button><p className="eyebrow">GELİŞİM MERKEZİ</p><h1>{playerName ? `${playerName} · uzun dönem formu` : "Kişisel gelişim geçmişi"}</h1><span>Son 90 maç özeti · yalnızca seçtiğin oyuncunun verileri</span></div>
-      <div className="memory-state"><span>KALICI HAFIZA</span><b>{matches.length} / 90 maç</b><small>Yaklaşık {storageKb} KB özet</small></div>
+      <div><button onClick={onBack}>← Analize dön</button><p className="eyebrow">GELİŞİM MERKEZİ</p><h1>{playerName ? `${playerName} · gelişim geçmişi` : "Kişisel gelişim geçmişi"}</h1><span>Son 90 maç özeti · yalnızca seçtiğin oyuncunun verileri</span></div>
+      <div className="memory-state"><span>KAYITLI MAÇLAR</span><b>{matches.length} / 90 maç</b><small>Yaklaşık {storageKb} KB özet</small></div>
     </header>
 
-    {!matches.length ? <div className="growth-empty"><span><IconExternalLink size={20} /></span><b>Henüz kaydedilmiş maç yok</b><p>Bir demo analiz et ve demodaki kendi oyuncunu seç. Gerçek maç özeti otomatik olarak burada saklanacak; örnek veri gösterilmiyor.</p><button onClick={onBack}>İlk demoyu analiz et</button></div> : <>
+    {!matches.length ? <div className="growth-empty"><span><IconExternalLink size={20} /></span><b>Henüz kaydedilmiş maç yok</b><p>Bir demo analiz et ve oyuncu listesinden kendini seç. Maç özetin otomatik olarak buraya kaydedilir.</p><button onClick={onBack}>İlk demoyu analiz et</button></div> : <>
       <div className="growth-score-grid">
         <article className="overall-score"><span>ORTALAMA KAST</span><strong>{careerAverage === null ? "—" : metricLabel(careerAverage)}</strong><small>% · {overallValues.length} ölçülen maç</small><div><b>Son maç {latest.summary.overall === null ? "—" : `${metricLabel(latest.summary.overall)}%`}</b><em>{previous && latest.summary.overall !== null && previous.summary.overall !== null ? deltaLabel(latest.summary.overall - previous.summary.overall, "%") : "Karşılaştırma yok"}</em></div></article>
-        <article><span>SON 5 MAÇ EĞİMİ</span><strong>{deltaLabel(overallMomentum.trend, " yüzde puanı/maç")}</strong><small>Doğrusal KAST yönü</small></article>
-        <article><span>İVME DEĞİŞİMİ</span><strong>{deltaLabel(overallMomentum.acceleration, " yüzde puanı/maç")}</strong><small>Son 5 eğim − önceki 5 eğim</small></article>
+        <article><span>SON 5 MAÇTA DEĞİŞİM</span><strong>{deltaLabel(overallMomentum.trend, " yüzde puanı/maç")}</strong><small>KAST eğilimi · maç başına yüzde puan</small></article>
+        <article><span>GELİŞİM HIZINDAKİ FARK</span><strong>{deltaLabel(overallMomentum.acceleration, " yüzde puanı/maç")}</strong><small>Son 5 maçın eğilimi − önceki 5 maçın eğilimi</small></article>
         <article><span>SON MAÇ</span><strong>{latest.summary.stats.kills} / {latest.summary.stats.deaths}</strong><small>{latest.map} · {dateLabel(latest.date)}</small></article>
       </div>
 
       <article className="growth-panel">
-        <header><div><p className="eyebrow">KAST</p><h2>Maçtan maça round katkısı</h2></div><span>Kill · asist · hayatta kalma · trade</span></header>
+        <header><div><p className="eyebrow">KAST</p><h2>Maçtan maça round katkısı</h2></div><span>Öldürme · asist · hayatta kalma · takas</span></header>
         <ScoreChart matches={scoredMatches} value={(match) => Number(match.summary.overall)} color="#c8f54d" label="KAST" unit="%" />
       </article>
 
@@ -302,7 +302,7 @@ export function GrowthView({ matches, loading, playerName, onBack }: { matches: 
       </section>
 
       <details className="score-method">
-        <summary>Yüzdeler ve aim metrikleri nasıl hesaplanıyor?</summary>
+        <summary>Yüzdeler ve nişangah ölçümleri nasıl hesaplanıyor?</summary>
         <p>Genel gösterge KAST’tır: kill, asist, hayatta kalma veya trade edilen ölüm bulunan roundların yüzdesi. Alt boyutlar sırasıyla HS, silahın max hızının %34’ü altında atış, utility etkili round, trade, hayatta kalma ve KAST yüzdeleridir; birbirine ağırlıkla karıştırılmaz. Kafa sapması yalnız kill tick’ini gösterir ve pre-aim diye yorumlanmaz. TTD approximate spotted verisine dayanır; örnek yoksa değer üretilmez.</p>
       </details>
 

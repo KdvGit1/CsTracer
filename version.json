@@ -1,9 +1,12 @@
 {
-  "version": "0.51.0",
+  "version": "0.51.1",
   "githubRepo": "KdvGit1/CsTracer",
-  "releaseDate": "2026-09-06",
-  "title": "TRACER v0.51.0 - Kişisel Performans Merkezi",
+  "releaseDate": "2026-09-07",
+  "title": "TRACER v0.51.1 - Akıcı Arayüz ve Türkçe İyileştirmeleri",
   "changelog": [
+    "Discord maç PNG'si yenilendi: büyük skor alanı, okunaklı oyuncu satırları, ayrı yardımcı istatistikler, kısa rakip tablosu ve Türkçe terim rehberi. Eksik kadrolarda görsel boyu içeriğe uyarlanır.",
+    "Başlangıç, analiz, gelişim ve takım koçu ekranlarındaki yapay ifadeler sadeleştirildi; KAST ve ölçüm açıklamaları daha anlaşılır hale getirildi.",
+    "Ekran geçişleri, sıralı kart girişleri, grafik çizimi ve buton animasyonları eklendi. Hareketi azalt seçeneği, sistem tercihi ve oyun performans modu desteklenir.",
     "Son 5 maç tarih sırasına göre seçilir; rapor, bildirim veya koç özeti açmak maç tarihini ve kimliğini değiştirmez. Bilinmeyen tarihler son 5 karşılaştırmasına katılmaz.",
     "Yeni başlangıç ekranı: son 5 kişisel maçın KAST, ADR ve HS özeti, önceki maçlarla ölçüme dayalı karşılaştırma ve hızlı erişimler.",
     "Son Maçlarım artık harita, oyuncu/tarih araması, sonuç ve sıralama filtreleri olan bir maç kütüphanesi; etkin indirme ve analiz sırası görünür.",

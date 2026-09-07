@@ -25,8 +25,9 @@ test("server-renders the real TRACER empty state without fake match data", { ski
 
   const html = await response.text();
   assert.match(html, /<title>TRACER — CS2 Performance Lab<\/title>/i);
-  assert.match(html, /Oyunu oyna/);
-  assert.match(html, /Son 5 maçın nabzı/);
+  assert.match(html, /Maçlarına yakından bak/);
+  assert.match(html, /Son 5 maçın özeti/);
+  assert.match(html, /Hareketi azalt/);
   assert.match(html, /Henüz ölçüm yok/);
   assert.match(html, /Metrikleri nasıl okumalıyım/);
   assert.match(html, /Qwen3 1\.7B Q4_K_M/);

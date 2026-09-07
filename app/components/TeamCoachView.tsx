@@ -305,7 +305,7 @@ export default function TeamCoachView() {
       setSelectedMatchIds(analyzed.map((item) => item.id));
       setCoverage(payload.coverage || []);
       setDiscoverableMatches((current) => current.filter((item) => !completedIds.has(item.id)));
-      if (payload.downloaded?.length) toast.success(`${payload.downloaded.length} eşleşen maç indirildi ve takım kanıtına eklendi.`);
+      if (payload.downloaded?.length) toast.success(`${payload.downloaded.length} eşleşen maç indirildi ve takım analizine eklendi.`);
       if (!payload.complete) {
         const failedCount = Math.max(payload.failed?.length || 0, requested.length - (payload.downloaded?.length || 0));
         setMessage(`${failedCount} maç indirilemedi. Başarılı olanlar korundu; kalanları yeniden deneyebilirsin.`);
@@ -322,7 +322,7 @@ export default function TeamCoachView() {
   async function generateReport() {
     if (selectedRoster.length === 0 || !selectionEligible) return;
     setBusy(true);
-    setMessage(`${selectedRoster.length} oyuncunun bağımsız maç kanıtları birleştiriliyor ve oyun planı hazırlanıyor…`);
+    setMessage(`${selectedRoster.length} oyuncunun maçları inceleniyor ve takım planı hazırlanıyor…`);
     try {
       const payload = await jsonRequest<{ squad: SavedSquad; report: SquadReport }>("/squads/report", {
         method: "POST",
@@ -376,7 +376,7 @@ export default function TeamCoachView() {
         body: JSON.stringify({ outcome, personal, reason: personal ? "Bu planda kişisel uygulama sorunu yaşandı." : outcome === "success" ? "Takım planı uygulandı ve başarılı oldu." : "Takım planı uygulandı fakat rota başarısız oldu.", notes }),
       });
       setLive(payload.session);
-      toast.info(personal ? "Kişisel sinyal kaydedildi; takım rotası cezalandırılmadı." : outcome === "failed" ? "Rota cooldown’a alındı." : "Başarılı plan kanıtı kaydedildi.");
+      toast.info(personal ? "Kişisel geri bildirimin kaydedildi; takım rotasının değerlendirmesi değiştirilmedi." : outcome === "failed" ? "Bu rota için önerilere geçici olarak ara verildi." : "Planın işe yaradığı kaydedildi.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Geri bildirim kaydedilemedi.");
     }
@@ -443,7 +443,7 @@ export default function TeamCoachView() {
           </section>
 
           <section className="squad-step-card">
-            <div className="squad-step-title"><span>03</span><div><b>Haritayı ve kanıtları seç</b><small>Takımı seçince Steam geçmişi otomatik taranır.</small></div></div>
+            <div className="squad-step-title"><span>03</span><div><b>Haritayı ve analiz edilecek maçları seç</b><small>Takımı seçince Steam geçmişi otomatik taranır.</small></div></div>
             <label className="squad-map-select"><IconMap size={15} /><select value={map} onChange={(event) => chooseMap(event.target.value)} disabled={!selectedTeam || discovering || bulkDownloading}>{maps.map((item) => <option key={item} value={item}>{formatMapTitle(item)}</option>)}</select></label>
             {discovering && (
               <div className="squad-discovery-status scanning"><IconRefresh size={14} className="spin-icon" /><span><b>Seçili oyuncular aranıyor</b><small>Her oyuncunun seninle aynı takımda olduğu Premier, Ranked, Rekabetçi ve Yoldaş maçları taranıyor…</small></span></div>
@@ -479,19 +479,19 @@ export default function TeamCoachView() {
         <div className="squad-report-grid">
           <section className="squad-hero-card">
             <MapEmblem mapName={report.map} size={72} />
-            <div><span>{report.evidence.evidence.matches} MAÇ · {report.evidence.evidence.teamRounds} ROUND</span><h2>{report.mapLabel} takım kimliği</h2><p>Genel kanıt güveni <b>%{report.evidence.evidence.confidence} · {report.evidence.evidence.confidenceLabel}</b>. Öneriler tek maç anekdotundan değil, seçilen maçların tamamından üretildi.</p></div>
+            <div><span>{report.evidence.evidence.matches} MAÇ · {report.evidence.evidence.teamRounds} ROUND</span><h2>{report.mapLabel} takım kimliği</h2><p>Veri yeterliliği <b>%{report.evidence.evidence.confidence} · {report.evidence.evidence.confidenceLabel}</b>. Öneriler, seçtiğin maçlar birlikte değerlendirilerek hazırlandı.</p></div>
             <em className={confidenceClass(report.evidence.evidence.confidence)}>%{report.evidence.evidence.confidence}</em>
           </section>
-          <section className="squad-player-cards">{report.playerCards.map((card) => <article key={card.player.steamid}><header><b>{card.player.name}</b><span className={confidenceClass(card.confidence.confidence)}>%{card.confidence.confidence}</span></header><div><span>K/D <b>{card.overall.kd}</b></span><span>ADR <b>{card.overall.adr}</b></span><span>Opening <b>{card.overall.openingDelta > 0 ? "+" : ""}{card.overall.openingDelta}</b></span></div><p>CT: <b>{card.bestCTRoute?.zone || "yeterli rota yok"}</b>{card.bestCTRoute && ` · %${card.bestCTRoute.adjustedWinRate}`}</p><p>T: <b>{card.bestTRoute?.zone || "yeterli rota yok"}</b>{card.bestTRoute && ` · %${card.bestTRoute.adjustedWinRate}`}</p><small>{card.confidence.matches} maç / {card.confidence.rounds} round kanıtı</small></article>)}</section>
+          <section className="squad-player-cards">{report.playerCards.map((card) => <article key={card.player.steamid}><header><b>{card.player.name}</b><span className={confidenceClass(card.confidence.confidence)}>%{card.confidence.confidence}</span></header><div><span>K/D <b>{card.overall.kd}</b></span><span>ADR <b>{card.overall.adr}</b></span><span>Opening <b>{card.overall.openingDelta > 0 ? "+" : ""}{card.overall.openingDelta}</b></span></div><p>CT: <b>{card.bestCTRoute?.zone || "yeterli rota yok"}</b>{card.bestCTRoute && ` · %${card.bestCTRoute.adjustedWinRate}`}</p><p>T: <b>{card.bestTRoute?.zone || "yeterli rota yok"}</b>{card.bestTRoute && ` · %${card.bestTRoute.adjustedWinRate}`}</p><small>{card.confidence.matches} maç / {card.confidence.rounds} round incelendi</small></article>)}</section>
           <section className="squad-limitations"><IconShield size={16} /><div><b>Güvenlik ve gerçekçilik sınırı</b>{report.limitations.map((item) => <p key={item}>{item}</p>)}</div></section>
         </div>
       )}
 
       {report && tab === "roles" && (
         <div className="squad-role-layout">
-          <section className="squad-report-section"><header><IconShield size={17} /><div><h2>CT bölge dağılımı</h2><p>Rota başarısı, CT K/D-ADR ve rol uyumu birlikte optimize edildi.</p></div></header><div className="assignment-list">{report.assignments.ct.map((item) => <article key={item.player.steamid}><span>{item.positionLabel}</span><b>{item.player.name}</b><small>Uyum {Math.round(item.fitScore)} · kanıt %{item.confidence}</small></article>)}</div></section>
+          <section className="squad-report-section"><header><IconShield size={17} /><div><h2>CT bölge dağılımı</h2><p>Rota başarısı, CT K/D-ADR ve rol uyumu birlikte optimize edildi.</p></div></header><div className="assignment-list">{report.assignments.ct.map((item) => <article key={item.player.steamid}><span>{item.positionLabel}</span><b>{item.player.name}</b><small>Uyum {Math.round(item.fitScore)} · veri yeterliliği %{item.confidence}</small></article>)}</div></section>
           <section className="squad-report-section"><header><IconPlan size={17} /><div><h2>T görev dağılımı</h2><p>Seçilen oyunculara tekil görev atanır; bilinmeyen takım üyeleri için görev uydurulmaz.</p></div></header><div className="assignment-list">{report.assignments.t.map((item) => <article key={item.player.steamid}><span>{item.roleLabel}</span><b>{item.player.name}</b><small>{item.description} · uyum {Math.round(item.fitScore)}</small></article>)}</div></section>
-          <section className="squad-report-section squad-weapons"><header><IconWeapon size={17} /><div><h2>Silah ekonomisi</h2><p>AWP, rifle, SMG ve yakın alan örneğine göre dağıtılır.</p></div></header><div className="weapon-assignment-list">{report.weapons.map((item) => <article key={item.player.steamid}><div><span>{statusLabel(item.status)}</span><b>{item.player.name}</b></div><p><strong>{item.primaryBuy}</strong><small>{item.secondaryBuy}</small></p><em>%{item.evidence.confidence} kanıt</em></article>)}</div></section>
+          <section className="squad-report-section squad-weapons"><header><IconWeapon size={17} /><div><h2>Silah ekonomisi</h2><p>AWP, rifle, SMG ve yakın alan örneğine göre dağıtılır.</p></div></header><div className="weapon-assignment-list">{report.weapons.map((item) => <article key={item.player.steamid}><div><span>{statusLabel(item.status)}</span><b>{item.player.name}</b></div><p><strong>{item.primaryBuy}</strong><small>{item.secondaryBuy}</small></p><em>%{item.evidence.confidence} veri yeterliliği</em></article>)}</div></section>
         </div>
       )}
 

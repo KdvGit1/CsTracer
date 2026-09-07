@@ -212,13 +212,13 @@ function detailedImageRow(report, identity) {
   return {
     name: text(report?.player?.name || "Bilinmeyen oyuncu", 70),
     highlighted: samePlayer(report?.player, identity),
-    kda: `${Number(report?.kills) || 0}/${Number(report?.deaths) || 0}/${Number(report?.assists) || 0}`,
+    kda: `${formatNumber(report?.kills, 0)}/${formatNumber(report?.deaths, 0)}/${formatNumber(report?.assists, 0)}`,
     adr: formatNumber(report?.adr),
     hs: formatPercent(report?.headshotPercent),
     kast: formatPercent(kast),
     kastColor: metricColor(kast),
     survival: formatPercent(report?.survivalPercent),
-    opening: `${Number(report?.openingKills) || 0}-${Number(report?.openingDeaths) || 0}`,
+    opening: `${formatNumber(report?.openingKills, 0)}-${formatNumber(report?.openingDeaths, 0)}`,
     trade: formatPercent(report?.tradePercent),
     utility: formatNumber(report?.utilityDamage, 0),
     flash: finite(report?.enemyBlindSeconds) === null ? "—" : `${formatNumber(report.enemyBlindSeconds)} sn`,
@@ -235,7 +235,7 @@ function compactImageRow(report) {
   const kast = scorecard?.overall ?? null;
   return {
     name: text(report?.player?.name || "Bilinmeyen oyuncu", 70),
-    kda: `${Number(report?.kills) || 0}/${Number(report?.deaths) || 0}/${Number(report?.assists) || 0}`,
+    kda: `${formatNumber(report?.kills, 0)}/${formatNumber(report?.deaths, 0)}/${formatNumber(report?.assists, 0)}`,
     adr: formatNumber(report?.adr),
     kast: formatPercent(kast),
     kastColor: metricColor(kast),
@@ -257,10 +257,14 @@ export function buildDiscordReportImageModel(match, profile = null) {
   const ownAdr = averageMeasured(ownGroup.reports, (report) => report?.adr);
   const opponentKast = averageMeasured(opponentGroup.reports, (report) => scoreMatchReport(report)?.overall);
   const opponentAdr = averageMeasured(opponentGroup.reports, (report) => report?.adr);
-  const timestamp = Number(match?.timestamp) || Date.now();
+  const timestamp = finite(match?.timestamp);
+  const dateLabel = timestamp !== null && timestamp > 1 && Number.isFinite(new Date(timestamp).getTime())
+    ? new Intl.DateTimeFormat("tr-TR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(timestamp)) : "Tarih bilinmiyor";
   return {
     title: `${mapTitle(match?.map || match?.fullAnalysis?.header?.map_name)} · ${scoreText} · ${result}`,
-    subtitle: `${new Intl.DateTimeFormat("tr-TR", { dateStyle: "medium", timeStyle: "short" }).format(new Date(timestamp))} · ${text(match?.mode || "CS2", 80)}`,
+    mapName: mapTitle(match?.map || match?.fullAnalysis?.header?.map_name),
+    scoreText,
+    subtitle: `${dateLabel} · ${text(match?.mode || "CS2", 80)}`,
     result,
     ownSummary: `Skor ${formatNumber(match?.score?.userScore, 0)} · Ortalama ${formatPercent(ownKast)} KAST · ${formatNumber(ownAdr)} ADR`,
     opponentSummary: `Skor ${formatNumber(match?.score?.enemyScore, 0)} · Ortalama ${formatPercent(opponentKast)} KAST · ${formatNumber(opponentAdr)} ADR`,
@@ -269,13 +273,13 @@ export function buildDiscordReportImageModel(match, profile = null) {
   };
 }
 
-function sampleReportImageModel() {
+export function sampleReportImageModel() {
   const ownRows = [
-    ["Tator31", "21/14/6", "94,2", "%52", "%81", "%65", "4-2", "%71", "142", "8,4 sn", "%91", "%31/%22", "%63 (n8)", "Round katkısını koru"],
-    ["Takım Arkadaşı 2", "18/16/5", "82,6", "%48", "%74", "%55", "2-2", "%60", "98", "5,1 sn", "%87", "%27/%18", "%50 (n6)", "İlk mermi disiplinini geliştir"],
-    ["Takım Arkadaşı 3", "16/15/8", "79,4", "%41", "%72", "%50", "1-2", "%67", "176", "11,2 sn", "%89", "%25/%17", "%57 (n7)", "Utility zamanlamasını koru"],
-    ["Takım Arkadaşı 4", "14/17/4", "68,7", "%55", "%63", "%45", "2-4", "%47", "84", "3,7 sn", "%82", "%22/%14", "%40 (n5)", "Opening düellolarını azalt"],
-    ["Takım Arkadaşı 5", "12/16/7", "65,3", "%38", "%61", "%40", "1-3", "%56", "121", "6,8 sn", "%85", "%24/%16", "%43 (n7)", "Trade mesafesini iyileştir"],
+    ["Deneme", "21/14/6", "94,2", "%52", "%81", "%65", "4-2", "%71", "142", "8,4 sn", "%91", "%31/%22", "%63 (n8)", "Round katkısını koru"],
+    ["Kuzey", "18/16/5", "82,6", "%48", "%74", "%55", "2-2", "%60", "98", "5,1 sn", "%87", "%27/%18", "%50 (n6)", "İlk mermi disiplinini geliştir"],
+    ["Gölge", "16/15/8", "79,4", "%41", "%72", "%50", "1-2", "%67", "176", "11,2 sn", "%89", "%25/%17", "%57 (n7)", "Bomba zamanlamasına dikkat et"],
+    ["Şimşek", "14/17/4", "68,7", "%55", "%63", "%45", "2-4", "%47", "84", "3,7 sn", "%82", "%22/%14", "%40 (n5)", "İlk düellolarda daha güvenli açı seç"],
+    ["Poyraz", "12/16/7", "65,3", "%38", "%61", "%40", "1-3", "%56", "121", "6,8 sn", "%85", "%24/%16", "%43 (n7)", "Takas için takımına yakın oyna"],
   ].map((values, index) => ({
     name: values[0], highlighted: index === 0, kda: values[1], adr: values[2], hs: values[3], kast: values[4],
     survival: values[5], opening: values[6], trade: values[7], utility: values[8], flash: values[9], movement: values[10],
@@ -287,6 +291,8 @@ function sampleReportImageModel() {
   ].map((values) => ({ name: values[0], kda: values[1], adr: values[2], kast: values[3], kastColor: metricColor(Number(values[3].slice(1))), grade: kastContributionGrade(Number(values[3].slice(1))) }));
   return {
     title: "Anubis · 13 - 8 · Galibiyet",
+    mapName: "Anubis",
+    scoreText: "13 - 8",
     subtitle: "TRACER örnek raporu · Test görseli",
     result: "Galibiyet",
     ownSummary: "Skor 13 · Ortalama %70,2 KAST · 78 ADR",

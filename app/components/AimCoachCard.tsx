@@ -182,14 +182,14 @@ export const AimCoachCard: React.FC<{
     <article className="aim-coach-card">
       <header className="aim-coach-header">
         <div>
-          <span className="aim-coach-badge">NİŞANGAH & MEKANİK KANITLARI</span>
-          <h3>Mekanik Hata Teşhisi ve Antrenman Reçetesi</h3>
-          <p>Kural motoru yalnız doğrudan ölçülen max-speed, bullet_damage ve hitgroup verilerini kullanır. Kill anı hizası ve yaklaşık TTD bilgi amaçlıdır; pre-aim ya da profesyonel seviye hükmüne çevrilmez.</p>
+          <span className="aim-coach-badge">NİŞANGAH VE ATIŞ ANALİZİ</span>
+          <h3>Geliştirebileceğin alanlar ve antrenman önerileri</h3>
+          <p>Değerlendirme; atış sırasındaki hareketini, isabetlerini ve vurduğun bölgeleri kullanır. Öldürme anındaki nişangah açısı ve ilk hasara kadar geçen süre tek başına refleksini veya seviyeni göstermez.</p>
         </div>
         <div className="aim-coach-score-box">
           <span>MAÇ İÇİ MEKANİK YORUMU</span>
           <b>{evaluation.rating}</b>
-          <small>Rastgele puan değil · doğrudan demo kanıtı</small>
+          <small>Bu maçtaki ölçümlere göre değerlendirme</small>
         </div>
       </header>
 
@@ -208,12 +208,12 @@ export const AimCoachCard: React.FC<{
       {/* Teşhis Kartları */}
       <div className="aim-diagnoses-list">
         <div className="aim-subhead">
-          <span>TESPİT EDİLEN MEKANİK EKSİKLİKLER ({evaluation.diagnoses.length})</span>
+          <span>ANTRENMAN ÖNCELİKLERİN ({evaluation.diagnoses.length})</span>
         </div>
         {evaluation.diagnoses.length === 0 ? (
           <div className="aim-clean-slate">
-            <b>Ölçülen doğrudan metriklerde güçlü bir tekrar bulunmadı.</b>
-            <p>Bu maçın ölçülen alanları iyi görünüyor; bu profesyonel seviye hükmü değildir. Aynı metrikleri sonraki maçlarla karşılaştır.</p>
+            <b>Ölçülebilen alanlarda belirgin bir sorun tespit edilmedi.</b>
+            <p>Bu sonuç yalnızca ölçülebilen alanlar için geçerli. Genel seviyeni değerlendirmek için sonraki maçlarınla da karşılaştır.</p>
           </div>
         ) : (
           evaluation.diagnoses.map((diag) => (
@@ -224,11 +224,11 @@ export const AimCoachCard: React.FC<{
                   {diag.severity === "high" ? "YÜKSEK ÖNCELİK" : "ORTA ÖNCELİK"}
                 </em>
               </div>
-              <p className="aim-diag-evidence"><strong>Kanıt:</strong> {diag.evidence}</p>
-              <p className="aim-diag-root"><strong>Mekanik Sebep:</strong> {diag.rootCause}</p>
+              <p className="aim-diag-evidence"><strong>Maçtaki bulgu:</strong> {diag.evidence}</p>
+              <p className="aim-diag-root"><strong>Olası neden:</strong> {diag.rootCause}</p>
               <div className="aim-diag-drill-box">
                 <div className="drill-label">
-                  <span>ÖNERİLEN DRİLL</span>
+                  <span>ÖNERİLEN EGZERSİZ</span>
                   <b>{diag.drill.name} ({diag.drill.duration})</b>
                 </div>
                 <p>{diag.drill.instructions}</p>
@@ -255,7 +255,7 @@ export const AimCoachCard: React.FC<{
               <b>{step.title}</b>
               <p>{step.drill}</p>
               <footer>
-                <span>Hedef Ölçüt</span>
+                <span>Hedef</span>
                 <strong>{step.goal}</strong>
               </footer>
             </div>
@@ -270,38 +270,38 @@ export const AimCoachCard: React.FC<{
           onClick={() => setRulebookOpen(!rulebookOpen)}
           aria-expanded={rulebookOpen}
         >
-          <span>AİM KOÇLUĞU KURALLARI VE VERİ YORUMLAMA REHBERİ</span>
+          <span>BU DEĞERLENDİRME NASIL YAPILIYOR?</span>
           <b>{rulebookOpen ? "▲ Gizle" : "▼ Rehberi İncele"}</b>
         </button>
 
         {rulebookOpen && (
           <div className="aim-rulebook-content">
             <p className="rulebook-intro">
-              Bu rehber yalnız hesaplanabilen demo kanıtlarını ve ölçüm sınırlarını açıklar:
+              Hangi verileri kullandığımızı ve bu verilerin sınırlarını burada bulabilirsin:
             </p>
             <div className="rulebook-grid">
               <article>
-                <b>1. Kill Anı Hizası</b>
+                <b>1. Öldürme anındaki nişangah açısı</b>
                 <p>Nişangah ile hedef kafa/gövde açısı yalnız öldürme tick’inde ölçülür. Harita geometrisi ve görüş hattı raycast’i olmadığı için bu değer pre-aim sayılmaz ve puanlanmaz.</p>
               </article>
               <article>
-                <b>2. Atış Anı Hareket Uygunluğu Kuralı</b>
+                <b>2. Ateş ederken hareket</b>
                 <p>Her atışta demonun verdiği silah <code>max_speed</code> alanı okunur. Yatay hız bunun <code>%34</code>’ünü aşıyorsa veya oyuncu havadaysa atış sınır üstü sayılır; bu metrik tuş girdisini veya gerçek counter-strafe yapılıp yapılmadığını ölçmez.</p>
               </article>
               <article>
-                <b>3. 3-Mermi Burst vs Sprey Dağılım Kuralı</b>
+                <b>3. Kısa seri ve sprey isabeti</b>
                 <p><code>weapon_fire</code> ile <code>bullet_damage</code>, saldırgan SteamID ve normal demo tick’i üzerinden eşleştirilir. İlk 3 ile 4+ mermi grubu yalnız yeterli örnek varsa aynı oyuncunun kendi içindeki farkla kıyaslanır.</p>
               </article>
               <article>
-                <b>4. Time-to-Damage (TTD) Eşik Kuralı</b>
+                <b>4. İlk hasara kadar geçen süre (TTD)</b>
                 <p>TTD, <code>approximate_spotted_by</code> başlangıcından ilk silahlı hasara kadar ölçülür. Bu görünürlük yaklaşık olduğundan profesyonel reaksiyon eşiği veya aim puanı üretmez.</p>
               </article>
               <article>
-                <b>5. Dikey Hitbox (Lazy Crosshair) Kuralı</b>
+                <b>5. İsabetlerin vücuttaki dağılımı</b>
                 <p>Hitgroup dağılımı doğrudan gösterilir. Bacak isabetleri kafa ve göğüs toplamını aşarsa video incelemesi önerilir; tek başına kök sebep ilan edilmez.</p>
               </article>
               <article>
-                <b>6. Keskin Nişancı (AWP) Sıfır Hız Kuralı</b>
+                <b>6. Keskin nişancı tüfeklerinde hareket</b>
                 <p>Sniper atışlarında da aynı max-speed oranı kullanılır. Sabit silah adı eşiği veya eksik veride varsayılan hız kullanılmaz.</p>
               </article>
             </div>
@@ -318,7 +318,7 @@ export const AimCoachCard: React.FC<{
               onClick={onOpenFullReport}
             >
               <IconSparkles size={14} style={{ marginRight: "6px" }} />
-              Kapsamlı Full Maç Koçluk Raporunu Aç
+              Maçın koç raporunu aç
             </button>
           ) : (
             <button
@@ -327,7 +327,7 @@ export const AimCoachCard: React.FC<{
               disabled={coachState === "thinking"}
             >
               <IconSparkles size={14} style={{ marginRight: "6px" }} />
-              {coachState === "thinking" ? "Koç tüm maç verilerini inceliyor…" : "Tek Tuşla Full Maç Analizi & Rapor Oluştur"}
+              {coachState === "thinking" ? "Koç tüm maç verilerini inceliyor…" : "Maçın koç raporunu oluştur"}
             </button>
           )}
         </div>

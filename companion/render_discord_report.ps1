@@ -1,141 +1,149 @@
-param(
+﻿param(
   [Parameter(Mandatory = $true)][string]$InputJson,
   [Parameter(Mandatory = $true)][string]$OutputPng
 )
-
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
-
-function New-Brush([string]$Hex) {
-  return New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($Hex))
-}
-
-function Draw-FitText {
-  param(
-    [System.Drawing.Graphics]$Graphics,
-    [string]$Text,
-    [System.Drawing.Font]$Font,
-    [System.Drawing.Brush]$Brush,
-    [single]$X,
-    [single]$Y,
-    [single]$MaxWidth
-  )
-  if ($null -eq $Text) { $Text = '' }
-  $candidate = [string]$Text
-  while ($candidate.Length -gt 1 -and $Graphics.MeasureString($candidate, $Font).Width -gt $MaxWidth) {
-    $candidate = $candidate.Substring(0, $candidate.Length - 1)
-  }
-  if ($candidate -ne $Text -and $candidate.Length -gt 1) {
-    $candidate = $candidate.Substring(0, $candidate.Length - 1).TrimEnd() + '…'
-  }
-  $Graphics.DrawString($candidate, $Font, $Brush, $X, $Y)
-}
-
+# Local drawing only; no remote fonts, avatars or image services.
 $model = Get-Content -LiteralPath $InputJson -Raw -Encoding UTF8 | ConvertFrom-Json
-$width = 1800
-$height = 1160
+$ownRows = @($model.ownRows | Select-Object -First 5)
+$opponentRows = @($model.opponentRows | Select-Object -First 5)
+$width = 1600
+$opponentY = 384 + ([Math]::Max(1, $ownRows.Count) * 136)
+$opponentHeight = 90 + ([Math]::Max(1, $opponentRows.Count) * 40)
+$height = $opponentY + $opponentHeight + 166
 $bitmap = New-Object System.Drawing.Bitmap $width, $height
 $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-$graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+$graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
 $graphics.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
+$brushes = @{}
+$fonts = @{}
 
-$fonts = @{
-  Brand = New-Object System.Drawing.Font 'Segoe UI', 22, ([System.Drawing.FontStyle]::Bold), ([System.Drawing.GraphicsUnit]::Pixel)
-  Title = New-Object System.Drawing.Font 'Segoe UI', 34, ([System.Drawing.FontStyle]::Bold), ([System.Drawing.GraphicsUnit]::Pixel)
-  Section = New-Object System.Drawing.Font 'Segoe UI', 23, ([System.Drawing.FontStyle]::Bold), ([System.Drawing.GraphicsUnit]::Pixel)
-  Header = New-Object System.Drawing.Font 'Segoe UI', 14, ([System.Drawing.FontStyle]::Bold), ([System.Drawing.GraphicsUnit]::Pixel)
-  Cell = New-Object System.Drawing.Font 'Segoe UI', 18, ([System.Drawing.FontStyle]::Regular), ([System.Drawing.GraphicsUnit]::Pixel)
-  CellBold = New-Object System.Drawing.Font 'Segoe UI', 18, ([System.Drawing.FontStyle]::Bold), ([System.Drawing.GraphicsUnit]::Pixel)
-  Small = New-Object System.Drawing.Font 'Segoe UI', 15, ([System.Drawing.FontStyle]::Regular), ([System.Drawing.GraphicsUnit]::Pixel)
+function Brush([string]$Color) {
+  if (-not $brushes.ContainsKey($Color)) { $brushes[$Color] = New-Object System.Drawing.SolidBrush ([System.Drawing.ColorTranslator]::FromHtml($Color)) }
+  return $brushes[$Color]
 }
-$brushes = @{
-  Background = New-Brush '#090D0C'
-  Panel = New-Brush '#111715'
-  PanelAlt = New-Brush '#151D1A'
-  Header = New-Brush '#1C2722'
-  Acid = New-Brush '#C8F54D'
-  White = New-Brush '#F2F6F3'
-  Muted = New-Brush '#96A39C'
-  Grid = New-Brush '#26322D'
-  Win = New-Brush '#66D98A'
-  Loss = New-Brush '#FF6F77'
-  Amber = New-Brush '#F4C95D'
+function Font([int]$Size, [bool]$Bold = $false) {
+  $key = "$Size-$Bold"
+  if (-not $fonts.ContainsKey($key)) {
+    $style = if ($Bold) { [System.Drawing.FontStyle]::Bold } else { [System.Drawing.FontStyle]::Regular }
+    $fonts[$key] = New-Object System.Drawing.Font 'Segoe UI', $Size, $style, ([System.Drawing.GraphicsUnit]::Pixel)
+  }
+  return $fonts[$key]
 }
-
+function Draw-Text([string]$Text, [single]$X, [single]$Y, [single]$Width, [int]$Size = 22, [string]$Color = '#EEF3F0', [bool]$Bold = $false, [string]$Align = 'Near') {
+  $format = New-Object System.Drawing.StringFormat
+  $format.FormatFlags = [System.Drawing.StringFormatFlags]::NoWrap
+  $format.Trimming = [System.Drawing.StringTrimming]::EllipsisCharacter
+  $format.Alignment = [System.Drawing.StringAlignment]::$Align
+  $rectangle = New-Object System.Drawing.RectangleF $X, $Y, $Width, ([single]($Size * 1.65))
+  try { $graphics.DrawString(($Text -replace '[\r\n\t]+', ' '), (Font $Size $Bold), (Brush $Color), $rectangle, $format) }
+  finally { $format.Dispose() }
+}
+function Panel([single]$X, [single]$Y, [single]$Width, [single]$Height, [string]$Color, [int]$Radius = 14, [string]$Border = '#29352F') {
+  $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+  $d = $Radius * 2
+  $pen = New-Object System.Drawing.Pen ([System.Drawing.ColorTranslator]::FromHtml($Border)), 1
+  try {
+    $path.AddArc($X, $Y, $d, $d, 180, 90)
+    $path.AddArc(($X + $Width - $d), $Y, $d, $d, 270, 90)
+    $path.AddArc(($X + $Width - $d), ($Y + $Height - $d), $d, $d, 0, 90)
+    $path.AddArc($X, ($Y + $Height - $d), $d, $d, 90, 90)
+    $path.CloseFigure()
+    $graphics.FillPath((Brush $Color), $path)
+    $graphics.DrawPath($pen, $path)
+  } finally { $pen.Dispose(); $path.Dispose() }
+}
+function Initials([string]$Name) {
+  $enumerator = [System.Globalization.StringInfo]::GetTextElementEnumerator($Name)
+  $letters = ''
+  for ($i = 0; $i -lt 2 -and $enumerator.MoveNext(); $i++) { $letters += $enumerator.GetTextElement() }
+  return $letters.ToUpper([System.Globalization.CultureInfo]::GetCultureInfo('tr-TR'))
+}
 try {
-  $graphics.FillRectangle($brushes.Background, 0, 0, $width, $height)
-  $graphics.FillRectangle($brushes.Header, 0, 0, $width, 112)
-  $graphics.DrawString('TRACER', $fonts.Brand, $brushes.Acid, 48, 20)
-  Draw-FitText $graphics ([string]$model.title) $fonts.Title $brushes.White 220 14 1510
-  Draw-FitText $graphics ([string]$model.subtitle) $fonts.Cell $brushes.Muted 220 65 1510
-
-  $graphics.FillRectangle($brushes.Panel, 36, 132, 1728, 558)
-  $graphics.DrawString('BİZİM TAKIM · AYRINTILI OYUNCU KARTLARI', $fonts.Section, $brushes.Acid, 54, 146)
-  Draw-FitText $graphics ([string]$model.ownSummary) $fonts.Small $brushes.Muted 720 151 1010
-
-  $ownColumns = @(
-    @{ Label = 'OYUNCU'; X = 54; Width = 205 }, @{ Label = 'K / D / A'; X = 270; Width = 108 },
-    @{ Label = 'ADR'; X = 388; Width = 74 }, @{ Label = 'HS'; X = 472; Width = 72 },
-    @{ Label = 'KAST'; X = 554; Width = 88 }, @{ Label = 'HAYATTA'; X = 652; Width = 94 },
-    @{ Label = 'OPEN'; X = 756; Width = 82 }, @{ Label = 'TRADE'; X = 848; Width = 86 },
-    @{ Label = 'UTIL'; X = 944; Width = 76 }, @{ Label = 'FLASH'; X = 1030; Width = 80 },
-    @{ Label = 'HAREKET'; X = 1120; Width = 98 }, @{ Label = 'SPREY'; X = 1228; Width = 110 },
-    @{ Label = 'DÜELLO'; X = 1348; Width = 98 }, @{ Label = 'KOÇ NOTU'; X = 1456; Width = 272 }
+  $graphics.Clear([System.Drawing.ColorTranslator]::FromHtml('#0A100E'))
+  $graphics.FillRectangle((Brush '#C8F54D'), 48, 41, 5, 30)
+  Draw-Text 'TRACER' 68 36 250 28 '#C8F54D' $true
+  Draw-Text 'CS2 / MAÇ SONU RAPORU' 1060 43 492 18 '#98A99E' $false 'Far'
+  Panel 48 96 1504 146 '#14201A' 18 '#3C5037'
+  Draw-Text 'HARİTA' 74 114 700 16 '#A8BE9C' $true
+  $map = if ($model.mapName) { [string]$model.mapName } else { ([string]$model.title -split ' · ')[0] }
+  Draw-Text $map 70 134 850 48 '#F0F6EB' $true
+  Draw-Text ([string]$model.subtitle) 74 204 925 19 '#A2B2A8'
+  $resultColor = if ($model.result -match 'Galibiyet') { '#C8F54D' } elseif ($model.result -match 'Mağlubiyet') { '#FF9093' } else { '#D8C98C' }
+  Panel 1090 112 444 114 '#0B1410' 12 '#334631'
+  Draw-Text $(if ($model.scoreText) { [string]$model.scoreText } else { '—' }) 1106 112 412 58 '#F3F7EE' $true 'Center'
+  Draw-Text ([string]$model.result) 1108 184 408 22 $resultColor $true 'Center'
+  Draw-Text 'SENİN TAKIMIN' 48 272 370 26 '#C8F54D' $true
+  Draw-Text ([string]$model.ownSummary) 440 280 1112 20 '#AAB9AF' $false 'Far'
+  $columns = @(
+    @{ Label = 'OYUNCU'; X = 132; W = 280; Field = 'name'; Align = 'Near' },
+    @{ Label = 'K / D / A'; X = 444; W = 164; Field = 'kda'; Align = 'Center' },
+    @{ Label = 'ADR'; X = 646; W = 118; Field = 'adr'; Align = 'Center' },
+    @{ Label = 'HS'; X = 808; W = 108; Field = 'hs'; Align = 'Center' },
+    @{ Label = 'KAST'; X = 968; W = 142; Field = 'kast'; Align = 'Center' },
+    @{ Label = 'DÜELLO'; X = 1150; W = 360; Field = 'duel'; Align = 'Center' }
   )
-  $graphics.FillRectangle($brushes.Header, 48, 188, 1704, 40)
-  foreach ($column in $ownColumns) {
-    Draw-FitText $graphics ([string]$column.Label) $fonts.Header $brushes.Muted ([single]$column.X) 198 ([single]$column.Width)
-  }
-
-  $rowIndex = 0
-  foreach ($row in @($model.ownRows)) {
-    $y = 238 + ($rowIndex * 86)
-    if ($row.highlighted) { $graphics.FillRectangle($brushes.PanelAlt, 48, $y, 1704, 78) }
-    $graphics.FillRectangle($brushes.Grid, 48, $y + 77, 1704, 1)
-    $name = if ($row.highlighted) { '★ ' + [string]$row.name } else { [string]$row.name }
-    $values = @($name, $row.kda, $row.adr, $row.hs, $row.kast, $row.survival, $row.opening, $row.trade, $row.utility, $row.flash, $row.movement, $row.spray, $row.duel, $row.note)
-    for ($columnIndex = 0; $columnIndex -lt $ownColumns.Count; $columnIndex += 1) {
-      $column = $ownColumns[$columnIndex]
-      $font = if ($columnIndex -eq 0) { $fonts.CellBold } else { $fonts.Cell }
-      $brush = if ($columnIndex -eq 4) { New-Brush ([string]$row.kastColor) } else { $brushes.White }
-      try { Draw-FitText $graphics ([string]$values[$columnIndex]) $font $brush ([single]$column.X) ([single]($y + 25)) ([single]$column.Width) }
-      finally { if ($columnIndex -eq 4) { $brush.Dispose() } }
+  foreach ($column in $columns) { Draw-Text $column.Label $column.X 324 $column.W 17 '#90A298' $true $column.Align }
+  $index = 0
+  foreach ($row in $ownRows) {
+    $y = 360 + ($index * 136)
+    $panelColor = if ($row.highlighted) { '#1B2A1B' } elseif ($index % 2 -eq 0) { '#141D18' } else { '#111A16' }
+    $borderColor = if ($row.highlighted) { '#6B8740' } else { '#2A3830' }
+    Panel 48 $y 1504 128 $panelColor 12 $borderColor
+    if ($row.highlighted) { $graphics.FillRectangle((Brush '#C8F54D'), 48, ($y + 16), 4, 36) }
+    Panel 68 ($y + 14) 46 42 $(if ($row.highlighted) { '#C8F54D' } else { '#26392B' }) 8 $borderColor
+    Draw-Text (Initials ([string]$row.name)) 69 ($y + 22) 44 18 $(if ($row.highlighted) { '#17200D' } else { '#C3D7B5' }) $true 'Center'
+    Draw-Text ([string]$row.name) 132 ($y + 17) $(if ($row.highlighted) { 230 } else { 280 }) 27 '#F0F5EE' $true
+    if ($row.highlighted) { Draw-Text 'SEN' 366 ($y + 25) 56 14 '#C8F54D' $true }
+    foreach ($column in $columns | Select-Object -Skip 1) {
+      $color = if ($column.Field -eq 'kast') { [string]$row.kastColor } else { '#EEF3F0' }
+      if ($color -notmatch '^#[0-9A-Fa-f]{6}$') { $color = '#98A99E' }
+      $value = [string]$row.($column.Field)
+      if ($column.Field -eq 'duel') { $value = $value -replace '\(n(\d+)\)', '($1 örnek)' }
+      Draw-Text $value $column.X ($y + 14) $column.W $(if ($column.Field -eq 'duel') { 26 } else { 30 }) $color $true $column.Align
     }
-    $rowIndex += 1
+    $details = @(
+      @{ Label = 'HAYATTA'; Value = $row.survival }, @{ Label = 'İLK DÜELLO K / D'; Value = $row.opening },
+      @{ Label = 'TAKAS'; Value = $row.trade }, @{ Label = 'BOMBA HASARI'; Value = $row.utility },
+      @{ Label = 'FLAŞ SÜRESİ'; Value = $row.flash }, @{ Label = 'HAREKET KONTROLÜ'; Value = $row.movement },
+      @{ Label = 'BURST / SPREY'; Value = $row.spray }
+    )
+    for ($i = 0; $i -lt $details.Count; $i++) {
+      $x = 70 + ($i * 211)
+      Draw-Text $details[$i].Label $x ($y + 61) 201 14 '#92A79A' $true
+      Draw-Text ([string]$details[$i].Value) $x ($y + 78) 201 20 '#C9D6CC'
+    }
+    Draw-Text ('NOT  /  ' + [string]$row.note) 70 ($y + 104) 1458 16 '#B0C79D'
+    $index++
   }
-
-  $graphics.FillRectangle($brushes.Panel, 36, 710, 1728, 358)
-  $graphics.DrawString('RAKİP TAKIM · TEK KISA KART', $fonts.Section, $brushes.Amber, 54, 724)
-  Draw-FitText $graphics ([string]$model.opponentSummary) $fonts.Small $brushes.Muted 620 729 1110
-  $opponentColumns = @(
-    @{ Label = 'OYUNCU'; X = 54; Width = 340 }, @{ Label = 'K / D / A'; X = 410; Width = 190 },
-    @{ Label = 'ADR'; X = 620; Width = 150 }, @{ Label = 'KAST'; X = 790; Width = 170 },
-    @{ Label = 'ROUND KATKISI'; X = 980; Width = 748 }
+  if ($ownRows.Count -eq 0) { Draw-Text 'Bu analizde takım oyuncuları doğrulanamadı.' 70 402 1440 25 '#AAB9AF' }
+  Panel 48 $opponentY 1504 $opponentHeight '#101916' 14 '#38433A'
+  Draw-Text 'RAKİP TAKIM' 70 ($opponentY + 18) 380 23 '#CFBE90' $true
+  Draw-Text ([string]$model.opponentSummary) 470 ($opponentY + 24) 1060 19 '#97A89D' $false 'Far'
+  $enemyColumns = @(
+    @{ Label = 'OYUNCU'; X = 72; W = 460; Field = 'name'; Align = 'Near' },
+    @{ Label = 'K / D / A'; X = 550; W = 180; Field = 'kda'; Align = 'Center' },
+    @{ Label = 'ADR'; X = 770; W = 120; Field = 'adr'; Align = 'Center' },
+    @{ Label = 'KAST'; X = 950; W = 130; Field = 'kast'; Align = 'Center' },
+    @{ Label = 'ROUND KATKISI'; X = 1140; W = 382; Field = 'grade'; Align = 'Near' }
   )
-  $graphics.FillRectangle($brushes.Header, 48, 766, 1704, 40)
-  foreach ($column in $opponentColumns) {
-    Draw-FitText $graphics ([string]$column.Label) $fonts.Header $brushes.Muted ([single]$column.X) 776 ([single]$column.Width)
+  foreach ($column in $enemyColumns) { Draw-Text $column.Label $column.X ($opponentY + 59) $column.W 14 '#81978B' $true $column.Align }
+  $index = 0
+  foreach ($row in $opponentRows) {
+    $y = $opponentY + 84 + ($index * 40)
+    if ($index % 2 -eq 0) { $graphics.FillRectangle((Brush '#18231D'), 64, $y, 1472, 38) }
+    foreach ($column in $enemyColumns) { Draw-Text ([string]$row.($column.Field)) $column.X ($y + 5) $column.W 22 '#CCD6CE' ($column.Field -eq 'name') $column.Align }
+    $index++
   }
-  $opponentIndex = 0
-  foreach ($row in @($model.opponentRows)) {
-    $y = 816 + ($opponentIndex * 47)
-    $graphics.FillRectangle($brushes.Grid, 48, $y + 42, 1704, 1)
-    $values = @($row.name, $row.kda, $row.adr, $row.kast, $row.grade)
-    for ($columnIndex = 0; $columnIndex -lt $opponentColumns.Count; $columnIndex += 1) {
-      $column = $opponentColumns[$columnIndex]
-      $font = if ($columnIndex -eq 0) { $fonts.CellBold } else { $fonts.Cell }
-      $brush = if ($columnIndex -eq 3) { New-Brush ([string]$row.kastColor) } else { $brushes.White }
-      try { Draw-FitText $graphics ([string]$values[$columnIndex]) $font $brush ([single]$column.X) ([single]($y + 10)) ([single]$column.Width) }
-      finally { if ($columnIndex -eq 3) { $brush.Dispose() } }
-    }
-    $opponentIndex += 1
-  }
-  if (@($model.opponentRows).Count -eq 0) {
-    $graphics.DrawString('Rakip kadrosu bu analizde güvenle doğrulanamadı.', $fonts.Cell, $brushes.Muted, 54, 832)
-  }
-
-  $graphics.FillRectangle($brushes.Header, 0, 1090, $width, 70)
-  Draw-FitText $graphics 'KAST = Kill, Assist, Survived veya Traded olunan roundların yüzdesi · — = Ölçülemedi · ★ = Seçili oyuncu' $fonts.Small $brushes.Muted 48 1113 1704
+  if ($opponentRows.Count -eq 0) { Draw-Text 'Rakip oyuncular bu analizde doğrulanamadı.' 72 ($opponentY + 89) 1400 22 '#97A89D' }
+  $footerY = $opponentY + $opponentHeight + 22
+  Draw-Text 'İSTATİSTİKLERİ OKUMA REHBERİ' 48 $footerY 1450 15 '#91A784' $true
+  Draw-Text 'K / D / A: öldürme / ölüm / asist   ·   ADR: round başına hasar   ·   HS: kafadan öldürme oranı' 48 ($footerY + 24) 1504 18 '#9DAEA2'
+  Draw-Text 'KAST: öldürme, asist, hayatta kalma veya takas katkısı olan roundların yüzdesi. Resmî bir seviye puanı değildir.' 48 ($footerY + 49) 1504 18 '#9DAEA2'
+  Draw-Text 'Hareket: hız sınırına uygun atış oranı   ·   Burst / sprey: ilk 3 / sonraki mermiler   ·   Düello: kazanma oranı (örnek sayısı)' 48 ($footerY + 74) 1504 17 '#8B9E90'
+  Draw-Text '— Ölçülemedi     SEN Seçili oyuncu' 48 ($footerY + 101) 1150 16 '#C0CEB8'
+  Draw-Text 'TRACER / MAÇ ANALİZİ' 1190 ($footerY + 101) 362 16 '#819574' $true 'Far'
   $bitmap.Save($OutputPng, [System.Drawing.Imaging.ImageFormat]::Png)
 }
 finally {

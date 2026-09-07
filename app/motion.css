@@ -1,0 +1,80 @@
+/* Local CSS only: no animation SDK, network calls or fabricated counters. */
+@keyframes tracer-enter { from { opacity:0; } to { opacity:1; } }
+@keyframes tracer-rise { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:translateY(0); } }
+@keyframes tracer-bar { from { transform:scaleX(0); } to { transform:scaleX(1); } }
+@keyframes tracer-sweep { from { transform:translateX(-110%) skewX(-18deg); } to { transform:translateX(420%) skewX(-18deg); } }
+@keyframes tracer-shimmer { to { transform:translateX(100%); } }
+@keyframes tracer-chart { from { stroke-dashoffset:1; } to { stroke-dashoffset:0; } }
+
+/* Opacity on workspace roots preserves sticky/fixed descendants and scroll. */
+.app-shell > :is(.workspace,.growth-view,.squad-coach-workspace) { animation:tracer-enter var(--motion-enter) var(--motion-ease); }
+.home-stat-grid > article,.recent-matches-grid > .match-card,.growth-score-grid > article,.coverage-grid > button { animation:tracer-rise var(--motion-enter) var(--motion-ease) backwards; }
+:is(.home-stat-grid,.recent-matches-grid,.growth-score-grid,.coverage-grid) > :nth-child(2) { animation-delay:45ms; }
+:is(.home-stat-grid,.recent-matches-grid,.growth-score-grid,.coverage-grid) > :nth-child(3) { animation-delay:90ms; }
+:is(.home-stat-grid,.recent-matches-grid,.growth-score-grid,.coverage-grid) > :nth-child(n+4) { animation-delay:135ms; }
+.settings-modal,.confirm-modal,.aim-rulebook-content,.metric-glossary[open] dl { animation:tracer-rise 240ms var(--motion-ease); }
+.modal-backdrop,.confirm-modal-backdrop { animation:tracer-enter 180ms ease-out; }
+.score-line i,.scorecard-dim-box i em { transform-origin:left; animation:tracer-bar 650ms var(--motion-ease); }
+.growth-chart polyline { stroke-dasharray:1; animation:tracer-chart 850ms var(--motion-ease); }
+
+.home-hero { border-color:#475e32; background:radial-gradient(ellipse at 100% 0,#a4cd4420,transparent 58%),linear-gradient(110deg,#1b2818,#101713 75%); box-shadow:0 14px 40px #0002; }
+.home-hero::before { content:""; position:absolute; inset:0 auto 0 0; width:3px; background:var(--acid); }
+.home-hero::after { content:""; position:absolute; inset:0 auto 0 0; width:30%; pointer-events:none; background:linear-gradient(90deg,transparent,#d8f9970a,transparent); transform:translateX(-110%); animation:tracer-sweep 1600ms 150ms ease-out both; }
+.home-hero > * { position:relative; z-index:1; }
+.home-hero h2 { font-size:clamp(32px,3.1vw,48px); }
+.home-hero p { font-size:1rem; }
+.home-date-note { max-width:900px; color:var(--muted); font-size:.8125rem; line-height:1.7; margin:-4px 0 18px; }
+.home-section-heading > span { font-size:.8125rem; }
+.home-workflow { position:relative; }
+.home-workflow > div { animation:tracer-rise 480ms var(--motion-ease) both; }
+.home-workflow > div:nth-child(2) { animation-delay:100ms; }
+.home-workflow > div:nth-child(3) { animation-delay:200ms; }
+.home-workflow p,.home-stat-grid footer,.home-stat-grid footer > span:last-child { font-size:.8125rem; }
+.home-stat-grid header span { font-size:.8125rem; letter-spacing:.04em; }
+.home-stat-grid header b,.home-history-list small,.home-shortcut small,.home-connection small { font-size:.75rem; }
+.home-stat-grid article { background:linear-gradient(150deg,#1b251d,#111813 65%); border-top-color:#48533a; }
+.home-stat-value { font-size:clamp(36px,3vw,48px); line-height:1.25; }
+.home-stat-value.is-loading { width:100px; height:60px; border-radius:8px; background:#283325; position:relative; overflow:hidden; }
+.home-stat-value.is-loading::after { content:""; position:absolute; inset:0; background:linear-gradient(90deg,transparent,#d5edaa18,transparent); transform:translateX(-100%); animation:tracer-shimmer 1400ms ease-in-out infinite; }
+.home-connection p,.home-empty p,.metric-glossary dd,.coverage-grid button > small { font-size:.875rem; }
+.home-connection h3 { line-height:1.4; }
+.home-shortcut b,.home-history-list b,.home-primary,.home-secondary,.coverage-grid button > span,.metric-glossary dt { font-size:.875rem; }
+.home-primary:focus-visible,.home-secondary:focus-within { outline:2px solid var(--acid); outline-offset:5px; }
+.home-secondary { position:relative; }
+.home-secondary input { position:absolute; width:1px; height:1px; opacity:0; overflow:hidden; }
+.home-heading h1 { line-height:1.3; }
+.home-heading .eyebrow { color:#b3c49b; }
+.nav-group-label { font-size:.75rem; letter-spacing:.08em; }
+.nav-item { position:relative; font-size:.875rem; transition:background-color var(--motion-fast),color var(--motion-fast),box-shadow var(--motion-fast); }
+.nav-item svg { transition:color var(--motion-fast),transform 220ms var(--motion-ease); }
+.nav-item.active { background:linear-gradient(90deg,#26371a99,#151c17); }
+.nav-item.active svg { transform:scale(1.08); }
+.motion-toggle { display:flex; align-items:center; gap:8px; width:100%; border:1px solid #2e3b30; background:#111913; border-radius:7px; padding:9px 10px; margin-bottom:10px; text-align:left; color:#bdcbb8; font-size:.75rem; cursor:pointer; }
+.motion-toggle > span:first-child { color:var(--acid); font-size:18px; }
+.motion-toggle-state { margin-left:auto; border-radius:4px; background:#25331e; padding:2px 6px; }
+.motion-toggle[aria-pressed="true"] { border-color:#71834b; }
+:is(.home-primary,.home-secondary,.home-shortcut,.upload-button,.ghost-button,.coverage-grid button,.match-download-btn) { transition:transform var(--motion-fast) var(--motion-ease),border-color var(--motion-fast),background-color var(--motion-fast),box-shadow var(--motion-fast); }
+:is(.home-primary,.home-secondary,.home-shortcut,.upload-button,.ghost-button,.coverage-grid button,.match-download-btn):not(:disabled):active { transform:translateY(1px) scale(.985); }
+.match-card { transition:border-color 200ms,box-shadow 200ms; }
+.home-history-list > button { transition:background-color var(--motion-fast); }
+.home-history-list > button > svg:last-child,.home-shortcut > svg:last-child,.home-primary > svg { transition:transform 220ms var(--motion-ease); }
+@media (hover:hover) and (pointer:fine) {
+  :is(.home-primary,.home-secondary,.home-shortcut,.upload-button,.ghost-button):not(:disabled):hover { transform:translateY(-2px); box-shadow:0 7px 20px #0003; }
+  .match-card:hover { border-color:#6a8149; box-shadow:0 8px 26px #0004; }
+  .nav-item:hover svg { transform:translateX(2px); }
+  .home-history-list > button:hover > svg:last-child,.home-shortcut:hover > svg:last-child,.home-primary:hover > svg { transform:translateX(3px); }
+}
+@media (max-width:720px) {
+  .motion-toggle { width:auto; margin:6px 0; }
+  .home-hero { padding:24px; }
+  .home-stat-grid footer { display:grid; }
+  .home-date-note { font-size:.8125rem; }
+}
+/* Never force motion on reduced-motion users or during existing game modes. */
+:root[data-motion="reduced"] *,:root[data-motion="reduced"] *::before,:root[data-motion="reduced"] *::after,
+.performance-mode,.performance-mode *,.performance-mode *::before,.performance-mode *::after,
+.squad-focus-mode,.squad-focus-mode *,.squad-focus-mode *::before,.squad-focus-mode *::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; }
+:root[data-motion-paused="true"] *,:root[data-motion-paused="true"] *::before,:root[data-motion-paused="true"] *::after { animation-play-state:paused!important; }
+@media (prefers-reduced-motion:reduce) {
+  *,*::before,*::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; }
+}
