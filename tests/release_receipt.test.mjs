@@ -1,0 +1,25 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+const tool = fileURLToPath(new URL('../launcher/release-receipt.mjs', import.meta.url));
+test('prepared release rejects changed archives and source without rebuilding or publishing', () => {
+ const root = mkdtempSync(join(tmpdir(), 'tracer-receipt-test-'));
+ execFileSync('git', ['init', '-q', root]);
+ writeFileSync(join(root, '.gitignore'), '/release/\n');
+ writeFileSync(join(root, 'app.mjs'), 'original');
+ mkdirSync(join(root, 'release'));
+ const names=['TRACER-Patch-v1.2.3.zip','TRACER-Guncelleyici-Duzeltmesi-v1.2.3.zip','TRACER-Portable-v1.2.3.rar'];
+ for(const name of names) writeFileSync(join(root,'release',name),'archive');
+ const run=(mode)=>spawnSync(process.execPath,[tool,mode,root,'1.2.3'],{encoding:'utf8'});
+ assert.equal(run('record').status,0);
+ assert.equal(run('verify').status,0);
+ writeFileSync(join(root,'release',names[0]),'damaged');
+ assert.notEqual(run('verify').status,0);
+ writeFileSync(join(root,'release',names[0]),'archive');
+ writeFileSync(join(root,'app.mjs'),'changed after build');
+ assert.notEqual(run('verify').status,0);
+});

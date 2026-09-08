@@ -1,0 +1,4 @@
+Map assets and overview data belong to Valve.
+Source: https://raw.githubusercontent.com/MurkyYT/cs2-map-icons/main/data/available.json
+Downloaded: 2026-09-07T18:21:52.308Z
+Rotation/zoom in overview files configure the in-game HUD, not the north-up radar transform.

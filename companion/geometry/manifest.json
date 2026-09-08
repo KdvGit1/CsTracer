@@ -1,0 +1,101 @@
+﻿{
+    "source":  "https://github.com/pnxenopoulos/awpy-data/releases/download/2000899",
+    "generatedAt":  "2026-08-29T08:04:41.329533+00:00",
+    "release":  "2000899",
+    "clientVersion":  "2000899",
+    "maps":  {
+                 "ar_pool_day":  {
+                                     "sha256":  "ee82a88b95390b53cb5ba6fdb70b4735bc58107161b3bf750bed081185e2f55c",
+                                     "file":  "ar_pool_day.mesh.gz"
+                                 },
+                 "de_debris":  {
+                                   "sha256":  "b723cf379ba8a6c9da15eca8759ec2a6802c70e278da3d40df874db1f24fa071",
+                                   "file":  "de_debris.mesh.gz"
+                               },
+                 "de_boulder":  {
+                                    "sha256":  "2e6bdd5169d8bbcfa2f4d7471042bcd101cc3b53b433555ff90c91f935dda75c",
+                                    "file":  "de_boulder.mesh.gz"
+                                },
+                 "cs_italy":  {
+                                  "sha256":  "ba2c73d97f95985a663ce0c5bb186aade3bfe3443e5105a4f7720909885993e1",
+                                  "file":  "cs_italy.mesh.gz"
+                              },
+                 "de_ancient_night":  {
+                                          "sha256":  "2f5afb1d9a51bdd8cd01a77c8cf7da47f61927ebc80a6e6cfa65c4221e278ef3",
+                                          "file":  "de_ancient_night.mesh.gz"
+                                      },
+                 "de_train":  {
+                                  "sha256":  "d68e8b51ea5e5a6d304a5ded5ef223a88e8cf40577322725a509b0a77ef0f8c4",
+                                  "file":  "de_train.mesh.gz"
+                              },
+                 "cs_shelter":  {
+                                    "sha256":  "934e6cdeaa592158abf6cc7e57db45a50c705e1bcb33a3ac5bc6c33ebb057b38",
+                                    "file":  "cs_shelter.mesh.gz"
+                                },
+                 "de_mirage":  {
+                                   "sha256":  "301f1d9fa94a610aed0569a3c8d694d8b5059575d5cca9068967f15596a49343",
+                                   "file":  "de_mirage.mesh.gz"
+                               },
+                 "de_nuke":  {
+                                 "sha256":  "fa775b07b82ba6531a934f590c76e07a3c17b633706a081edde73c0cd89a6097",
+                                 "file":  "de_nuke.mesh.gz"
+                             },
+                 "de_cache":  {
+                                  "sha256":  "45ebb8bb6135a2ad022d7c872f99e7de6b72f065bf74e2a81330c6036d8cb05c",
+                                  "file":  "de_cache.mesh.gz"
+                              },
+                 "de_fachwerk":  {
+                                     "sha256":  "ee37fc399ef5b92f942c636ed33cd14941d284d7b477c6ec30ecfeb7f03ac5b8",
+                                     "file":  "de_fachwerk.mesh.gz"
+                                 },
+                 "de_poseidon":  {
+                                     "sha256":  "5c4db1b61eab41bbb971d5ab24a9f4c61f5eed7201394eb6676c63e8ebdf616c",
+                                     "file":  "de_poseidon.mesh.gz"
+                                 },
+                 "de_overpass":  {
+                                     "sha256":  "72843a23192001ef3ba5fcaa437868b9c136f77c5ad277630b8f74e06df2786f",
+                                     "file":  "de_overpass.mesh.gz"
+                                 },
+                 "de_anubis":  {
+                                   "sha256":  "0544e2c7ad538c11ad98e5c6f05fcd91b7a78afa555f096e462aabdddff0f1c4",
+                                   "file":  "de_anubis.mesh.gz"
+                               },
+                 "de_ancient":  {
+                                    "sha256":  "b98aec714840df4bed90a22397ebc1cb5d9b058692eecdbe179f98ea0378a010",
+                                    "file":  "de_ancient.mesh.gz"
+                                },
+                 "de_inferno":  {
+                                    "sha256":  "060be56a67025107dbcfe437823638703e23f985a2a0554ffcb9cd3068e43dfe",
+                                    "file":  "de_inferno.mesh.gz"
+                                },
+                 "ar_shoots_night":  {
+                                         "sha256":  "82833da5d393498f23d1502843ccd1edf4bf895085efb32df91484649ee50959",
+                                         "file":  "ar_shoots_night.mesh.gz"
+                                     },
+                 "ar_shoots":  {
+                                   "sha256":  "e22960a059f88497379a2e3e10ed186e2045d282781c860f4ac3f1f93f5479e0",
+                                   "file":  "ar_shoots.mesh.gz"
+                               },
+                 "de_dust2":  {
+                                  "sha256":  "1ffb8132a2b2ed0458d878e0e8879e4fc6aa560d5261fac74487a259635cd5f0",
+                                  "file":  "de_dust2.mesh.gz"
+                              },
+                 "cs_office":  {
+                                   "sha256":  "1b63af3dea7a501e8df64a645829bcf7d1ddaa2222fdac29123cc9fb2e12662f",
+                                   "file":  "cs_office.mesh.gz"
+                               },
+                 "ar_baggage":  {
+                                    "sha256":  "b99683aabb9e487590d6c0e6f258c65f0b379d91655f5b4ca5e79ab262073a4a",
+                                    "file":  "ar_baggage.mesh.gz"
+                                },
+                 "de_eldorado":  {
+                                     "sha256":  "fe2b0eadd0c74e1384b8997198a897e5bf880577100f1fd0b03c49abc2231d1b",
+                                     "file":  "de_eldorado.mesh.gz"
+                                 },
+                 "de_vertigo":  {
+                                    "sha256":  "af71b53c010b96eb0be29de6b0dc67432a540f4a32dfdf127259ce229f4fe470",
+                                    "file":  "de_vertigo.mesh.gz"
+                                }
+             },
+    "sourceRevision":  "10948930"
+}

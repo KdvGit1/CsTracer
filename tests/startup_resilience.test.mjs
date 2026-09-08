@@ -55,7 +55,7 @@ test("companion ağır parser doğrulamasını beklemeden yerel portu açar", as
   }
 });
 
-test("başlatıcı arayüzü parserdan bağımsız açar ve 35 saniyelik web beklemesi kullanmaz", async () => {
+test("başlatıcı arayüzü parserdan bağımsız açar, ilk açılışa süre tanır ve hazır portu bekletmez", async () => {
   const [launcher, server, downloader, recentMatches] = await Promise.all([
     readFile(new URL("../launcher/start-tracer.ps1", import.meta.url), "utf8"),
     readFile(new URL("../companion/server.mjs", import.meta.url), "utf8"),
@@ -63,7 +63,7 @@ test("başlatıcı arayüzü parserdan bağımsız açar ve 35 saniyelik web bek
     readFile(new URL("../app/components/RecentMatchesView.tsx", import.meta.url), "utf8"),
   ]);
 
-  assert.match(launcher, /Wait-ForLocalPort 43118 15/);
+  assert.match(launcher, /Wait-ForLocalPort 43118 60/);
   assert.match(launcher, /Wait-ForLocalPort 43119 2/);
   assert.doesNotMatch(launcher, /Demo parser 35 saniye|Wait-ForUrl/);
   assert.match(launcher, /Yerel parser arka planda yeniden başlatılıyor/);

@@ -90,14 +90,14 @@ test("Discord PNG modeli kendi takımı ayrıntılı, rakibi tek kısa tabloda a
   assert.equal(Object.hasOwn(model.opponentRows[0], "movement"), false, "rakip satırı kısa kalmalı");
 });
 
-test("Windows görsel üreticisi geçerli 1600x1520 PNG oluşturur", async () => {
+test("Windows görsel üreticisi tepki grafiğiyle geçerli 1600x1994 PNG oluşturur", async () => {
   const root = mkdtempSync(join(tmpdir(), "tracer-discord-render-"));
   try {
     const model = buildDiscordReportImageModel(sampleMatch(), { steamid: sampleReport(6).player.steamid });
     const image = await renderDiscordReportPng(model, root);
     assert.equal(image.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
     assert.equal(image.readUInt32BE(16), 1600);
-    assert.equal(image.readUInt32BE(20), 1520);
+    assert.equal(image.readUInt32BE(20), 1994);
     assert.ok(image.length < 1024 * 1024, "tablo görseli Discord için hafif kalmalı");
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -124,7 +124,7 @@ test("PNG uzun Türkçe adları, eksik veriyi ve bilinmeyen rakibi güvenle çiz
     model.opponentRows = [];
     const png = await renderDiscordReportPng(model, root);
     assert.equal(png.readUInt32BE(16), 1600);
-    assert.equal(png.readUInt32BE(20), 816);
+    assert.equal(png.readUInt32BE(20), 1290);
     assert.ok(png.length < 1024 * 1024);
     const script = readFileSync(new URL("../companion/render_discord_report.ps1", import.meta.url));
     assert.equal(script.subarray(0, 3).toString("hex"), "efbbbf", "Windows PowerShell Türkçe karakterler için BOM gerektirir");

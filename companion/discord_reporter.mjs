@@ -226,6 +226,12 @@ function detailedImageRow(report, identity) {
       ? formatPercent(100 - Number(movement.invalidShotPercent)) : "—",
     spray: spray?.status === "measured" ? `${formatPercent(spray.earlyAccuracy)}/${formatPercent(spray.lateAccuracy)}` : "—",
     duel: duel?.duelStatus === "measured" ? `${formatPercent(duel.duelWinrate)} (n${Number(duel.duelTotal) || 0})` : "—",
+    reaction: report?.duelAnalyst?.reaction ? {
+      medianMs: report.duelAnalyst.reaction.medianMs,
+      sampleCount: report.duelAnalyst.reaction.samples.length,
+      samples: report.duelAnalyst.reaction.samples.map((s) => ({ round: s.round, ms: s.ms })),
+      histogram: report.duelAnalyst.reaction.histogram,
+    } : null,
     note: text(recommendation?.title || (scorecard?.grade ?? "Ölçülemedi"), 100),
   };
 }
@@ -297,7 +303,10 @@ export function sampleReportImageModel() {
     result: "Galibiyet",
     ownSummary: "Skor 13 · Ortalama %70,2 KAST · 78 ADR",
     opponentSummary: "Skor 8 · Ortalama %65,6 KAST · 70,5 ADR",
-    ownRows,
+    ownRows: ownRows.map((row, i) => ({ ...row, reaction: { medianMs: 250 + i * 20, sampleCount: 5,
+      samples: [180, 250, 320, 210, 460].map((ms, n) => ({ round: n + 1, ms: ms + i * 20 })),
+      histogram: [{ count: 0 }, { count: 2 }, { count: 2 }, { count: 1 }, { count: 0 }],
+    } })),
     opponentRows,
   };
 }

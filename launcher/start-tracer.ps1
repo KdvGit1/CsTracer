@@ -242,7 +242,9 @@ try {
   # Arayüz tek zorunlu başlangıç kapısıdır ve proxy/DNS kullanmadan doğrudan
   # localhost TCP portundan kontrol edilir. Parser en fazla iki saniye gözlenir;
   # geç hazırlanırsa veya çökerse arayüz yine açılır ve servis arka planda toparlanır.
-  if (-not (Wait-ForLocalPort 43118 15 $appProc)) {
+  # Yeni portable dosyalarının ilk taraması 15 saniyeyi aşabilir. Bu bir üst sınırdır;
+  # port hazır olduğunda bekleme hemen biter.
+  if (-not (Wait-ForLocalPort 43118 60 $appProc)) {
     throw "TRACER arayüzü başlatılamadı. $(Get-LogTail 'app') Log: $logRoot"
   }
   $companionReady = Wait-ForLocalPort 43119 2 $companionProc

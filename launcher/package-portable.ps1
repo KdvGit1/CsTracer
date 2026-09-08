@@ -1,12 +1,20 @@
-param(
+﻿param(
   [string]$OutputDirectory = "",
-  [switch]$SkipModel
+  [switch]$SkipModel,
+  [switch]$SkipBuild,
+  [switch]$CreateRar,
+  [string]$ExpectedVersion = ''
 )
 
 $ErrorActionPreference = "Stop"
 $tracerRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $releaseRoot = if ($OutputDirectory) { [System.IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $tracerRoot "release\TRACER-Portable" }
 $expectedReleaseParent = [System.IO.Path]::GetFullPath((Join-Path $tracerRoot "release"))
+$version = (Get-Content -LiteralPath (Join-Path $tracerRoot 'version.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
+if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Geçersiz portable sürümü.' }
+if ($ExpectedVersion -and $ExpectedVersion -ne $version) { throw 'Derlenen sürüm ile portable sürümü farklı.' }
+$rarPath = Join-Path $expectedReleaseParent "TRACER-Portable-v$version.rar"
+if ($CreateRar -and (Test-Path -LiteralPath $rarPath)) { throw "Portable arşivi zaten var; korunuyor: $rarPath" }
 
 if (-not $releaseRoot.StartsWith($expectedReleaseParent, [System.StringComparison]::OrdinalIgnoreCase) -and -not $OutputDirectory) {
   throw "Güvensiz paket hedefi reddedildi: $releaseRoot"
@@ -14,8 +22,10 @@ if (-not $releaseRoot.StartsWith($expectedReleaseParent, [System.StringCompariso
 
 $nodePath = (Get-Command node.exe -ErrorAction Stop).Source
 Set-Location $tracerRoot
-cmd.exe /c "npm run build"
-if ($LASTEXITCODE -ne 0) { throw "Üretim derlemesi başarısız." }
+if (-not $SkipBuild) {
+  & npm.cmd run build
+  if ($LASTEXITCODE -ne 0) { throw "Üretim derlemesi başarısız." }
+}
 
 $standaloneRoot = Join-Path $tracerRoot "dist\standalone"
 if (-not (Test-Path -LiteralPath (Join-Path $standaloneRoot "server.js"))) {
@@ -64,14 +74,14 @@ foreach ($module in $companionRuntimeModules) {
 }
 
 # Geliştiriciye özel betikler oyuncu paketine girmemeli
-$excludedLauncherFiles = @("publish-release.ps1", "create-patch.ps1", "create-updater-hotfix.ps1", "download-embedded-ai.ps1", "package-portable.ps1", "sync-version-files.mjs")
+$excludedLauncherFiles = @("publish-release.ps1", "create-patch.ps1", "create-updater-hotfix.ps1", "download-embedded-ai.ps1", "package-portable.ps1", "sync-version-files.mjs", "verify-and-package.ps1", "package-version.mjs", "check-portable.mjs", "release-receipt.mjs", "install-geometry.ps1", "update-maps.mjs")
 foreach ($devScript in $excludedLauncherFiles) {
   $devScriptPath = Join-Path $releaseRoot "launcher\$devScript"
   if (Test-Path -LiteralPath $devScriptPath) { Remove-Item -LiteralPath $devScriptPath -Force }
 }
 
 # Dynamically copy ALL root files (*.cmd, *.bat, *.ps1, *.json, *.md, *.png, *.ico, etc.) into portable release
-$excludedRootPatterns = @('^\.env', '\.tsbuildinfo$', 'package-lock\.json$', '^\.git', 'tsconfig\.json$', 'drizzle\.config\.ts$', 'next\.config\.ts$', 'vite\.config\.ts$', 'eslint\.config\.mjs$', 'postcss\.config\.mjs$', '^next-env\.d\.ts$', '^TRACER-Patch-Yayinla\.cmd$', '^cs-tracker-.*\.png$')
+$excludedRootPatterns = @('^\.env', '\.tsbuildinfo$', 'package-lock\.json$', '^\.git', 'tsconfig\.json$', 'drizzle\.config\.ts$', 'next\.config\.ts$', 'vite\.config\.ts$', 'eslint\.config\.mjs$', 'postcss\.config\.mjs$', '^next-env\.d\.ts$', '^TRACER-Patch-Yayinla\.cmd$', '^TRACER-(Sadece-Test|Test-ve-Paketle)\.cmd$', '^TEST-VE-PAKET\.md$', '^cs-tracker-.*\.png$')
 Get-ChildItem -LiteralPath $tracerRoot -File | ForEach-Object {
   $fileName = $_.Name
   $shouldExclude = $false
@@ -141,6 +151,12 @@ $requiredPortableFiles = @(
   "companion\analyze.mjs",
   "companion\analyze-worker.mjs",
   "companion\analysis_version.mjs",
+  "companion\duel_analyst.mjs",
+  "companion\duel_geometry.mjs",
+  "companion\map_geometry.mjs",
+  "companion\geometry\manifest.json",
+  "companion\geometry\de_cache.mesh.gz",
+  "shared\duel_view.mjs",
     "companion\discord_reporter.mjs",
     "companion\render_discord_report.ps1",
   "companion\match_storage.mjs",
@@ -176,6 +192,8 @@ try {
   if ($LASTEXITCODE -ne 0) {
     throw "Portable companion bağımlılık smoke testi başarısız oldu."
   }
+  & $portableNode --input-type=module -e "import { loadMapGeometry } from './companion/map_geometry.mjs'; const g = loadMapGeometry('de_cache'); if (!g.mesh) throw new Error('Portable harita geometrisi eksik veya bozuk: ' + g.status);"
+  if ($LASTEXITCODE -ne 0) { throw 'Portable harita geometrisi kontrolü başarısız oldu.' }
 } finally {
   Pop-Location
 }
@@ -189,5 +207,22 @@ $totalMb = [Math]::Round(($totalBytes / 1MB), 2)
 Write-Host "TRACER taşınabilir klasörü hazır: $releaseRoot" -ForegroundColor Green
 Write-Host ("Paket özeti: {0} dosya, toplam {1} MB" -f $allFiles.Count, $totalMb) -ForegroundColor Cyan
 if ($missing.Count -gt 0) {
+  if ($CreateRar) { throw ("Tam portable için eksik: " + ($missing -join ', ')) }
   Write-Warning ("Gömülü koç için eksik: " + ($missing -join ", ") + ". PORTABLE.md içindeki indirme bağlantılarını kullan.")
+}
+if ($CreateRar) {
+  $rar = @((Join-Path $env:ProgramFiles 'WinRAR\Rar.exe'), (Join-Path ${env:ProgramFiles(x86)} 'WinRAR\Rar.exe')) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+  if (-not $rar) { throw "WinRAR bulunamadı. Portable klasörü hazır: $releaseRoot" }
+  $temporaryRar = Join-Path $expectedReleaseParent ('portable-' + [Guid]::NewGuid().ToString('N') + '.tmp.rar')
+  Push-Location $releaseRoot
+  try {
+    & $rar a -r -ep1 -idq $temporaryRar '.\*'
+    if ($LASTEXITCODE -ne 0) { throw 'Portable RAR oluşturulamadı.' }
+    & $rar t -idq $temporaryRar
+    if ($LASTEXITCODE -ne 0) { throw 'Portable RAR bütünlük kontrolü başarısız.' }
+  } finally { Pop-Location }
+  Move-Item -LiteralPath $temporaryRar -Destination $rarPath
+  $hash = (Get-FileHash -LiteralPath $rarPath -Algorithm SHA256).Hash
+  Write-Host "Portable RAR: $rarPath"
+  Write-Host "SHA256: $hash"
 }

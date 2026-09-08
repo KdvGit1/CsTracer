@@ -9,7 +9,9 @@ $model = Get-Content -LiteralPath $InputJson -Raw -Encoding UTF8 | ConvertFrom-J
 $ownRows = @($model.ownRows | Select-Object -First 5)
 $opponentRows = @($model.opponentRows | Select-Object -First 5)
 $width = 1600
-$opponentY = 384 + ([Math]::Max(1, $ownRows.Count) * 136)
+$reactionY = 384 + ([Math]::Max(1, $ownRows.Count) * 136)
+$reactionHeight = 450
+$opponentY = $reactionY + $reactionHeight + 24
 $opponentHeight = 90 + ([Math]::Max(1, $opponentRows.Count) * 40)
 $height = $opponentY + $opponentHeight + 166
 $bitmap = New-Object System.Drawing.Bitmap $width, $height
@@ -118,6 +120,59 @@ try {
     $index++
   }
   if ($ownRows.Count -eq 0) { Draw-Text 'Bu analizde takım oyuncuları doğrulanamadı.' 70 402 1440 25 '#AAB9AF' }
+  Panel 48 $reactionY 1504 $reactionHeight '#101C23' 14 '#334958'
+  Draw-Text 'TEPKİ SÜRESİ / GÖRÜNÜRLÜKTEN İLK ATEŞE' 70 ($reactionY + 15) 1450 23 '#68D4FF' $true
+  Draw-Text 'Yaklaşık demo ölçümü · prefire ve belirsiz başlangıçlar hariç · eksik ölçüm sıfır değildir' 70 ($reactionY + 48) 1450 17 '#A6BCCB'
+  $focusRow = $ownRows | Where-Object { $_.highlighted } | Select-Object -First 1
+  if (-not $focusRow) { $focusRow = $ownRows | Select-Object -First 1 }
+  $focusSamples = @($focusRow.reaction.samples | Where-Object { $null -ne $_ -and $null -ne $_.ms -and [double]$_.ms -ge 50 -and [double]$_.ms -le 1500 })
+  Draw-Text ([string]$focusRow.name + ' / temas sırası') 100 ($reactionY + 84) 840 18 '#D9E6EE' $true
+  $chartMax = 500
+  if ($focusSamples.Count -gt 0) { $chartMax = [Math]::Max(500, [Math]::Ceiling(($focusSamples | Measure-Object -Property ms -Maximum).Maximum / 100) * 100) }
+  foreach ($ratio in @(0, 0.25, 0.5, 0.75, 1)) {
+    $gridY = $reactionY + 295 - $ratio * 170
+    $graphics.FillRectangle((Brush '#2B414E'), 144, [single]$gridY, 785, 1)
+    Draw-Text ([string]([int]($chartMax * $ratio))) 73 ($gridY - 10) 63 16 '#8BA6B6'
+  }
+  if ($focusSamples.Count -gt 0 -and $null -ne $focusRow.reaction.medianMs) {
+    $medianY = $reactionY + 295 - [double]$focusRow.reaction.medianMs / $chartMax * 170
+    $medianPen = New-Object System.Drawing.Pen ([System.Drawing.ColorTranslator]::FromHtml('#779451')), 1
+    $medianPen.DashStyle = [System.Drawing.Drawing2D.DashStyle]::Dash
+    try { $graphics.DrawLine($medianPen, [single]144, [single]$medianY, [single]929, [single]$medianY) } finally { $medianPen.Dispose() }
+    Draw-Text ('Medyan ' + [string]$focusRow.reaction.medianMs + ' ms') 655 ([Math]::Max($reactionY + 112, $medianY - 24)) 270 16 '#B9EE64' $true 'Far'
+  }
+  for ($si = 0; $si -lt $focusSamples.Count; $si++) {
+    $sx = 155 + $si * 760 / [Math]::Max(1, $focusSamples.Count - 1)
+    $sy = $reactionY + 295 - [double]$focusSamples[$si].ms / $chartMax * 170
+    if ($si -gt 0) {
+      $trendPen = New-Object System.Drawing.Pen ([System.Drawing.ColorTranslator]::FromHtml('#7B9D59')), 2
+      try { $graphics.DrawLine($trendPen, [single]$previousX, [single]$previousY, [single]$sx, [single]$sy) } finally { $trendPen.Dispose() }
+    }
+    $graphics.FillEllipse((Brush '#B9EE64'), [single]($sx - 5), [single]($sy - 5), 10, 10)
+    $previousX = $sx; $previousY = $sy
+    if ($si % [Math]::Max(1, [Math]::Ceiling($focusSamples.Count / 10)) -eq 0) { Draw-Text ([string]($si + 1)) ($sx - 18) ($reactionY + 301) 44 16 '#8BA6B6' }
+  }
+  if ($focusSamples.Count -eq 0) { Draw-Text 'Geçerli tepki örneği bulunamadı.' 180 ($reactionY + 195) 690 24 '#8BA6B6' }
+  Draw-Text 'TAKIM / MEDYAN' 1000 ($reactionY + 84) 500 18 '#D9E6EE' $true
+  $ri = 0
+  foreach ($row in $ownRows) {
+    $ry = $reactionY + 120 + $ri * 39
+    $samples = @($row.reaction.samples | Where-Object { $null -ne $_ -and $null -ne $_.ms -and [double]$_.ms -ge 50 -and [double]$_.ms -le 1500 })
+    $label = if ($samples.Count -gt 0) { ([string]$row.reaction.medianMs + ' ms / ' + $samples.Count + ' temas') } else { 'Ölçülemedi / 0 temas' }
+    Draw-Text ([string]$row.name) 1000 $ry 240 18 '#D9E6EE' $true
+    Draw-Text $label 1250 $ry 276 17 '#B9CEDC'
+    $ri++
+  }
+  $bins = @($focusRow.reaction.histogram | Where-Object { $null -ne $_ })
+  $binLabels = @('50–150 ms', '150–250 ms', '250–400 ms', '400–700 ms', '700–1500 ms')
+  for ($bi = 0; $bi -lt [Math]::Min(5, $bins.Count); $bi++) {
+    $bx = 95 + $bi * 285
+    $bw = [Math]::Max(0, [double]$bins[$bi].count) / [Math]::Max(1, $focusSamples.Count) * 235
+    Draw-Text $binLabels[$bi] $bx ($reactionY + 345) 260 16 '#8BA6B6'
+    $graphics.FillRectangle((Brush '#253A2D'), [single]$bx, [single]($reactionY + 373), 235, 12)
+    $graphics.FillRectangle((Brush '#B9EE64'), [single]$bx, [single]($reactionY + 373), [single]$bw, 12)
+    Draw-Text ([string]$bins[$bi].count + ' temas') $bx ($reactionY + 390) 260 18 '#D9E6EE'
+  }
   Panel 48 $opponentY 1504 $opponentHeight '#101916' 14 '#38433A'
   Draw-Text 'RAKİP TAKIM' 70 ($opponentY + 18) 380 23 '#CFBE90' $true
   Draw-Text ([string]$model.opponentSummary) 470 ($opponentY + 24) 1060 19 '#97A89D' $false 'Far'

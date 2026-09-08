@@ -1,7 +1,8 @@
-﻿"use client";
+"use client";
 
 import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { radarMapFor, worldToRadar } from "./map-data";
+import { radarMapFor, worldToRadar, radarPathSegments } from "./map-data";
+import DuelAnalyst from "./components/DuelAnalyst";
 import "./analysis.css";
 import "./experience.css";
 import "./motion.css";
@@ -307,7 +308,7 @@ export default function Home() {
   }, [loadProgressMemory]);
 
   const report = useMemo(() => reports.find((item) => (item.player.steamid || item.player.name) === selectedPlayer), [reports, selectedPlayer]);
-  const analysisNeedsRefresh = Boolean(report && !analysisVersionAtLeast(report.analysisVersion, 3, 1));
+  const analysisNeedsRefresh = Boolean(report && !analysisVersionAtLeast(report.analysisVersion, 3, 4));
   const spraySchemaCurrent = Boolean(report?.sprayStats?.method === "bullet-damage-event-tick-v2");
   const hitboxSchemaCurrent = Boolean(spraySchemaCurrent && report?.sprayStats?.hitboxMethod === "player-hurt-hitgroup-v2");
   const sprayNeedsRefresh = Boolean(report && !spraySchemaCurrent);
@@ -371,8 +372,9 @@ export default function Home() {
     return true;
   });
 
+  const routeRound = allSideRoundPaths.some((p) => p.round === selectedRouteRound) ? selectedRouteRound : "all";
   const visibleRoundPaths = allSideRoundPaths.filter((p) => {
-    if (selectedRouteRound !== "all" && p.round !== selectedRouteRound) return false;
+    if (routeRound !== "all" && p.round !== routeRound) return false;
     return true;
   });
 
@@ -382,6 +384,11 @@ export default function Home() {
   });
 
   const bestRoute = visibleRouteStats.find((r) => r.isBestRoute) || (visibleRouteStats.length ? [...visibleRouteStats].sort((a, b) => b.winrate - a.winrate || b.totalRounds - a.totalRounds)[0] : undefined);
+  const routePinOnFloor = (route: { minZ?: number | null; maxZ?: number | null }) => {
+    if (!radarMap?.lowerImage || radarMap.lowerMaxZ === undefined) return true;
+    if (route.minZ == null || route.maxZ == null) return false;
+    return mapLevel === "lower" ? route.maxZ < radarMap.lowerMaxZ : route.minZ >= radarMap.lowerMaxZ;
+  };
   const eligibleRoutesForWorst = visibleRouteStats.filter((r) => r.zone !== bestRoute?.zone && (r.losses > 0 || r.winrate < 50));
   const worstRoute = eligibleRoutesForWorst.length
     ? [...eligibleRoutesForWorst].sort((a, b) => a.winrate - b.winrate || b.losses - a.losses || b.totalRounds - a.totalRounds)[0]
@@ -837,6 +844,7 @@ export default function Home() {
           <button className={`nav-item ${activeView === "analysis" && activeSection === "dashboard" ? "active" : ""}`} onClick={() => { setActiveView("analysis"); navigateTo("dashboard"); }}><IconDashboard size={15} /> Genel bakış</button>
           <button className={`nav-item ${activeSection === "aim-precision" ? "active" : ""}`} onClick={() => navigateTo("aim-precision")}><IconCrosshair size={15} /> Nişangah ve isabet</button>
           <button className={`nav-item ${activeSection === "duel-reaction" ? "active" : ""}`} onClick={() => navigateTo("duel-reaction")}><IconDuel size={15} /> Düello ve ilk hasar</button>
+          <button className={`nav-item ${activeSection === "duel-analyst" ? "active" : ""}`} onClick={() => navigateTo("duel-analyst")}><IconDuel size={15} /> Düello Analisti</button>
           <button className={`nav-item ${activeSection === "economy-view" ? "active" : ""}`} onClick={() => navigateTo("economy-view")}><IconEconomy size={15} /> Ekonomi</button>
           <button className={`nav-item ${activeSection === "side-analysis" ? "active" : ""}`} onClick={() => navigateTo("side-analysis")}><IconSideAnalysis size={15} /> Taraf analizi</button>
           <button className={`nav-item ${activeSection === "weapon-profile" ? "active" : ""}`} onClick={() => navigateTo("weapon-profile")}><IconWeapon size={15} /> Silah profili</button>
@@ -1140,7 +1148,7 @@ export default function Home() {
                 {report && showRoutePaths && allSideRoundPaths.length > 0 && (
                   <select
                     className="map-round-select"
-                    value={selectedRouteRound}
+                    value={routeRound}
                     onChange={(e) => setSelectedRouteRound(e.target.value === "all" ? "all" : Number(e.target.value))}
                     aria-label="Gösterilecek round rotası"
                   >
@@ -1202,33 +1210,30 @@ export default function Home() {
                       <feDropShadow dx="0" dy="0" stdDeviation="0.6" floodColor="#ff4d4f" floodOpacity="0.7" />
                     </filter>
                   </defs>
-                  {visibleRoundPaths.map((path) => {
+                  {visibleRoundPaths.flatMap((path) => radarPathSegments(path.points, radarMap, mapLevel, report?.duelAnalyst?.tickRate || 64).map((validPoints, segmentIndex) => {
                     if (!path.points || path.points.length < 2) return null;
-                    const validPoints = path.points
-                      .map((pt) => worldToRadar(pt.x, pt.y, radarMap))
-                      .filter((p) => p.left >= 0 && p.left <= 100 && p.top >= 0 && p.top <= 100);
                     if (validPoints.length < 2) return null;
-                    const polylinePoints = validPoints.map((p) => `${p.left.toFixed(1)},${p.top.toFixed(1)}`).join(" ");
-                    const isSingle = selectedRouteRound === path.round;
+                    const polylinePoints = validPoints.map((p) => `${p.left.toFixed(3)},${p.top.toFixed(3)}`).join(" ");
+                    const isSingle = routeRound === path.round;
 
                     return (
-                      <g key={`rpath-${path.round}`} className={`radar-path-g ${path.won ? "win" : "loss"} ${isSingle ? "single-focused" : ""}`}>
+                      <g key={`rpath-${path.round}-${segmentIndex}`} className={`radar-path-g ${path.won ? "win" : "loss"} ${isSingle ? "single-focused" : ""}`}>
                         <polyline
                           points={polylinePoints}
                           className={`radar-polyline ${path.won ? "line-win" : "line-loss"}`}
                           filter={path.won ? "url(#route-glow-win)" : "url(#route-glow-loss)"}
-                          strokeWidth={isSingle ? "1.6" : "0.85"}
+                          style={{ strokeWidth: isSingle ? 2.8 : 1.4 }}
                         />
                         <circle cx={validPoints[0].left} cy={validPoints[0].top} r={isSingle ? "1.2" : "0.8"} className="route-start-circle" />
                         <circle cx={validPoints[validPoints.length - 1].left} cy={validPoints[validPoints.length - 1].top} r={isSingle ? "1.6" : "1.1"} className={path.won ? "route-end-win" : "route-end-loss"} />
                       </g>
                     );
-                  })}
+                  }))}
                 </svg>
               )}
 
               {/* 2. Haritada En Başarılı Rota Waypoint Pin */}
-              {radarMap && bestRoute && bestRoute.avgX !== 0 && bestRoute.avgY !== 0 && (
+              {radarMap && bestRoute && routePinOnFloor(bestRoute) && bestRoute.avgX !== 0 && bestRoute.avgY !== 0 && (
                 (() => {
                   const pinPos = worldToRadar(bestRoute.avgX, bestRoute.avgY, radarMap);
                   if (pinPos.left < 4 || pinPos.left > 96 || pinPos.top < 4 || pinPos.top > 96) return null;
@@ -1246,7 +1251,7 @@ export default function Home() {
               )}
 
               {/* 3. Haritada En Zayıf Rota Waypoint Pin */}
-              {radarMap && worstRoute && worstRoute.zone !== bestRoute?.zone && worstRoute.avgX !== 0 && worstRoute.avgY !== 0 && (
+              {radarMap && worstRoute && routePinOnFloor(worstRoute) && worstRoute.zone !== bestRoute?.zone && worstRoute.avgX !== 0 && worstRoute.avgY !== 0 && (
                 (() => {
                   const pinPos = worldToRadar(worstRoute.avgX, worstRoute.avgY, radarMap);
                   if (pinPos.left < 4 || pinPos.left > 96 || pinPos.top < 4 || pinPos.top > 96) return null;
@@ -1592,6 +1597,8 @@ export default function Home() {
             <div className="section-empty"><b>Yaklaşık görünürlük ve düello verisi için demo gerekli.</b></div>
           )}
         </section>
+
+        <DuelAnalyst key={`${report?.player?.steamid}-${report?.map}-${report?.duelAnalyst?.encounters?.[0]?.id}`} analysis={report?.duelAnalyst} mapName={report?.map} />
 
         {/* EKONOMİ BİLGİ TABLOSU — PUANLANMAZ */}
         <section className="economy-section" id="economy-view">

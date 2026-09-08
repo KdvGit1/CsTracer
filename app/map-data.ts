@@ -1,3 +1,5 @@
+import manifest from "./radar-manifest.json";
+export { worldToRadar, radarPathSegments } from "../shared/radar.mjs";
 export type RadarMap = {
   name: string;
   label: string;
@@ -9,7 +11,7 @@ export type RadarMap = {
   lowerMaxZ?: number;
 };
 
-const RADAR_MAPS: Record<string, RadarMap> = {
+const LEGACY_RADAR_MAPS: Record<string, RadarMap> = {
   de_dust2: { name: "de_dust2", label: "Dust II", image: "/maps/de_dust2.png", posX: -2476, posY: 3239, scale: 4.4 },
   de_mirage: { name: "de_mirage", label: "Mirage", image: "/maps/de_mirage.png", posX: -3230, posY: 1713, scale: 5 },
   de_inferno: { name: "de_inferno", label: "Inferno", image: "/maps/de_inferno.png", posX: -2087, posY: 3870, scale: 4.9 },
@@ -28,13 +30,6 @@ export function radarMapFor(rawName?: string): RadarMap | undefined {
     .split("/")
     .pop()
     ?.replace(/\.(vpk|bsp)$/i, "") || "";
-  return RADAR_MAPS[normalized] || RADAR_MAPS[`de_${normalized}`];
-}
-
-export function worldToRadar(x: number, y: number, map: RadarMap) {
-  const fullScale = map.scale * 1024;
-  return {
-    left: ((x - map.posX) / fullScale) * 100,
-    top: ((map.posY - y) / fullScale) * 100,
-  };
+  const maps: Record<string, RadarMap> = { ...LEGACY_RADAR_MAPS, ...manifest };
+  return maps[normalized] || maps[`de_${normalized}`] || maps[`cs_${normalized}`] || maps[`ar_${normalized}`];
 }

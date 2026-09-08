@@ -1,27 +1,29 @@
-# TRACER Lightweight Patch Creator (~18 MB; AI modeli ve node runtime içermez)
+﻿param([switch]$SkipBuild, [switch]$CreateRar, [string]$ExpectedVersion = '')
+# TRACER Lightweight Patch Creator (AI modeli ve node runtime içermez)
 $ErrorActionPreference = "Stop"
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $releaseDir = Join-Path $root "release"
 $tempPatchDir = Join-Path $releaseDir "patch-staging"
+$version = (Get-Content -LiteralPath (Join-Path $root 'version.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version
+if ($ExpectedVersion -and $ExpectedVersion -ne $version) { throw 'Derlenen sürüm ile paket sürümü farklı.' }
+& node.exe (Join-Path $PSScriptRoot 'package-version.mjs') validate $version $releaseDir $version
+if ($LASTEXITCODE -ne 0) { throw 'Bu sürüm paketlenemez. TRACER-Test-ve-Paketle.cmd ile yeni sürüm seçin.' }
 
 Write-Host ">>> TRACER Hafif Patch Paketi Hazırlanıyor..." -ForegroundColor Cyan
 
 # 1. Build Standalone
 Set-Location $root
-cmd.exe /c "npm run build"
-if ($LASTEXITCODE -ne 0) { throw "Build başarısız oldu." }
+if (-not $SkipBuild) {
+  & npm.cmd run build
+  if ($LASTEXITCODE -ne 0) { throw "Build başarısız oldu." }
+}
 
 # 2. Prepare Staging
+if ([IO.Path]::GetFullPath($tempPatchDir) -ne (Join-Path $root 'release\patch-staging')) { throw 'Unsafe staging path' }
 if (Test-Path -LiteralPath $tempPatchDir) { Remove-Item -LiteralPath $tempPatchDir -Recurse -Force }
 New-Item -ItemType Directory -Path $tempPatchDir -Force | Out-Null
 
-# 3. Read Version
-$versionJsonPath = Join-Path $root "version.json"
-$version = "0.42.0"
-if (Test-Path -LiteralPath $versionJsonPath) {
-  $vData = Get-Content -Raw -LiteralPath $versionJsonPath | ConvertFrom-Json
-  if ($vData.version) { $version = $vData.version }
-}
+# Keep the version validated before the build throughout packaging.
 
 # 4. Copy lightweight application files & directories dynamically
 # 4a. Standalone Next.js app bundle
@@ -69,6 +71,12 @@ $requiredPatchFiles = @(
   "companion\analyze.mjs",
   "companion\analyze-worker.mjs",
   "companion\analysis_version.mjs",
+  "companion\duel_analyst.mjs",
+  "companion\duel_geometry.mjs",
+  "companion\map_geometry.mjs",
+  "companion\geometry\manifest.json",
+  "companion\geometry\de_cache.mesh.gz",
+  "shared\duel_view.mjs",
     "companion\discord_reporter.mjs",
     "companion\render_discord_report.ps1",
   "companion\match_storage.mjs",
@@ -101,17 +109,36 @@ try {
   if ($LASTEXITCODE -ne 0) {
     throw "Patch companion bağımlılık smoke testi başarısız oldu."
   }
+  & (Get-Command node.exe -ErrorAction Stop).Source --input-type=module -e "import { loadMapGeometry } from './companion/map_geometry.mjs'; const g = loadMapGeometry('de_cache'); if (!g.mesh) throw new Error('Paket harita geometrisi eksik veya bozuk: ' + g.status);"
+  if ($LASTEXITCODE -ne 0) { throw 'Patch harita geometrisi kontrolü başarısız oldu.' }
 } finally {
   Pop-Location
 }
 
 # 5. Create Patch ZIP Archive
 $patchZipPath = Join-Path $releaseDir "TRACER-Patch-v$version.zip"
-if (Test-Path -LiteralPath $patchZipPath) { Remove-Item -LiteralPath $patchZipPath -Force }
+if (Test-Path -LiteralPath $patchZipPath) { throw 'ZIP zaten var; mevcut paket korunuyor.' }
 
-Compress-Archive -Path "$tempPatchDir\*" -DestinationPath $patchZipPath -CompressionLevel Optimal -Force
+$temporaryZip = Join-Path $releaseDir ('patch-' + [Guid]::NewGuid().ToString('N') + '.tmp.zip')
+Compress-Archive -Path "$tempPatchDir\*" -DestinationPath $temporaryZip -CompressionLevel Optimal
+Move-Item -LiteralPath $temporaryZip -Destination $patchZipPath
 if (-not (Test-Path -LiteralPath $patchZipPath) -or (Get-Item -LiteralPath $patchZipPath).Length -le 0) {
   throw "Patch ZIP oluşturulamadı veya boş: $patchZipPath"
+}
+if ($CreateRar) {
+  $rar = @((Join-Path $env:ProgramFiles 'WinRAR\Rar.exe'), (Join-Path ${env:ProgramFiles(x86)} 'WinRAR\Rar.exe')) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+  if ($rar) {
+    $rarPath = Join-Path $releaseDir ("TRACER-Patch-v$version.rar")
+    if (Test-Path -LiteralPath $rarPath) { throw 'RAR zaten var; mevcut paket korunuyor.' }
+    Push-Location $tempPatchDir
+    try {
+      & $rar a -r -ep1 -idq $rarPath '.\*'
+      if ($LASTEXITCODE -ne 0) { throw 'RAR oluşturulamadı.' }
+      & $rar t -idq $rarPath
+      if ($LASTEXITCODE -ne 0) { throw 'RAR bütünlük kontrolü başarısız.' }
+      Write-Host "RAR: $rarPath"
+    } finally { Pop-Location }
+  } else { Write-Host 'WinRAR bulunamadı; güncelleme ZIP paketi hazır.' }
 }
 Remove-Item -LiteralPath $tempPatchDir -Recurse -Force
 

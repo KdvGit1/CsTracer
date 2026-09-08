@@ -1,10 +1,12 @@
 import { parseEvents, parseHeader, parseTicks } from "@laihoe/demoparser2";
 import { ANALYSIS_VERSION } from "./analysis_version.mjs";
+import { buildDuelAnalyst } from "./duel_analyst.mjs";
+import { createDuelGeometry } from "./duel_geometry.mjs";
 export { ANALYSIS_VERSION } from "./analysis_version.mjs";
 
 const CORE_EVENTS = [
   "round_start", "round_end", "round_freeze_end", "player_death", "player_hurt", "weapon_fire",
-  "player_blind", "flashbang_detonate", "smokegrenade_detonate",
+  "player_blind", "flashbang_detonate", "smokegrenade_detonate", "smokegrenade_expired",
   "hegrenade_detonate", "molotov_detonate", "inferno_startburn",
   "bomb_planted", "bomb_defused", "bullet_damage", "bullet_impact", "item_pickup",
 ];
@@ -866,6 +868,7 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
   // ilk silahlı player_hurt olayına kadar. Düello: iki oyuncu birbirini görürken ölümle
   // sonuçlanan temaslar. Ölçüm yoksa sahte bir varsayılan değer üretilmez.
   const duelStats = calculateDuelStatsForPlayer(player, grouped, ticks, tickRate);
+  const duelAnalyst = buildDuelAnalyst(player, grouped, ticks, tickRate);
 
   // 5. Ekonomi Analizi (Economy Stats)
   const roundEconomy = [];
@@ -1137,7 +1140,8 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     // Player ticks in this round from cached player ticks
     const playerTicksInRound = allPlayerTicks.filter((t) => {
       const tickNum = number(t, ["tick"], 0);
-      return tickNum >= sTick && tickNum <= eTick && number(t, ["health"], 100) > 0;
+      return tickNum >= sTick && tickNum <= eTick && number(t, ["health"], 100) > 0
+        && ["X", "Y", "Z"].every((key) => finiteNumber(t, [key, key.toLowerCase()]) !== null);
     });
 
     if (!playerTicksInRound.length) continue;
@@ -1217,6 +1221,7 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
         losses: 0,
         xCoords: [],
         yCoords: [],
+        zCoords: [],
       });
     }
     const group = routeGroups.get(key);
@@ -1227,6 +1232,7 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
       if (pt.zone === p.primaryZone && pt.x !== 0 && pt.y !== 0) {
         group.xCoords.push(pt.x);
         group.yCoords.push(pt.y);
+        group.zCoords.push(pt.z);
       }
     }
   }
@@ -1248,6 +1254,8 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
       deaths: zoneDeaths,
       avgX,
       avgY,
+      minZ: g.zCoords.length ? Math.min(...g.zCoords) : null,
+      maxZ: g.zCoords.length ? Math.max(...g.zCoords) : null,
       isBestRoute: false,
     };
   }).sort((a, b) => b.totalRounds - a.totalRounds || b.winrate - a.winrate);
@@ -1279,7 +1287,7 @@ function buildPlayerReport(player, grouped, ticks, header, tickRate) {
     topZone, topZoneDeaths, unflashedDeaths, untradedDeaths, impact,
     kastPercent, survivalPercent, utilityImpactRoundPercent, utilityImpactRoundSampleCount: rounds,
     deathDetails, killDetails, sideStats, weaponStats, movementProfile,
-    sprayStats, crosshairStats, duelStats, economyStats, roundPaths, routeStats, recommendations,
+    sprayStats, crosshairStats, duelStats, duelAnalyst, economyStats, roundPaths, routeStats, recommendations,
   };
 }
 
@@ -1370,6 +1378,7 @@ export function analyzeDemo(pathOrBuffer) {
   // Yalnız savaş olaylarının iki saniyelik çevresini parse et. Tüm demoyu her tick
   // okumadan hassas görünürlük başlangıcı elde edilir; pencere demo tick hızına uyar.
   const combatEvents = [
+    ...grouped.weapon_fire.filter((record) => !isWarmup(record) && isGun(eventWeapon(record))),
     ...grouped.player_hurt.filter((record) => !isWarmup(record) && isGun(eventWeapon(record))),
     ...grouped.player_death.filter((record) => !isWarmup(record) && isGun(eventWeapon(record))),
   ];
@@ -1396,9 +1405,13 @@ export function analyzeDemo(pathOrBuffer) {
       ], importantTicks)
     : [];
   const combatTickRows = combatTicks.length
-    ? parseTicks(pathOrBuffer, ["game_time", "team_num", "health", "approximate_spotted_by"], combatTicks)
+    ? parseTicks(pathOrBuffer, ["game_time", "team_num", "health", "approximate_spotted_by", "X", "Y", "Z", "pitch", "yaw", "fov", "duck_amount", "last_place_name", "active_weapon_name", "total_rounds_played", "is_warmup_period", "is_freeze_period"], combatTicks)
     : [];
-  const tickIndex = buildTickIndex(mergeTickRows(detailTickRows, combatTickRows));
+  // Optional fields must never make older demos fail their existing analysis.
+  let pingRows = [];
+  try { if (importantTicks.length) pingRows = parseTicks(pathOrBuffer, ["ping"], importantTicks); } catch { /* displayed as unavailable */ }
+  const tickIndex = buildTickIndex(mergeTickRows(detailTickRows, combatTickRows, pingRows));
+  tickIndex.duelGeometry = createDuelGeometry(tickIndex, grouped, header, tickRate);
   const reports = players.map((player) => buildPlayerReport(player, grouped, tickIndex, header, tickRate));
   return { header, players, reports, parserVersion: "0.42.0", analysisVersion: ANALYSIS_VERSION, tickRate };
 }

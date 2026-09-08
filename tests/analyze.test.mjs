@@ -68,7 +68,13 @@ test("ShotRecord doğrudan isabeti demo tick'iyle bağlar ve MP5-SD adını koru
 test("analyzeDemo tam maç raporu üretir", { skip: skipReason, timeout: 300000 }, () => {
   const result = analyzeDemo(demoPath);
   assert.equal(result.analysisVersion, ANALYSIS_VERSION, "kök analiz sürümü güncel olmalı");
-  assert.equal(result.analysisVersion, "3.2.0");
+  assert.equal(result.analysisVersion, "3.4.0");
+  for (const item of result.reports) {
+    assert.equal(item.duelAnalyst.method, 'demo-contact-evidence-v1');
+    const contacts = item.duelAnalyst.encounters;
+    assert.ok(contacts.every((e, i) => i === 0 || e.startTick >= contacts[i - 1].startTick));
+    assert.ok(contacts.every((e) => !e.unseenDeath || (e.outcome === 'loss' && e.ownVisibility.coverage === 100)));
+  }
 
   // Header
   assert.ok(result.header, "header olmalı");

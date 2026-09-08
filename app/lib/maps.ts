@@ -1,6 +1,8 @@
+import radarManifest from "../radar-manifest.json";
 export function normalizeMapKey(mapName?: string): string {
   if (!mapName) return "unknown";
-  const clean = mapName.toLowerCase().replace(/^.*\//, "").replace(/\.vpk$/, "").trim();
+  const clean = mapName.toLowerCase().replace(/\\/g, "/").replace(/^.*\//, "").replace(/\.(vpk|bsp)$/, "").trim();
+  if (Object.hasOwn(radarManifest, clean)) return clean.replace(/^(de|cs|ar)_/, "");
   if (clean.includes("dust2") || clean.includes("dust_2") || clean.includes("dust 2") || clean.includes("dustii") || clean.includes("dust")) return "dust2";
   if (clean.includes("mirage")) return "mirage";
   if (clean.includes("inferno")) return "inferno";
@@ -39,5 +41,6 @@ const MAP_ID_BY_KEY: Record<string, string> = {
 };
 
 export function inferMapFromName(name: string): string {
-  return MAP_ID_BY_KEY[normalizeMapKey(name)] || "";
+  const key = normalizeMapKey(name);
+  return Object.keys(radarManifest).find((id) => id.replace(/^(de|cs|ar)_/, "") === key) || MAP_ID_BY_KEY[key] || "";
 }

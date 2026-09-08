@@ -110,7 +110,7 @@ const EMPTY_DOWNLOAD_QUEUE: DownloadQueueState = {
 
 
 function hasCurrentShotSchema(analysis?: RecentMatchAnalysis): boolean {
-  return analysis?.analysisVersion === "3.2.0"
+  return analysis?.analysisVersion === "3.4.0"
     && Boolean(analysis.reports?.length)
     && analysis.reports!.every((report) => report.sprayStats?.method === "bullet-damage-event-tick-v2");
 }

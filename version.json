@@ -1,9 +1,15 @@
 {
-  "version": "0.51.1",
+  "version": "0.51.4",
   "githubRepo": "KdvGit1/CsTracer",
-  "releaseDate": "2026-09-07",
-  "title": "TRACER v0.51.1 - Akıcı Arayüz ve Türkçe İyileştirmeleri",
+  "releaseDate": "2026-09-08",
+  "title": "TRACER v0.51.4 - Tüm Atışları Göster",
   "changelog": [
+    "Düello Analisti atış seçimine Tüm atışlar eklendi. Haritada ve bakış şemasında düellodaki bütün atışlar birlikte gösterilir; senin atışların yeşil, rakibinkiler kırmızıdır. Tek atış ayrıntılarına dönüş korunur.",
+    "Düello ekranı yeniden düzenlendi: ayrı düello, tepki süresi ve silah/mesafe sekmeleri; dar pencerelerde taşmayan kartlar ve okunaklı oyuncu karşılaştırması.",
+    "Olay anı için gerçek radar üzerinde yakın plan, oyuncu konumları ve seçilebilir atış izleri; bakış açısı için nişangah, rakip yönü ve temsili hedef şeması eklendi. Tahmini atış yönü gerçek mermi izinden ayrılır.",
+    "Tepki grafikleri ayrı oyuncu/ilk hasar serileri, milisaniye ekseni, medyan çizgisi, temas inceleme ve dağılım çubuklarıyla yenilendi. Discord görselinde de tepki eğrisi ve dağılımı gösterilir.",
+    "Sabit harita geometrisiyle duvar raycast’i, basit duman kontrolü, görüşe girmeyen rakip uyarıları ve silah/mesafe profilleri eklendi. Cache dahil radarlar ve rota çizimleri güncellendi.",
+    "İlk açılış için servis bekleme süresi düzeltildi. Yayın hazırlığı mevcut TRACER-Portable klasörünü günceller; test edilmiş arşivler yayın koduyla tekrar derlenmeden yayımlanır.",
     "Discord maç PNG'si yenilendi: büyük skor alanı, okunaklı oyuncu satırları, ayrı yardımcı istatistikler, kısa rakip tablosu ve Türkçe terim rehberi. Eksik kadrolarda görsel boyu içeriğe uyarlanır.",
     "Başlangıç, analiz, gelişim ve takım koçu ekranlarındaki yapay ifadeler sadeleştirildi; KAST ve ölçüm açıklamaları daha anlaşılır hale getirildi.",
     "Ekran geçişleri, sıralı kart girişleri, grafik çizimi ve buton animasyonları eklendi. Hareketi azalt seçeneği, sistem tercihi ve oyun performans modu desteklenir.",

@@ -1,8 +1,9 @@
-# TRACER Otomatik Sürüm & Yama Yayınlayıcı (1-Tık GitHub Release Publisher)
+﻿# TRACER Otomatik Sürüm & Yama Yayınlayıcı (1-Tık GitHub Release Publisher)
 param(
   [string]$NewVersion = "",
   [switch]$VersionSyncOnly,
-  [switch]$BuildOnly
+  [switch]$BuildOnly,
+  [switch]$PublishOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -43,6 +44,17 @@ function Write-Utf8NoBom([string]$filePath, [string]$fileContent) {
 }
 
 # 3. updater ve JSON sürüm dosyalarını senkronize et
+$receiptTool = Join-Path $PSScriptRoot 'release-receipt.mjs'
+$receiptPath = Join-Path $root "release\READY-v$targetVersion.json"
+if (-not $BuildOnly -and -not $VersionSyncOnly -and (Test-Path -LiteralPath $receiptPath)) { $PublishOnly = $true }
+if ($PublishOnly) {
+  if ($BuildOnly -or $VersionSyncOnly) { throw 'PublishOnly hazırlık seçenekleriyle kullanılamaz.' }
+  & node.exe $receiptTool verify $root $targetVersion
+  if ($LASTEXITCODE -ne 0) { throw 'Hazır yayın doğrulanamadı; yayın durduruldu.' }
+  $patchZip = Join-Path $root "release\TRACER-Patch-v$targetVersion.zip"
+  $updaterHotfix = Join-Path $root "release\TRACER-Guncelleyici-Duzeltmesi-v$targetVersion.zip"
+  $portableArchive = Join-Path $root "release\TRACER-Portable-v$targetVersion.rar"
+} else {
 $updaterMjsPath = Join-Path $root "companion\updater.mjs"
 if (Test-Path -LiteralPath $updaterMjsPath) {
   $content = Get-Content -Raw -LiteralPath $updaterMjsPath
@@ -90,6 +102,10 @@ if ($VersionSyncOnly) {
 }
 
 # 4. Yayın kapısı: birim/uçtan uca testler ve statik kontrol
+Write-Host 'Üretim derlemesi hazırlanıyor...' -ForegroundColor Yellow
+Set-Location $root
+cmd.exe /c "npm run build"
+if ($LASTEXITCODE -ne 0) { throw 'Üretim derlemesi başarısız.' }
 Write-Host "[2/5] Testler çalıştırılıyor..." -ForegroundColor Yellow
 Set-Location $root
 cmd.exe /c "npm test"
@@ -101,7 +117,7 @@ if ($LASTEXITCODE -ne 0) { throw "TypeScript kontrolü başarısız oldu; paket 
 
 # 5. Patch ZIP Paketini Oluştur
 Write-Host "[3/5] Hafif Yama Paketi (TRACER-Patch-v$targetVersion.zip) oluşturuluyor..." -ForegroundColor Yellow
-& (Join-Path $PSScriptRoot "create-patch.ps1")
+& (Join-Path $PSScriptRoot "create-patch.ps1") -SkipBuild -ExpectedVersion $targetVersion
 
 $patchZip = Join-Path $root "release\TRACER-Patch-v$targetVersion.zip"
 if (-not (Test-Path -LiteralPath $patchZip)) {
@@ -118,7 +134,9 @@ if (-not (Test-Path -LiteralPath $updaterHotfix)) {
 
 # 4b. İlk kurulum için model dahil tam portable ve GitHub asset'i hazırla
 Write-Host "Taşınabilir tam klasör (model dahil) güncelleniyor..." -ForegroundColor Yellow
-& (Join-Path $PSScriptRoot "package-portable.ps1")
+& (Join-Path $PSScriptRoot "package-portable.ps1") -SkipBuild -ExpectedVersion $targetVersion
+& node.exe (Join-Path $PSScriptRoot 'check-portable.mjs') (Join-Path $root 'release\TRACER-Portable')
+if ($LASTEXITCODE -ne 0) { throw 'Portable açılış kontrolü başarısız; yayın durduruldu.' }
 
 $portableDir = Join-Path $root "release\TRACER-Portable"
 $portableArchive = Join-Path $root "release\TRACER-Portable-v$targetVersion.rar"
@@ -144,6 +162,9 @@ if ($LASTEXITCODE -ne 0) { throw "Portable arşiv bütünlük testi başarısız
 Move-Item -LiteralPath $buildingArchive -Destination $portableArchive -Force
 $portableMb = [Math]::Round($portableBytes / 1MB, 2)
 Write-Host "İlk kurulum paketi hazır: $portableArchive ($portableMb MB)" -ForegroundColor Green
+& node.exe $receiptTool record $root $targetVersion
+if ($LASTEXITCODE -ne 0) { throw 'Hazır yayın kaydı oluşturulamadı.' }
+}
 
 if ($BuildOnly) {
   Write-Host "`nBUILD-ONLY tamamlandı. Git commit/tag/push ve GitHub Release çalıştırılmadı." -ForegroundColor Cyan

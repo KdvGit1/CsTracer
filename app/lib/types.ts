@@ -94,6 +94,30 @@ export type DuelStats = {
   fastReactions: number;
   reactionRating: string;
 };
+export type DuelVisibility = { onsetTick: number | null; status: "spotted" | "not-spotted" | "unknown"; coverage: number; censored: boolean; method?: string; reasons?: Record<string, number> };
+export type DuelScene = {
+  camera: import("../../shared/duel_view.mjs").ViewCamera; cameraTick: number; eventTick: number; startTick: number;
+  width: number; height: number; maxDistance: number; depth: string | null; targetPoints: number[][]; pointVisibility?: (boolean | null)[];
+  visibility: { visible: boolean | null; reason: string; visiblePoints: number; totalPoints: number };
+  smokes: { center: number[]; radius: number }[]; geometryRelease: string | null; geometryStatus: string; method: string;
+};
+export type DuelReaction = { fireMs: number | null; damageMs: number | null; status: string };
+export type DuelShot = { tick: number; owner: "self" | "opponent"; weapon: string; origin: number[] | null; direction: number[] | null; target: number[] | null; aimErrorDeg: number | null; impacts: { point: number[]; deviationDeg: number | null }[] };
+export type DuelEncounter = {
+  id: string; round: number; startTick: number; endTick: number; opponent: { name: string; steamid: string };
+  outcome: "win" | "loss" | "unresolved"; targetEvidence: "damage" | "estimated" | "unknown";
+  side: string; zone: string; weapon: string; distanceM: number | null; ownPingMs: number | null; opponentPingMs: number | null;
+  ownVisibility: DuelVisibility; opponentVisibility: DuelVisibility; reaction: DuelReaction; opponentReaction: DuelReaction;
+  unseenDeath: boolean; damageDealt: number; damageTaken: number; shots: DuelShot[];
+  scene?: DuelScene | null;
+};
+export type DuelAnalystData = {
+  method: string; tickRate: number | null; precisionMs: number | null; visibilityMethod: string; raycastStatus: string;
+  encounters: DuelEncounter[];
+  geometry?: { status: string; release: string | null; map: string; triangleCount: number } | null;
+  reaction: { samples: { id: string; round: number; ms: number; damageMs: number | null; opponentMs: number | null }[]; medianMs: number | null; p90Ms: number | null; excluded: number; histogram: { label: string; count: number }[] };
+  distanceProfile: { side: string; weapon: string; range: string; contacts: number; wins: number; losses: number; damage: number; winrate: number | null; recommendation: string | null; zones: Record<string, { contacts: number; wins: number; losses: number }> }[];
+};
 export type RoundEconomy = {
   round: number;
   startMoney: number | null;
@@ -139,6 +163,8 @@ export type RouteStat = {
   deaths: number;
   avgX: number;
   avgY: number;
+  minZ?: number | null;
+  maxZ?: number | null;
   isBestRoute?: boolean;
 };
 export type PlayerReport = {
@@ -150,7 +176,7 @@ export type PlayerReport = {
   unflashedDeaths: number; untradedDeaths: number; impact: number | null; deathDetails: DeathDetail[];
   kastPercent?: number | null; survivalPercent?: number | null; utilityImpactRoundPercent?: number | null; utilityImpactRoundSampleCount?: number;
   killDetails?: KillDetail[]; sideStats?: SideStat[]; weaponStats?: WeaponStat[]; movementProfile?: MovementProfile;
-  sprayStats?: SprayStats; crosshairStats?: CrosshairStats; duelStats?: DuelStats; economyStats?: EconomyStats;
+  sprayStats?: SprayStats; crosshairStats?: CrosshairStats; duelStats?: DuelStats; duelAnalyst?: DuelAnalystData; economyStats?: EconomyStats;
   roundPaths?: RoundPath[]; routeStats?: RouteStat[];
   recommendations: Recommendation[];
 };
