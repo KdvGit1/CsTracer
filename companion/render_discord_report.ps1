@@ -123,55 +123,75 @@ try {
   Panel 48 $reactionY 1504 $reactionHeight '#101C23' 14 '#334958'
   Draw-Text 'TEPKİ SÜRESİ / GÖRÜNÜRLÜKTEN İLK ATEŞE' 70 ($reactionY + 15) 1450 23 '#68D4FF' $true
   Draw-Text 'Yaklaşık demo ölçümü · prefire ve belirsiz başlangıçlar hariç · eksik ölçüm sıfır değildir' 70 ($reactionY + 48) 1450 17 '#A6BCCB'
-  $focusRow = $ownRows | Where-Object { $_.highlighted } | Select-Object -First 1
-  if (-not $focusRow) { $focusRow = $ownRows | Select-Object -First 1 }
-  $focusSamples = @($focusRow.reaction.samples | Where-Object { $null -ne $_ -and $null -ne $_.ms -and [double]$_.ms -ge 50 -and [double]$_.ms -le 1500 })
-  Draw-Text ([string]$focusRow.name + ' / temas sırası') 100 ($reactionY + 84) 840 18 '#D9E6EE' $true
-  $chartMax = 500
-  if ($focusSamples.Count -gt 0) { $chartMax = [Math]::Max(500, [Math]::Ceiling(($focusSamples | Measure-Object -Property ms -Maximum).Maximum / 100) * 100) }
+  # All players share the same ms scale and contact-index axis.
+  # Contact N means each player's own Nth valid contact, not a shared instant.
+  $teamColors = @('#B9EE64', '#68D4FF', '#FFAD66', '#C3A1FF', '#FF7F9D')
+  $series = @()
+  $maxSamples = 0
+  $maxMs = 0
+  $ri = 0
+  foreach ($row in $ownRows) {
+    $samples = @($row.reaction.samples | Where-Object { $null -ne $_ -and $null -ne $_.ms -and [double]$_.ms -ge 50 -and [double]$_.ms -le 1500 })
+    $series += @{ Row = $row; Samples = $samples; Color = $teamColors[$ri] }
+    $maxSamples = [Math]::Max($maxSamples, $samples.Count)
+    if ($samples.Count -gt 0) { $maxMs = [Math]::Max($maxMs, ($samples | Measure-Object -Property ms -Maximum).Maximum) }
+    $ri++
+  }
+  Draw-Text 'Tüm takım · her oyuncunun kendi temas sırası' 100 ($reactionY + 84) 840 18 '#D9E6EE' $true
+  $chartMax = [Math]::Max(500, [Math]::Ceiling($maxMs / 100) * 100)
   foreach ($ratio in @(0, 0.25, 0.5, 0.75, 1)) {
     $gridY = $reactionY + 295 - $ratio * 170
     $graphics.FillRectangle((Brush '#2B414E'), 144, [single]$gridY, 785, 1)
     Draw-Text ([string]([int]($chartMax * $ratio))) 73 ($gridY - 10) 63 16 '#8BA6B6'
   }
-  if ($focusSamples.Count -gt 0 -and $null -ne $focusRow.reaction.medianMs) {
-    $medianY = $reactionY + 295 - [double]$focusRow.reaction.medianMs / $chartMax * 170
-    $medianPen = New-Object System.Drawing.Pen ([System.Drawing.ColorTranslator]::FromHtml('#779451')), 1
-    $medianPen.DashStyle = [System.Drawing.Drawing2D.DashStyle]::Dash
-    try { $graphics.DrawLine($medianPen, [single]144, [single]$medianY, [single]929, [single]$medianY) } finally { $medianPen.Dispose() }
-    Draw-Text ('Medyan ' + [string]$focusRow.reaction.medianMs + ' ms') 655 ([Math]::Max($reactionY + 112, $medianY - 24)) 270 16 '#B9EE64' $true 'Far'
+  Draw-Text 'ms' 76 ($reactionY + 104) 60 14 '#8BA6B6'
+  foreach ($player in $series) {
+    $samples = $player.Samples
+    $trendPen = New-Object System.Drawing.Pen ([System.Drawing.ColorTranslator]::FromHtml($player.Color)), 2
+    try {
+      for ($si = 0; $si -lt $samples.Count; $si++) {
+        $sx = 155 + $si * 760 / [Math]::Max(1, $maxSamples - 1)
+        $sy = $reactionY + 295 - [double]$samples[$si].ms / $chartMax * 170
+        if ($si -gt 0) { $graphics.DrawLine($trendPen, [single]$previousX, [single]$previousY, [single]$sx, [single]$sy) }
+        $graphics.FillEllipse((Brush $player.Color), [single]($sx - 4), [single]($sy - 4), 8, 8)
+        $previousX = $sx; $previousY = $sy
+      }
+    } finally { $trendPen.Dispose() }
   }
-  for ($si = 0; $si -lt $focusSamples.Count; $si++) {
-    $sx = 155 + $si * 760 / [Math]::Max(1, $focusSamples.Count - 1)
-    $sy = $reactionY + 295 - [double]$focusSamples[$si].ms / $chartMax * 170
-    if ($si -gt 0) {
-      $trendPen = New-Object System.Drawing.Pen ([System.Drawing.ColorTranslator]::FromHtml('#7B9D59')), 2
-      try { $graphics.DrawLine($trendPen, [single]$previousX, [single]$previousY, [single]$sx, [single]$sy) } finally { $trendPen.Dispose() }
-    }
-    $graphics.FillEllipse((Brush '#B9EE64'), [single]($sx - 5), [single]($sy - 5), 10, 10)
-    $previousX = $sx; $previousY = $sy
-    if ($si % [Math]::Max(1, [Math]::Ceiling($focusSamples.Count / 10)) -eq 0) { Draw-Text ([string]($si + 1)) ($sx - 18) ($reactionY + 301) 44 16 '#8BA6B6' }
+  $tickCount = [Math]::Min(9, $maxSamples)
+  for ($ti = 0; $ti -lt $tickCount; $ti++) {
+    $si = [Math]::Round($ti * ($maxSamples - 1) / [Math]::Max(1, $tickCount - 1))
+    $sx = 155 + $si * 760 / [Math]::Max(1, $maxSamples - 1)
+    Draw-Text ([string]($si + 1)) ($sx - 18) ($reactionY + 301) 44 16 '#8BA6B6'
   }
-  if ($focusSamples.Count -eq 0) { Draw-Text 'Geçerli tepki örneği bulunamadı.' 180 ($reactionY + 195) 690 24 '#8BA6B6' }
-  Draw-Text 'TAKIM / MEDYAN' 1000 ($reactionY + 84) 500 18 '#D9E6EE' $true
+  if ($maxSamples -eq 0) { Draw-Text 'Geçerli tepki örneği bulunamadı.' 180 ($reactionY + 195) 690 24 '#8BA6B6' }
+  Draw-Text 'OYUNCU RENGİ / MEDYAN' 984 ($reactionY + 84) 540 18 '#D9E6EE' $true
   $ri = 0
-  foreach ($row in $ownRows) {
+  foreach ($player in $series) {
     $ry = $reactionY + 120 + $ri * 39
-    $samples = @($row.reaction.samples | Where-Object { $null -ne $_ -and $null -ne $_.ms -and [double]$_.ms -ge 50 -and [double]$_.ms -le 1500 })
-    $label = if ($samples.Count -gt 0) { ([string]$row.reaction.medianMs + ' ms / ' + $samples.Count + ' temas') } else { 'Ölçülemedi / 0 temas' }
-    Draw-Text ([string]$row.name) 1000 $ry 240 18 '#D9E6EE' $true
-    Draw-Text $label 1250 $ry 276 17 '#B9CEDC'
+    $samples = $player.Samples
+    $median = if ($null -ne $player.Row.reaction.medianMs) { [string]$player.Row.reaction.medianMs + ' ms' } else { '—' }
+    $label = if ($samples.Count -gt 0) { $median + ' / ' + $samples.Count + ' temas' } else { 'Ölçülemedi / 0 temas' }
+    $graphics.FillEllipse((Brush $player.Color), 982, [single]($ry + 6), 12, 12)
+    Draw-Text ([string]$player.Row.name) 1008 $ry 225 18 $player.Color $true
+    Draw-Text $label 1240 $ry 286 17 '#B9CEDC'
     $ri++
   }
-  $bins = @($focusRow.reaction.histogram | Where-Object { $null -ne $_ })
+  Draw-Text 'TEPKİ DAĞILIMI · çubuklar oyuncunun kendi temasları içindeki payı gösterir' 95 ($reactionY + 335) 1410 15 '#A6BCCB'
   $binLabels = @('50–150 ms', '150–250 ms', '250–400 ms', '400–700 ms', '700–1500 ms')
-  for ($bi = 0; $bi -lt [Math]::Min(5, $bins.Count); $bi++) {
+  $binLimits = @(50, 150, 250, 400, 700, 1500)
+  for ($bi = 0; $bi -lt 5; $bi++) {
     $bx = 95 + $bi * 285
-    $bw = [Math]::Max(0, [double]$bins[$bi].count) / [Math]::Max(1, $focusSamples.Count) * 235
-    Draw-Text $binLabels[$bi] $bx ($reactionY + 345) 260 16 '#8BA6B6'
-    $graphics.FillRectangle((Brush '#253A2D'), [single]$bx, [single]($reactionY + 373), 235, 12)
-    $graphics.FillRectangle((Brush '#B9EE64'), [single]$bx, [single]($reactionY + 373), [single]$bw, 12)
-    Draw-Text ([string]$bins[$bi].count + ' temas') $bx ($reactionY + 390) 260 18 '#D9E6EE'
+    Draw-Text $binLabels[$bi] $bx ($reactionY + 360) 260 16 '#8BA6B6'
+    $ri = 0
+    foreach ($player in $series) {
+      $count = @($player.Samples | Where-Object { [double]$_.ms -ge $binLimits[$bi] -and ([double]$_.ms -lt $binLimits[$bi + 1] -or ($bi -eq 4 -and [double]$_.ms -eq 1500)) }).Count
+      $bw = $count / [Math]::Max(1, $player.Samples.Count) * 200
+      $by = $reactionY + 386 + $ri * 10
+      $graphics.FillRectangle((Brush '#253540'), [single]$bx, [single]$by, 200, 6)
+      if ($bw -gt 0) { $graphics.FillRectangle((Brush $player.Color), [single]$bx, [single]$by, [single]$bw, 6) }
+      $ri++
+    }
   }
   Panel 48 $opponentY 1504 $opponentHeight '#101916' 14 '#38433A'
   Draw-Text 'RAKİP TAKIM' 70 ($opponentY + 18) 380 23 '#CFBE90' $true

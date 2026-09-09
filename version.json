@@ -1,9 +1,10 @@
 {
-  "version": "0.51.4",
+  "version": "0.51.5",
   "githubRepo": "KdvGit1/CsTracer",
-  "releaseDate": "2026-09-08",
-  "title": "TRACER v0.51.4 - Tüm Atışları Göster",
+  "releaseDate": "2026-09-09",
+  "title": "TRACER v0.51.5 - Discord Takım Tepki Grafiği",
   "changelog": [
+    "Discord tepki grafiğinde tüm takım arkadaşları farklı renklerle birlikte gösterilir. Oyuncu renkleri isimler, tepki çizgileri ve dağılım çubuklarında eşleşir; eksik ölçümler sıfır olarak çizilmez.",
     "Düello Analisti atış seçimine Tüm atışlar eklendi. Haritada ve bakış şemasında düellodaki bütün atışlar birlikte gösterilir; senin atışların yeşil, rakibinkiler kırmızıdır. Tek atış ayrıntılarına dönüş korunur.",
     "Düello ekranı yeniden düzenlendi: ayrı düello, tepki süresi ve silah/mesafe sekmeleri; dar pencerelerde taşmayan kartlar ve okunaklı oyuncu karşılaştırması.",
     "Olay anı için gerçek radar üzerinde yakın plan, oyuncu konumları ve seçilebilir atış izleri; bakış açısı için nişangah, rakip yönü ve temsili hedef şeması eklendi. Tahmini atış yönü gerçek mermi izinden ayrılır.",

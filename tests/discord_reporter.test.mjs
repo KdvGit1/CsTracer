@@ -76,6 +76,9 @@ test("Discord webhook doğrulaması yalnız resmî HTTPS uç noktasını kabul e
 
 test("Discord PNG modeli kendi takımı ayrıntılı, rakibi tek kısa tabloda ayırır", () => {
   const match = sampleMatch();
+  for (const [i, report] of match.fullAnalysis.reports.entries()) {
+    if (i !== 8) report.duelAnalyst = { reaction: { medianMs: 200 + i * 10, samples: [{ round: 1, ms: 200 + i * 10 }], histogram: [] } };
+  }
   const model = buildDiscordReportImageModel(match, { steamid: match.fullAnalysis.reports[6].player.steamid });
   const messages = buildDiscordMatchMessages(match, {}, { steamid: match.fullAnalysis.reports[6].player.steamid });
   assert.equal(messages.length, 1);
@@ -84,6 +87,7 @@ test("Discord PNG modeli kendi takımı ayrıntılı, rakibi tek kısa tabloda a
   assert.equal(messages[0].attachments[0].filename, "tracer-match.png");
   assert.deepEqual(model.ownRows.map((row) => row.name), ["Oyuncu 5", "Oyuncu 6", "Oyuncu 7", "Oyuncu 8", "Oyuncu 9"]);
   assert.equal(model.ownRows[1].highlighted, true);
+  assert.deepEqual(model.ownRows.map((row) => row.reaction?.samples[0]?.ms ?? null), [250, 260, 270, null, 290], "tüm takımın kendi ölçümleri korunur; eksik oyuncu sıfırla doldurulmaz");
   assert.equal(model.ownRows[1].movement, "%90");
   assert.equal(model.ownRows[1].spray, "%25/%18");
   assert.deepEqual(model.opponentRows.map((row) => row.name), ["Oyuncu 0", "Oyuncu 1", "Oyuncu 2", "Oyuncu 3", "Oyuncu 4"]);
