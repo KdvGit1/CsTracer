@@ -1,0 +1,17 @@
+# HTTPS için Caddy (otomatik Let's Encrypt). Ücretsiz alan adı için DuckDNS
+# (https://www.duckdns.org) yeterli: alt alan adını Oracle VM'in genel IP'sine yönlendir.
+#
+#   sudo apt install -y caddy
+#   sudo cp Caddyfile.example /etc/caddy/Caddyfile   (alan adını düzenle)
+#   sudo systemctl reload caddy
+#
+# .env: PUBLIC_URL=https://tracer-botum.duckdns.org  HTTP_HOST=127.0.0.1  HTTP_PORT=8787
+
+tracer-botum.duckdns.org {
+	encode gzip
+	# Demo yüklemeleri büyük olabilir (MAX_DEMO_MB ile aynı tut).
+	request_body {
+		max_size 800MB
+	}
+	reverse_proxy 127.0.0.1:8787
+}

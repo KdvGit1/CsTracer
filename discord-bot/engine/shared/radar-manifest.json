@@ -1,0 +1,194 @@
+{
+  "ar_baggage": {
+    "name": "ar_baggage",
+    "label": "Baggage",
+    "image": "/maps/ar_baggage.png",
+    "posX": -1316,
+    "posY": 1288,
+    "scale": 2.539062,
+    "lowerImage": "/maps/ar_baggage_lower.png",
+    "lowerMaxZ": -5
+  },
+  "ar_shoots": {
+    "name": "ar_shoots",
+    "label": "Shoots (Day)",
+    "image": "/maps/ar_shoots.png",
+    "posX": -1368,
+    "posY": 1952,
+    "scale": 2.6875
+  },
+  "ar_shoots_night": {
+    "name": "ar_shoots_night",
+    "label": "Shoots (Night)",
+    "image": "/maps/ar_shoots_night.png",
+    "posX": -1368,
+    "posY": 1952,
+    "scale": 2.6875
+  },
+  "cs_italy": {
+    "name": "cs_italy",
+    "label": "Italy",
+    "image": "/maps/cs_italy.png",
+    "posX": -2647,
+    "posY": 2592,
+    "scale": 4.6
+  },
+  "cs_office": {
+    "name": "cs_office",
+    "label": "Office",
+    "image": "/maps/cs_office.png",
+    "posX": -1838,
+    "posY": 1858,
+    "scale": 4.1
+  },
+  "de_ancient": {
+    "name": "de_ancient",
+    "label": "Ancient",
+    "image": "/maps/de_ancient.png",
+    "posX": -2953,
+    "posY": 2164,
+    "scale": 5
+  },
+  "de_ancient_night": {
+    "name": "de_ancient_night",
+    "label": "Ancient",
+    "image": "/maps/de_ancient_night.png",
+    "posX": -2953,
+    "posY": 2164,
+    "scale": 5
+  },
+  "de_anubis": {
+    "name": "de_anubis",
+    "label": "Anubis",
+    "image": "/maps/de_anubis.png",
+    "posX": -2796,
+    "posY": 3328,
+    "scale": 5.22
+  },
+  "de_dust": {
+    "name": "de_dust",
+    "label": "Dust",
+    "image": "/maps/de_dust.png",
+    "posX": -2850,
+    "posY": 4073,
+    "scale": 6
+  },
+  "de_dust2": {
+    "name": "de_dust2",
+    "label": "Dust II",
+    "image": "/maps/de_dust2.png",
+    "posX": -2476,
+    "posY": 3239,
+    "scale": 4.4
+  },
+  "de_inferno": {
+    "name": "de_inferno",
+    "label": "Inferno",
+    "image": "/maps/de_inferno.png",
+    "posX": -2087,
+    "posY": 3870,
+    "scale": 4.9
+  },
+  "de_mirage": {
+    "name": "de_mirage",
+    "label": "Mirage",
+    "image": "/maps/de_mirage.png",
+    "posX": -3230,
+    "posY": 1713,
+    "scale": 5
+  },
+  "de_nuke": {
+    "name": "de_nuke",
+    "label": "Nuke",
+    "image": "/maps/de_nuke.png",
+    "posX": -3453,
+    "posY": 2887,
+    "scale": 7,
+    "lowerImage": "/maps/de_nuke_lower.png",
+    "lowerMaxZ": -495
+  },
+  "de_overpass": {
+    "name": "de_overpass",
+    "label": "Overpass",
+    "image": "/maps/de_overpass.png",
+    "posX": -4831,
+    "posY": 1781,
+    "scale": 5.2
+  },
+  "de_train": {
+    "name": "de_train",
+    "label": "Train",
+    "image": "/maps/de_train.png",
+    "posX": -2308,
+    "posY": 2078,
+    "scale": 4.082077,
+    "lowerImage": "/maps/de_train_lower.png",
+    "lowerMaxZ": -50
+  },
+  "de_vertigo": {
+    "name": "de_vertigo",
+    "label": "Vertigo",
+    "image": "/maps/de_vertigo.png",
+    "posX": -3168,
+    "posY": 1762,
+    "scale": 4,
+    "lowerImage": "/maps/de_vertigo_lower.png",
+    "lowerMaxZ": 11700
+  },
+  "de_poseidon": {
+    "name": "de_poseidon",
+    "label": "Poseidon",
+    "image": "/maps/de_poseidon.png",
+    "posX": -1046.3943,
+    "posY": 1166.3942,
+    "scale": 3.0124886
+  },
+  "de_cache": {
+    "name": "de_cache",
+    "label": "Cache",
+    "image": "/maps/de_cache.png",
+    "posX": -2000,
+    "posY": 3250,
+    "scale": 5.5
+  },
+  "cs_shelter": {
+    "name": "cs_shelter",
+    "label": "Shelter",
+    "image": "/maps/cs_shelter.png",
+    "posX": -3448.7712,
+    "posY": 3805.3228,
+    "scale": 3.311857
+  },
+  "de_boulder": {
+    "name": "de_boulder",
+    "label": "Boulder",
+    "image": "/maps/de_boulder.png",
+    "posX": -3273.4917,
+    "posY": 2930.2207,
+    "scale": 2.8491137
+  },
+  "de_debris": {
+    "name": "de_debris",
+    "label": "Debris",
+    "image": "/maps/de_debris.png",
+    "posX": -3015.2393,
+    "posY": 2919.2393,
+    "scale": 1.9445695
+  },
+  "de_eldorado": {
+    "name": "de_eldorado",
+    "label": "El Dorado",
+    "image": "/maps/de_eldorado.png",
+    "posX": -3548.6814,
+    "posY": 2571.1816,
+    "scale": 2.0656068
+  },
+  "de_fachwerk": {
+    "name": "de_fachwerk",
+    "label": "Fachwerk",
+    "image": "/maps/de_fachwerk.png",
+    "posX": -2311.0767,
+    "posY": 2874.6204,
+    "scale": 2.5537856
+  }
+}

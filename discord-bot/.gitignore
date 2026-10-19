@@ -1,0 +1,14 @@
+node_modules/
+data/
+.env
+.env.*
+!.env.example
+preview/
+e2e-output/
+# Valve radar görselleri: `npm run maps` ile indirilir.
+engine/public/maps/*.png
+engine/public/maps/SOURCE.txt
+*.dem
+*.dem.gz
+*.dem.bz2
+!tests/fixtures/*.dem.bz2

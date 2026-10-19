@@ -1,0 +1,27 @@
+{
+  "name": "tracer-discord-bot",
+  "version": "1.0.0",
+  "description": "TRACER CS2 koçu Discord botu: demo analizi, FACEIT/Steam takibi, kişisel hafıza ve takım koçu",
+  "private": true,
+  "type": "module",
+  "main": "src/index.mjs",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/index.mjs",
+    "deploy-commands": "node --disable-warning=ExperimentalWarning src/deploy-commands.mjs",
+    "maps": "node scripts/update-maps.mjs",
+    "preview": "node --disable-warning=ExperimentalWarning scripts/preview-cards.mjs",
+    "test": "node --disable-warning=ExperimentalWarning --test \"tests/*.test.mjs\"",
+    "check": "node --disable-warning=ExperimentalWarning scripts/check-install.mjs"
+  },
+  "dependencies": {
+    "@laihoe/demoparser2": "0.42.0",
+    "@resvg/resvg-js": "2.6.2",
+    "discord.js": "14.27.0",
+    "globaloffensive": "3.3.0",
+    "steam-user": "5.3.0",
+    "unbzip2-stream": "1.4.3"
+  }
+}

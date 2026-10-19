@@ -26,5 +26,5 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "dist", "release", "work", "runtime", "TEMP", ".wrangler", ".npm-cache"]
+  "exclude": ["node_modules", "dist", "release", "work", "runtime", "TEMP", ".wrangler", ".npm-cache", "discord-bot/node_modules", "discord-bot/data"]
 }

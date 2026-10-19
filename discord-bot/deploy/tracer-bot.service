@@ -1,0 +1,30 @@
+[Unit]
+Description=TRACER CS2 Discord botu
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__BOT_DIR__
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning src/index.mjs
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+# Analiz alt süreci dahil toplam bellek tavanı; 12 GB'lık A1'de sistem için pay bırakır.
+MemoryMax=85%
+TimeoutStopSec=20
+# Sertleştirme: bot yalnız kendi veri klasörüne yazabilir.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=__BOT_DIR__/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
