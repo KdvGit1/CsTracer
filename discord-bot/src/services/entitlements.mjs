@@ -9,10 +9,17 @@ export class Entitlements {
     this.store = store;
     this.config = config;
     this.now = now;
+    this.discoveredOwners = new Set();
+  }
+
+  /** OWNER_IDS boşsa bot açılışta Discord'dan uygulama sahibini öğrenir. */
+  setDiscoveredOwners(ids) {
+    this.discoveredOwners = new Set(ids.map(String).filter((id) => /^\d{16,22}$/.test(id)));
   }
 
   isOwner(userId) {
-    return this.config.ownerIds.includes(String(userId));
+    const id = String(userId);
+    return this.config.ownerIds.includes(id) || this.discoveredOwners.has(id);
   }
 
   /** Discord SKU hakkı (interaction.entitlements) veya elle verilen premium. */

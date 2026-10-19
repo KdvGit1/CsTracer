@@ -68,7 +68,43 @@ node scripts/update-maps.mjs || echo "Uyarı: radar görselleri indirilemedi; so
 mkdir -p "$BOT_DIR/data"
 if [[ ! -f "$BOT_DIR/.env" ]]; then
   cp "$BOT_DIR/.env.example" "$BOT_DIR/.env"
-  echo "==> $BOT_DIR/.env oluşturuldu — DISCORD_TOKEN ve diğer ayarları doldur."
+  echo "==> $BOT_DIR/.env oluşturuldu."
+fi
+
+env_value() { grep -E "^$1=" "$BOT_DIR/.env" | head -1 | cut -d= -f2- || true; }
+set_env() {
+  if grep -qE "^$1=" "$BOT_DIR/.env"; then sed -i "s|^$1=.*|$1=$2|" "$BOT_DIR/.env"; else echo "$1=$2" >> "$BOT_DIR/.env"; fi
+}
+# Discord'a "ben kimim?" diye sorar; token geçerliyse botun kimliğini döndürür.
+bot_id() {
+  local response
+  response="$(curl -s --max-time 15 -H "Authorization: Bot $1" https://discord.com/api/v10/users/@me || true)"
+  printf '%s' "$response" | grep -o '"id": *"[0-9]\{16,22\}"' | head -1 | grep -o '[0-9]\{16,22\}' || true
+}
+
+# Yeni başlayanlar için: yalnız bot token'ı sorulur ve Discord'a sorularak doğrulanır.
+if [[ -z "$(env_value DISCORD_TOKEN)" && -r /dev/tty ]]; then
+  echo
+  echo "==> Discord bot token'ı"
+  echo "    Developer Portal → uygulaman → Bot → Reset Token ile aldığın token'ı yapıştır."
+  echo "    Yazarken ekranda görünmez; yapıştırıp Enter'a bas. (Boş bırakırsan sonra .env'e yazabilirsin.)"
+  for _ in 1 2 3; do
+    read -rsp "    Token: " TOKEN < /dev/tty || TOKEN=""
+    echo
+    TOKEN="$(printf '%s' "$TOKEN" | tr -d '[:space:]')"
+    [[ -z "$TOKEN" ]] && break
+    if [[ ! "$TOKEN" =~ ^[A-Za-z0-9_.-]{50,100}$ ]]; then
+      echo "    Bu bir bot token'ına benzemiyor. Tekrar dene."
+      continue
+    fi
+    BOT_ID="$(bot_id "$TOKEN")"
+    if [[ -n "$BOT_ID" ]]; then
+      set_env DISCORD_TOKEN "$TOKEN"
+      echo "    ✓ Token doğru. Bot kimliği: $BOT_ID"
+      break
+    fi
+    echo "    Discord bu token'ı kabul etmedi. Developer Portal'da Reset Token ile yenisini alıp tekrar dene."
+  done
 fi
 chown -R "$SERVICE_USER:$SERVICE_USER" "$APP_DIR"
 chmod 600 "$BOT_DIR/.env"
@@ -89,11 +125,31 @@ fi
 
 sudo -u "$SERVICE_USER" node --disable-warning=ExperimentalWarning scripts/check-install.mjs || true
 
+TOKEN="$(env_value DISCORD_TOKEN)"
+if [[ -z "$TOKEN" ]]; then
+  cat <<EOF
+
+Kurulum bitti ama bot token'ı girilmedi.
+  1) Token'ı yaz:       sudo nano $BOT_DIR/.env   (DISCORD_TOKEN= satırı)
+  2) Botu başlat:       sudo systemctl restart tracer-bot
+  3) Günlükleri izle:   journalctl -u tracer-bot -f
+EOF
+  exit 0
+fi
+
+echo "==> Bot başlatılıyor"
+systemctl restart tracer-bot.service
+sleep 10
+journalctl -u tracer-bot -n 15 --no-pager || true
+APP_ID="$(bot_id "$TOKEN")"
 cat <<EOF
 
-Kurulum bitti.
-  1) $BOT_DIR/.env dosyasını düzenle:   sudo nano $BOT_DIR/.env
-  2) Botu başlat:                       sudo systemctl start tracer-bot
-  3) Günlükleri izle:                   journalctl -u tracer-bot -f
-  4) Güncellemek için:                  sudo bash $BOT_DIR/deploy/oracle-setup.sh $REPO_URL $BRANCH && sudo systemctl restart tracer-bot
+Bot çalışıyor. Şimdi Discord'a ekle (bağlantıyı tarayıcıda aç):
+  Sunucuna:  https://discord.com/oauth2/authorize?client_id=${APP_ID:-UYGULAMA_ID}&scope=bot+applications.commands&permissions=309237763072
+  Kendine:   https://discord.com/oauth2/authorize?client_id=${APP_ID:-UYGULAMA_ID}&integration_type=1&scope=applications.commands
+Sonra Discord'da /baslat yaz. Komutların görünmesi birkaç dakika sürebilir.
+
+Günlükler:    journalctl -u tracer-bot -f
+Ayarlar:      sudo nano $BOT_DIR/.env   (değiştirince: sudo systemctl restart tracer-bot)
+Güncelleme:   sudo bash $BOT_DIR/deploy/oracle-setup.sh $REPO_URL $BRANCH
 EOF

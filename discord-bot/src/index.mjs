@@ -104,6 +104,20 @@ client.once(Events.ClientReady, async (ready) => {
       log.error("Komutlar kaydedilemedi", redact(error?.message));
     }
   }
+  if (!config.ownerIds.length) {
+    try {
+      const application = await ready.application.fetch();
+      const owner = application.owner;
+      const ids = owner?.members ? [...owner.members.keys()] : owner?.id ? [owner.id] : [];
+      entitlements.setDiscoveredOwners(ids);
+      if (ids.length) log.info(`Bot sahibi Discord'dan öğrenildi (${ids.length} kişi); /admin komutları açık.`);
+    } catch (error) {
+      log.warn("Uygulama sahibi okunamadı; OWNER_IDS ile elle ver.", redact(error?.message));
+    }
+  }
+  const appId = config.clientId || ready.user.id;
+  log.info(`Sunucuna eklemek için: https://discord.com/oauth2/authorize?client_id=${appId}&scope=bot+applications.commands&permissions=309237763072`);
+  log.info(`Kendine eklemek için:  https://discord.com/oauth2/authorize?client_id=${appId}&integration_type=1&scope=applications.commands`);
   for (const guild of ready.guilds.cache.values()) store.touchGuild(guild.id, guild.name);
   app.queue.start();
   app.reporter.start();

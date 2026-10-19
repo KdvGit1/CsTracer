@@ -97,12 +97,11 @@ anında). Elle: `npm run deploy-commands`.
    BRANCH=main
    curl -fsSLO https://raw.githubusercontent.com/KdvGit1/CsTracer/$BRANCH/discord-bot/deploy/oracle-setup.sh
    sudo bash oracle-setup.sh https://github.com/KdvGit1/CsTracer.git $BRANCH
-   sudo nano /opt/tracer/discord-bot/.env      # DISCORD_TOKEN, DISCORD_CLIENT_ID, OWNER_IDS ...
-   sudo systemctl start tracer-bot
-   journalctl -u tracer-bot -f
    ```
    Betik Node 22, yazı tipleri, 4 GB swap, `tracer` kullanıcısı, bağımlılıklar, radar
-   görselleri ve sertleştirilmiş systemd servisini kurar.
+   görselleri ve sertleştirilmiş systemd servisini kurar. Sonunda **yalnız bot token'ını** sorar,
+   Discord'a sorarak doğrular, botu başlatır ve sunucuya ekleme bağlantısını yazar. Uygulama
+   kimliği ve bot sahibi (sen) Discord'dan otomatik öğrenilir.
 3. **İsteğe bağlı web adresi** (yükleme bağlantısı, Steam doğrulama, CS2 canlı): ücretsiz bir
    DuckDNS alt alan adını VM'in genel IP'sine yönlendir, `sudo OPEN_HTTP=1 bash oracle-setup.sh`
    ile 80/443'ü aç, Oracle konsolunda VCN **Security List**'e 80 ve 443 ingress kuralı ekle,
@@ -134,7 +133,8 @@ Bütün ayarlar `.env.example` içinde açıklamalı. Özet:
 
 | Değişken | Açıklama |
 | --- | --- |
-| `DISCORD_TOKEN`, `DISCORD_CLIENT_ID`, `OWNER_IDS` | Zorunlu |
+| `DISCORD_TOKEN` | Zorunlu (tek gereken) |
+| `DISCORD_CLIENT_ID`, `OWNER_IDS` | Boş bırakılabilir; Discord'dan otomatik öğrenilir |
 | `PUBLIC_URL`, `HTTP_PORT`, `HTTP_HOST` | Web yükleme, Steam doğrulama, GSI |
 | `STEAM_API_KEY` | Özel profil adı çözme, Steam adı/avatarı, paylaşım kodu takibi |
 | `STEAM_BOT_USERNAME/PASSWORD/SHARED_SECRET` | Paylaşım kodundan demo (ayrı hesap!) |

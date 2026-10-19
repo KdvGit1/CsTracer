@@ -255,3 +255,12 @@ test("kuyruk: geçersiz dosya anlaşılır hatayla biter; aynı maç yeniden ana
   assert.equal(result.reused, true);
   assert.equal(store.userMatch("u", "faceit_1-aaaa_0").player_name, "Oyuncu2");
 });
+
+test("OWNER_IDS boşsa Discord'dan öğrenilen uygulama sahibi yönetici sayılır", () => {
+  const dir = tempDir();
+  const entitlements = new Entitlements({ store: new Store(dir), config: testConfig(dir, { ownerIds: [] }) });
+  assert.equal(entitlements.isOwner("123456789012345678"), false);
+  entitlements.setDiscoveredOwners(["123456789012345678", "geçersiz"]);
+  assert.equal(entitlements.isOwner("123456789012345678"), true);
+  assert.equal(entitlements.isOwner("geçersiz"), false);
+});
