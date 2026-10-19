@@ -53,6 +53,8 @@ export function loadConfig({ requireToken = true } = {}) {
       username: text("STEAM_BOT_USERNAME"),
       password: text("STEAM_BOT_PASSWORD"),
       sharedSecret: text("STEAM_BOT_SHARED_SECRET"),
+      // Steam'in "bu cihaz tanıdık" kaydı; servis yalnız data klasörüne yazabildiği için orada durur.
+      dataDir: join(dataDir, "steam"),
     },
     faceitApiKey: text("FACEIT_API_KEY"),
     faceitDownloadsToken: text("FACEIT_DOWNLOADS_TOKEN"),

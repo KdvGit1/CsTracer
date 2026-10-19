@@ -9,7 +9,7 @@ import { Store } from "../src/db.mjs";
 import { decrypt, encrypt, hashToken } from "../src/secrets.mjs";
 import { gsiConfig, LiveService, normalizeGsi } from "../src/services/live.mjs";
 import { Reporter, retryDelay } from "../src/services/reporter.mjs";
-import { decodeShareCode, isAuthCode, isShareCode, parseSteamInput } from "../src/services/steam.mjs";
+import { decodeShareCode, isAuthCode, isShareCode, parseSteamInput, SteamService } from "../src/services/steam.mjs";
 import { Entitlements } from "../src/services/entitlements.mjs";
 import { redact, registerSecret } from "../src/log.mjs";
 import { STEAM, syntheticAnalysis, tempDir, testConfig, writeAnalysis } from "./helpers.mjs";
@@ -276,9 +276,19 @@ test(".env'deki boş satırlar varsayılan değere düşer (DATA_DIR= boş)", as
     process.env.TRACER_ENV_FILE = envFile;
     const config = loadConfig();
     assert.equal(config.dataDir, join(BOT_ROOT, "data"));
+    assert.equal(config.steamBot.dataDir, join(BOT_ROOT, "data", "steam"));
     assert.equal(config.logLevel, "info");
     assert.equal(config.httpPort, 8787);
   } finally {
     process.env = saved;
   }
+});
+
+test("Steam bot hesabı kod isteyince bir kez durur; tekrar tekrar giriş denemez", async () => {
+  const steam = new SteamService({ apiKey: "k", bot: { username: "u", password: "p" } });
+  assert.equal(steam.canResolveShareCodes(), true);
+  steam.gcBlocked = "Steam bot hesabı e-posta kodu istiyor (gmail.com).";
+  assert.equal(steam.canResolveShareCodes(), false);
+  await assert.rejects(steam.ensureGc(), /e-posta kodu/);
+  assert.equal(steam.gcReady, null);
 });

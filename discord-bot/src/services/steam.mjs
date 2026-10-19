@@ -72,6 +72,7 @@ export class SteamService {
     this.fetch = fetchImpl;
     this.gc = null;
     this.gcReady = null;
+    this.gcBlocked = null;
   }
 
   get enabled() {
@@ -79,7 +80,7 @@ export class SteamService {
   }
 
   canResolveShareCodes() {
-    return Boolean(this.botConfig?.username && this.botConfig?.password);
+    return Boolean(this.botConfig?.username && this.botConfig?.password) && !this.gcBlocked;
   }
 
   async api(path, params = {}, { allowStatus = [] } = {}) {
@@ -148,22 +149,37 @@ export class SteamService {
   }
 
   async ensureGc() {
+    if (this.gcBlocked) throw new SteamError(this.gcBlocked);
     if (!this.canResolveShareCodes()) throw new SteamError("Paylaşım kodundan demo almak için STEAM_BOT_USERNAME/PASSWORD gerekli.");
     if (this.gcReady) return this.gcReady;
     this.gcReady = (async () => {
       const [{ default: SteamUser }, { default: GlobalOffensive }, totp] = await Promise.all([
         import("steam-user"), import("globaloffensive"), import("steam-totp").catch(() => null),
       ]);
-      const user = new SteamUser({ autoRelogin: true, renewRefreshTokens: true });
+      const user = new SteamUser({ autoRelogin: true, renewRefreshTokens: true, dataDirectory: this.botConfig.dataDir || null });
       const csgo = new GlobalOffensive(user);
       const ready = new Promise((resolve, reject) => {
         const timer = setTimeout(() => reject(new SteamError("Steam oyun koordinatörüne bağlanılamadı (zaman aşımı).", { retryable: true })), 60_000);
         csgo.once("connectedToGC", () => { clearTimeout(timer); resolve(); });
         user.once("error", (error) => { clearTimeout(timer); reject(new SteamError(`Steam bot girişi başarısız: ${error.message}`)); });
+        // Dinleyici yoksa steam-user kodu terminalden bekler; serviste bu sonsuz bekleme ve her
+        // denemede yeni e-posta kodu demektir. Bunun yerine bir kez durup sahibine ne yapacağını söyle.
+        user.on("steamGuard", (domain, _callback, lastCodeWrong) => {
+          const message = domain
+            ? `Steam bot hesabı e-posta kodu istiyor (${domain}). Bu ayrı hesapta Steam Guard'ı kapat veya mobil doğrulayıcının shared_secret'ini STEAM_BOT_SHARED_SECRET'e yaz, sonra botu yeniden başlat.`
+            : `Steam bot hesabı mobil doğrulayıcı kodu istiyor${lastCodeWrong ? " ve verilen kod yanlış" : ""}. STEAM_BOT_SHARED_SECRET'i kontrol et, sonra botu yeniden başlat.`;
+          this.gcBlocked = message;
+          log.warn(message);
+          clearTimeout(timer);
+          reject(new SteamError(message));
+          try { user.logOff(); } catch { /* yok say */ }
+        });
       });
-      user.on("loggedOn", () => {
+      user.on("loggedOn", async () => {
         log.info("Steam bot hesabı giriş yaptı; CS2 koordinatörüne bağlanılıyor.");
         user.setPersona(SteamUser.EPersonaState.Online);
+        // CS2 ücretsiz; hesabın kütüphanesinde yoksa ekle (zaten varsa Steam bir şey yapmaz).
+        await user.requestFreeLicense([730]).catch(() => null);
         user.gamesPlayed([730]);
       });
       user.on("error", (error) => {
@@ -174,7 +190,13 @@ export class SteamService {
       const details = { accountName: this.botConfig.username, password: this.botConfig.password };
       if (this.botConfig.sharedSecret && totp?.default?.generateAuthCode) details.twoFactorCode = totp.default.generateAuthCode(this.botConfig.sharedSecret);
       user.logOn(details);
-      await ready;
+      try {
+        await ready;
+      } catch (error) {
+        // Başarısız denemenin oturumu arkada yeniden bağlanmaya çalışmasın.
+        try { user.logOff(); } catch { /* yok say */ }
+        throw error;
+      }
       this.gc = { user, csgo };
       return this.gc;
     })().catch((error) => {
