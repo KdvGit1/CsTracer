@@ -264,3 +264,21 @@ test("OWNER_IDS boşsa Discord'dan öğrenilen uygulama sahibi yönetici sayıl�
   assert.equal(entitlements.isOwner("123456789012345678"), true);
   assert.equal(entitlements.isOwner("geçersiz"), false);
 });
+
+test(".env'deki boş satırlar varsayılan değere düşer (DATA_DIR= boş)", async () => {
+  const { loadConfig, BOT_ROOT } = await import("../src/config.mjs");
+  const dir = tempDir();
+  const envFile = join(dir, "bos.env");
+  writeFileSync(envFile, "DISCORD_TOKEN=x\nDATA_DIR=\nLOG_LEVEL=\nHTTP_PORT=\n");
+  const saved = { ...process.env };
+  try {
+    for (const key of ["DATA_DIR", "LOG_LEVEL", "HTTP_PORT", "DISCORD_TOKEN"]) delete process.env[key];
+    process.env.TRACER_ENV_FILE = envFile;
+    const config = loadConfig();
+    assert.equal(config.dataDir, join(BOT_ROOT, "data"));
+    assert.equal(config.logLevel, "info");
+    assert.equal(config.httpPort, 8787);
+  } finally {
+    process.env = saved;
+  }
+});

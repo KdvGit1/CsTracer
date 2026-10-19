@@ -25,8 +25,10 @@ function bool(name, fallback) {
   return ["1", "true", "evet", "yes", "on"].includes(raw);
 }
 
+// .env'deki boş satırlar (ör. "DATA_DIR=") ayarlanmamış sayılır ve varsayılan kullanılır.
 function text(name, fallback = "") {
-  return String(process.env[name] ?? fallback).trim();
+  const raw = String(process.env[name] ?? "").trim();
+  return raw || String(fallback).trim();
 }
 
 function snowflakes(name) {

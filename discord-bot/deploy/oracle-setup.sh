@@ -47,8 +47,9 @@ id "$SERVICE_USER" >/dev/null 2>&1 || useradd --system --create-home --home-dir 
 if [[ -n "$REPO_URL" ]]; then
   if [[ -d "$APP_DIR/.git" ]]; then
     echo "==> Depo güncelleniyor"
-    git -C "$APP_DIR" fetch --depth 1 origin "$BRANCH"
-    git -C "$APP_DIR" checkout -B "$BRANCH" FETCH_HEAD
+    # Depo "tracer" kullanıcısına ait; root olarak güncellerken git'in sahiplik uyarısını aş.
+    git -c safe.directory="$APP_DIR" -C "$APP_DIR" fetch --depth 1 origin "$BRANCH"
+    git -c safe.directory="$APP_DIR" -C "$APP_DIR" checkout -f -B "$BRANCH" FETCH_HEAD
   else
     echo "==> Depo klonlanıyor"
     git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
@@ -141,6 +142,14 @@ echo "==> Bot başlatılıyor"
 systemctl restart tracer-bot.service
 sleep 10
 journalctl -u tracer-bot -n 15 --no-pager || true
+if ! systemctl is-active --quiet tracer-bot.service; then
+  cat <<EOF
+
+⚠️  Bot başlatılamadı. Yukarıdaki son satırlar hatayı gösteriyor.
+    Ayrıntı için:  journalctl -u tracer-bot -n 50 --no-pager
+EOF
+  exit 1
+fi
 APP_ID="$(bot_id "$TOKEN")"
 cat <<EOF
 
