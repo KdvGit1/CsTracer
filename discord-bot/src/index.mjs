@@ -23,6 +23,7 @@ import { RadioService } from "./services/radio.mjs";
 import { RadioCatalog } from "./services/radio-catalog.mjs";
 import { Reporter } from "./services/reporter.mjs";
 import { SteamService } from "./services/steam.mjs";
+import { SteamQrLinker } from "./services/steam-qr.mjs";
 import { Tracker } from "./services/tracker.mjs";
 import { WebServer } from "./services/web.mjs";
 
@@ -40,7 +41,7 @@ const faceit = new FaceitService({ apiKey: config.faceitApiKey, downloadsToken: 
 const entitlements = new Entitlements({ store, config });
 // Ses durumları: radyo için kimin hangi ses kanalında olduğunu bilmek gerekir.
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
-const app = new App({ config, features: enabled, store, renderer, steam, faceit, entitlements, secretKey, client });
+const app = new App({ config, features: enabled, store, renderer, steam, steamQr: new SteamQrLinker(), faceit, entitlements, secretKey, client });
 
 app.queue = new AnalysisQueue({ store, config, faceit, steam, hooks: app.queueHooks() });
 app.reporter = new Reporter({ store, client, buildPayload: (item) => app.guildReportPayload(item) });

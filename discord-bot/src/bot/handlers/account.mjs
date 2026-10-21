@@ -1,12 +1,16 @@
 // /baslat ve /hesap: kişiyi tanıma, Steam/FACEIT bağlama, ayarlar ve KVKK silme.
+import { logger, redact } from "../../log.mjs";
 import { FaceitService } from "../../services/faceit.mjs";
 import { isAuthCode, isShareCode } from "../../services/steam.mjs";
+import { AUTH_CODE_PAGE, extractMatchCodes, qrSvg } from "../../services/steam-qr.mjs";
 import { welcomeCardSvg } from "../../render/cards/player.mjs";
 import { fetchAvatar } from "../../render/png.mjs";
 import { encrypt } from "../../secrets.mjs";
 import { DEFAULT_USER_SETTINGS } from "../../db.mjs";
 import { greeting, memberSince } from "../text.mjs";
 import { COLORS, EPHEMERAL, STYLE, button, cid, embed, errorMessage, infoMessage, linkButton, modal, png, row } from "../ui.mjs";
+
+const log = logger("hesap");
 
 const SETTING_LABELS = {
   dmNotify: ["DM bildirimleri", "Analiz bitince ve yeni maç bulununca özelden yaz"],
@@ -33,11 +37,68 @@ export async function baslat(app, interaction, ctx) {
 
 export function steamModal(app, userId) {
   const user = app.store.getUser(userId);
-  return modal(cid("modal", "steam", userId), "Steam hesabını bağla", [
-    { id: "profil", label: "Steam profili / SteamID64", placeholder: "steamcommunity.com/id/... veya 7656119...", value: user?.steam_id || "", max: 200 },
-    { id: "kimlik", label: "Maç geçmişi kimlik kodu (isteğe bağlı)", placeholder: "XXXX-XXXXX-XXXX", required: false, max: 20 },
-    { id: "kod", label: "En son maçının paylaşım kodu (isteğe bağlı)", placeholder: "CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx", required: false, max: 40 },
+  return modal(cid("modal", "steam", userId), "Steam'i elle bağla", [
+    { id: "profil", label: "Steam profilin", placeholder: "steamcommunity.com/id/... veya 7656119...", value: user?.steam_id || "", max: 200 },
+    { id: "kodlar", label: "Steam kod sayfasından kopyaladığın metin", placeholder: "Sayfada Ctrl+A, Ctrl+C yap, buraya yapıştır. Kimlik kodunu ve son maç kodunu ben ayıklarım.", required: false, max: 4000, paragraph: true },
   ]);
+}
+
+const manualButton = (userId) => button(cid("start", "steamform", userId), "QR okutamıyorum, elle gireceğim", { emoji: "⌨️" });
+const codePageButton = () => linkButton(AUTH_CODE_PAGE, "Steam kod sayfası", "🔑");
+
+function qrPayload(image, url, userId) {
+  return {
+    embeds: [embed({
+      title: "📱 Steam'i QR ile bağla",
+      description: [
+        "1. Telefonda **Steam** uygulamasını aç, alttaki **kalkan (Steam Guard)** simgesine dokun.",
+        "2. **QR kodu tara**'ya bas ve bu kodu okut.",
+        "3. **Onayla**'ya bas. Bu kadar!",
+        "",
+        "Bot bu girişle yalnız maç geçmişi kodunu okur ve Steam oturumunu hemen kapatır; şifren ya da oturumun saklanmaz. Onay ekranında konum **Almanya** görünür (botun sunucusu).",
+        "",
+        "⚠️ Steam QR'larını yalnız kendin istediğinde okut: başkasının gönderdiği bir QR hesabını ona açar.",
+      ].join("\n"),
+      image: "attachment://steam-qr.png",
+      color: COLORS.accent,
+      footer: "QR 2 dakika geçerli · telefondaysan aşağıdaki düğmeye dokun",
+    })],
+    files: [png(image, "steam-qr.png")],
+    attachments: [],
+    components: [row(linkButton(url, "Telefondaysan dokun", "📲"), manualButton(userId))],
+  };
+}
+
+/** QR ile bağlama: QR'ı gösterir, okutulunca durumu günceller, onaylanınca hesabı bağlar. */
+async function steamQr(app, interaction) {
+  const userId = interaction.user.id;
+  if (!interaction.deferred && !interaction.replied) await interaction.deferReply({ flags: EPHEMERAL });
+  // Aynı kişi yeniden isterse eski QR geçersiz olur; iki QR aynı anda beklemez.
+  app.qrLinks.get(userId)?.abort();
+  const controller = new AbortController();
+  app.qrLinks.set(userId, controller);
+  try {
+    const result = await app.steamQr.link({
+      signal: controller.signal,
+      onChallenge: async (url) => interaction.editReply(qrPayload(await app.renderer.render(qrSvg(url)), url, userId)),
+      onScanned: () => interaction.editReply({
+        embeds: [embed({ title: "📱 QR okundu", description: "Telefonda **Onayla**'ya bas. Onaylayınca maç geçmişi kodunu alıp Steam oturumunu hemen kapatacağım.", color: COLORS.info })],
+        files: [], attachments: [], components: [],
+      }),
+    });
+    const payload = await finishSteamLink(app, interaction, { ...result, verified: true, analyzeLatest: true });
+    await interaction.editReply({ ...payload, attachments: [] });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      await interaction.editReply({ ...infoMessage("Bu QR'ın yerine yenisi açıldı; en son gelen QR'ı okut."), files: [], attachments: [], components: [] }).catch(() => null);
+      return;
+    }
+    if (!error?.userFacing) log.warn("Steam QR bağlantısı başarısız", redact(error?.stack || error));
+    const message = error?.userFacing ? error.message : "Steam'e bağlanılamadı. Birazdan tekrar dene ya da elle bağla.";
+    await interaction.editReply({ ...errorMessage(message, { components: [row(manualButton(userId), codePageButton())] }), files: [], attachments: [] });
+  } finally {
+    if (app.qrLinks.get(userId) === controller) app.qrLinks.delete(userId);
+  }
 }
 
 export function faceitModal(app, userId) {
@@ -49,7 +110,8 @@ export function faceitModal(app, userId) {
 
 export async function startButton(app, interaction, [, action, ownerId]) {
   if (interaction.user.id !== ownerId) return interaction.reply({ ...infoMessage("Bu düğmeler başkasına ait; kendin için `/baslat` yaz."), flags: EPHEMERAL });
-  if (action === "steam") return interaction.showModal(steamModal(app, ownerId));
+  if (action === "steam") return steamQr(app, interaction);
+  if (action === "steamform") return interaction.showModal(steamModal(app, ownerId));
   if (action === "faceit") return interaction.showModal(faceitModal(app, ownerId));
   if (action === "upload") {
     const link = app.createUploadLink(ownerId, { channelId: interaction.channelId, guildId: interaction.guildId });
@@ -74,22 +136,29 @@ export function uploadMessage(app, link) {
 }
 
 async function linkSteam(app, interaction, { profile, authCode, shareCode }) {
-  const userId = interaction.user.id;
   const auth = String(authCode || "").trim().toUpperCase();
   const code = String(shareCode || "").trim();
   if (auth && !isAuthCode(auth)) return errorMessage("Kimlik kodu XXXX-XXXXX-XXXX biçiminde olmalı. Steam yardım sayfasından alabilirsin.");
   if (code && !isShareCode(code)) return errorMessage("Paylaşım kodu CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx biçiminde olmalı.");
-  if ((auth && !code) || (!auth && code)) return errorMessage("Otomatik takip için kimlik kodu ve son paylaşım kodu birlikte gerekli.");
+  if ((auth && !code) || (!auth && code)) return errorMessage("Otomatik takip için kimlik kodu ve son paylaşım kodu birlikte gerekli. Steam kod sayfasının tamamını kopyalayıp yapıştırırsan ikisini de ben bulurum.");
   let steamId;
   try {
     steamId = await app.steam.resolveSteamId(profile);
   } catch (error) {
     return errorMessage(error.message);
   }
+  return finishSteamLink(app, interaction, { steamId, authCode: auth, shareCode: code });
+}
+
+/** SteamID'yi kişiye bağlar; kodlar varsa otomatik takibi açar ve istenirse son maçı hemen analize alır. */
+async function finishSteamLink(app, interaction, { steamId, verified = false, authCode, shareCode, analyzeLatest = false }) {
+  const userId = interaction.user.id;
+  const auth = String(authCode || "").trim().toUpperCase();
+  const code = String(shareCode || "").trim();
   const existing = app.store.getUser(userId);
   const sameAccount = existing?.steam_id === steamId;
   try {
-    app.store.claimSteamId(userId, steamId, { verified: sameAccount && Boolean(existing?.steam_verified) });
+    app.store.claimSteamId(userId, steamId, { verified: verified || (sameAccount && Boolean(existing?.steam_verified)) });
   } catch (error) {
     return errorMessage(error.message);
   }
@@ -98,29 +167,42 @@ async function linkSteam(app, interaction, { profile, authCode, shareCode }) {
   let summary = { name: "", avatar: "", public: null };
   try { summary = await app.steam.summary(steamId); } catch { /* API anahtarı yoksa ad bilinmez */ }
   app.store.updateUser(userId, { steam_name: summary.name || null, steam_avatar: summary.avatar || null });
-  if (auth && code) {
-    if (!app.features.steam) return errorMessage("Bu botta Steam Web API anahtarı yok; otomatik takip kullanılamıyor. Hesabın yine de bağlandı.");
+  const owner = app.entitlements.isOwner(userId);
+  let tracking;
+  if (!auth || !code) {
+    tracking = analyzeLatest
+      ? "ℹ️ Steam kod sayfasında maç geçmişi kodunu göremedim. Hiç oluşturmadıysan aşağıdaki **Steam kod sayfası**nı aç, **kimlik doğrulama kodu oluştur**'a bas ve `/hesap steam` ile QR'ı bir kez daha okut. Kodun zaten varsa `/baslat` → **Steam bağla** → **elle gir** ile sayfadaki metni yapıştır."
+      : "ℹ️ Otomatik takip için Steam kod sayfasındaki metni de yapıştır (ya da `/hesap steam` ile QR'la bağlan).";
+  } else if (!app.features.steam) {
+    tracking = `⚠️ Otomatik takip için botta Steam Web API anahtarı gerekiyor; ${owner ? "`.env`'e `STEAM_API_KEY` ekleyip botu yeniden başlat, sonra tekrar bağlan." : "bot sahibine haber ver."}`;
+  } else {
     try {
       await app.steam.nextShareCode(steamId, auth, code);
     } catch (error) {
       return errorMessage(`Steam bilgileri doğrulanamadı: ${error.message}`);
     }
     app.store.updateUser(userId, { match_auth_code: encrypt(app.secretKey, auth), last_share_code: code, track_error: null });
+    const downloads = app.steam.canResolveShareCodes();
+    tracking = `🔁 Otomatik takip açık. Yeni Premier/Rekabetçi maçlarını ${app.config.trackerIntervalMin} dakikada bir kontrol edeceğim${downloads ? " ve kendiliğinden analiz edip sana göndereceğim." : `; yeni maç bulununca haber vereceğim.${owner ? ` (🔧 Demoları kendiliğinden indirmek için: ${app.steam.shareCodeBlocker()})` : ""}`}`;
+    const user = app.store.getUser(userId);
+    if (analyzeLatest && downloads && user.settings.autoAnalyze && app.entitlements.analysisAllowance({ userId }).ok) {
+      app.queue.enqueue({ userId, source: { type: "sharecode", shareCode: code }, reply: { dm: true, auto: true }, dedupeKey: `sc:${code}` });
+      app.entitlements.recordAnalysis(userId);
+      tracking += "\n📥 Son maçını da şimdi analiz ediyorum; bitince özelden gelecek.";
+    }
   }
-  const verified = app.store.getUser(userId)?.steam_verified;
-  const verifyLink = !verified ? app.createSteamLoginLink(userId) : null;
+  const verifiedNow = app.store.getUser(userId)?.steam_verified;
+  const verifyLink = !verifiedNow ? app.createSteamLoginLink(userId) : null;
   const lines = [
-    `✅ Steam hesabın bağlandı: **${summary.name || steamId}**${verified ? " (doğrulandı ✓)" : ""}`,
-    auth ? `🔁 Otomatik takip açık. Yeni maçlarını ${app.config.trackerIntervalMin} dakikada bir kontrol edeceğim${app.features.steamDemos ? " ve otomatik analiz edeceğim." : "; demo indirme bu botta kapalı olduğu için yeni maç bulununca haber vereceğim."}` : "ℹ️ Otomatik takip için `/hesap steam` komutuna **kimlik-kodu** ve **son-kod** ekle.",
+    `✅ Steam hesabın bağlandı: **${summary.name || steamId}**${verifiedNow ? " (doğrulandı ✓)" : ""}`,
+    tracking,
+    verified ? "🔒 Steam oturumunu kapattım; giriş bilgilerinden hiçbirini saklamadım." : "",
     summary.public === false ? "⚠️ Steam profilin gizli görünüyor; ad ve avatar okunamayabilir." : "",
     verifyLink ? "🔒 Liderlik tablosunda ✓ işareti ve hesabının başkası tarafından sahiplenilmemesi için Steam ile doğrula:" : "",
   ].filter(Boolean);
   return {
     embeds: [embed({ title: "Steam", description: lines.join("\n"), color: COLORS.accent, thumbnail: summary.avatar || undefined })],
-    components: [row(
-      verifyLink ? linkButton(verifyLink, "Steam ile doğrula", "🔒") : null,
-      linkButton("https://help.steampowered.com/en/wizard/HelpWithGameIssue/?appid=730&issueid=128", "Kimlik kodu nerede?", "❓"),
-    )],
+    components: [row(verifyLink ? linkButton(verifyLink, "Steam ile doğrula", "🔒") : null, codePageButton())],
     files: [],
   };
 }
@@ -158,7 +240,7 @@ export async function modalSubmit(app, interaction, [, kind, ownerId]) {
   await interaction.deferReply({ flags: EPHEMERAL });
   const field = (id) => interaction.fields.getTextInputValue(id) || "";
   const payload = kind === "steam"
-    ? await linkSteam(app, interaction, { profile: field("profil"), authCode: field("kimlik"), shareCode: field("kod") })
+    ? await linkSteam(app, interaction, { profile: field("profil"), ...extractMatchCodes(field("kodlar")) })
     : await linkFaceit(app, interaction, field("kullanici"));
   return interaction.editReply(payload);
 }
@@ -203,9 +285,12 @@ export async function hesap(app, interaction, ctx) {
   const sub = interaction.options.getSubcommand();
   const userId = interaction.user.id;
   if (sub === "steam") {
+    const profile = interaction.options.getString("profil");
+    // Profil verilmediyse en kolay yol: QR.
+    if (!profile) return steamQr(app, interaction);
     await interaction.deferReply({ flags: EPHEMERAL });
     return interaction.editReply(await linkSteam(app, interaction, {
-      profile: interaction.options.getString("profil", true),
+      profile,
       authCode: interaction.options.getString("kimlik-kodu"),
       shareCode: interaction.options.getString("son-kod"),
     }));

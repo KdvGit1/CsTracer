@@ -26,7 +26,7 @@ export function glossaryChoices(query = "") {
 }
 
 export const HELP_SECTIONS = [
-  ["Başlarken", "`/baslat` karşılama · `/hesap steam` ve `/hesap faceit` bağlantı · `/hesap dogrula` Steam ile doğrulama · `/hesap durum` ayarlar"],
+  ["Başlarken", "`/baslat` karşılama · `/hesap steam` QR'ı Steam uygulamasıyla okut, maçların kendiliğinden gelsin · `/hesap faceit` · `/hesap durum` ayarlar"],
   ["Analiz", "`/analiz` dosya, Valve/FACEIT bağlantısı veya paylaşım kodu; boş bırakırsan büyük dosyalar için tek kullanımlık yükleme bağlantısı · `/kuyruk` bekleyen işler"],
   ["Maçların", "`/maclar` filtreli kütüphane · `/mac` takım tablosu, tepki, düello, silah/mesafe ve T tarafı sekmeleri"],
   ["Gelişim", "`/profil` oyuncu kartı · `/gelisim` eğilim grafikleri · `/karsilastir` iki oyuncu · `/faceit` ELO kartı"],

@@ -40,9 +40,9 @@ export const COMMANDS = [
     ...EVERYWHERE,
     options: [
       {
-        type: SUB, name: "steam", description: "Steam hesabını bağla (otomatik maç takibi için kimlik kodu da girebilirsin)",
+        type: SUB, name: "steam", description: "Steam'i bağla: boş bırak, QR'ı Steam uygulamasıyla okut; maçların kendiliğinden gelir",
         options: [
-          { type: STRING, name: "profil", description: "Steam profil bağlantısı, SteamID64 veya özel profil adı", required: true, max_length: 200 },
+          { type: STRING, name: "profil", description: "Boş bırak: QR ile bağlan (önerilen). Ya da profil bağlantın / SteamID64", max_length: 200 },
           { type: STRING, name: "kimlik-kodu", description: "Maç geçmişi kimlik kodu (XXXX-XXXXX-XXXX) — otomatik takip için", max_length: 20 },
           { type: STRING, name: "son-kod", description: "En son maçının paylaşım kodu (CSGO-...) — otomatik takip için", max_length: 40 },
         ],

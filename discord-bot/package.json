@@ -22,7 +22,9 @@
     "@resvg/resvg-js": "2.6.2",
     "discord.js": "14.27.0",
     "globaloffensive": "3.3.0",
+    "steam-session": "1.9.4",
     "steam-user": "5.3.0",
-    "unbzip2-stream": "1.4.3"
+    "unbzip2-stream": "1.4.3",
+    "uqr": "0.1.2"
   }
 }

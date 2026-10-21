@@ -20,6 +20,7 @@ export class App {
     Object.assign(this, services);
     this.cooldowns = new Map();
     this.liveEdits = new Map();
+    this.qrLinks = new Map();
   }
 
   // ---------- Hatırlama ----------

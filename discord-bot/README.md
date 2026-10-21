@@ -25,7 +25,7 @@ olduğun sunucular ve DM'ler arasında seninle gelir.
 | Son 5 maç (tarih sırası) KAST/ADR/HS + önceki 5 ile kıyas | `/profil`, `/gelisim` |
 | Maç kütüphanesi (harita/sonuç/kaynak/arama/sıralama) | `/maclar` |
 | FACEIT bağlantısı, maç geçmişi, Downloads API ile demo, .dem/.dem.gz yükleme | `/hesap faceit`, `/faceit`, `/analiz` |
-| Steam maç takibi | Resmî paylaşım kodu API'si (`/hesap steam` + kimlik kodu); çerez istenmez |
+| Steam maç takibi | `/hesap steam` → QR'ı Steam uygulamasıyla okut; resmî paylaşım kodu API'si, çerez saklanmaz |
 | Discord raporlayıcı: kalıcı kuyruk, tekrar göndermeme, Retry-After, rol bildirimi, forum | `/sunucu kur` (otomatik), 📣 düğmesi |
 | Takım Koçu: roller, T taktikleri (kim nereye, utility zamanı), aşamalı plan | `/takim rapor`, `/takim taktik`, `/takim plan` |
 | Canlı takım planı (GSI ile round round güncellenen mesaj) | `/canli kur` + `/takim canli baslat` |
@@ -79,8 +79,21 @@ Liste `data/radio-stations.json`'da saklanır ve günde bir yenilenir.
    Başka sunuculara istek atılmaz (SSRF koruması); her yönlendirme yeniden doğrulanır.
 4. **Paylaşım kodu:** `/analiz paylasim-kodu:` — botun ayrı bir Steam hesabı (`STEAM_BOT_*`) varsa
    oyun koordinatöründen demo bağlantısı alınır.
-5. **Otomatik takip:** Steam kimlik kodu + son paylaşım kodu veya FACEIT hesabı bağlıysa yeni
-   maçlar `TRACKER_INTERVAL_MIN` dakikada bir aranır. CS2 GSI bağlıysa maç biter bitmez bakılır.
+5. **Otomatik takip:** Steam (QR ile ya da kimlik kodu + son paylaşım kodu) veya FACEIT hesabı
+   bağlıysa yeni maçlar `TRACKER_INTERVAL_MIN` dakikada bir aranır. CS2 GSI bağlıysa maç biter bitmez bakılır.
+
+### Steam'i QR ile bağlama
+
+Oyuncu `/hesap steam` yazar (ya da `/baslat` → **Steam bağla**). Bot bir QR gösterir; oyuncu Steam
+mobil uygulamasında kalkan (Steam Guard) → **QR kodu tara** ile okutup **Onayla**'ya basar. Bot bu
+kısa oturumla yalnız Steam yardım sayfasındaki maç geçmişi kimlik kodunu ve son maç kodunu okur,
+oturumu Steam'de kapatır (`IAuthenticationService/RevokeToken`) ve hiçbir oturum/çerez saklamaz.
+Hesap doğrulanmış olarak bağlanır, otomatik takip açılır ve son maç hemen analize alınır.
+Telefondan girenler QR yerine **Telefondaysan dokun** düğmesini kullanır. Steam uygulaması olmayanlar
+için **elle gir**: kod sayfasının tamamı kopyalanıp yapıştırılır, iki kod otomatik ayıklanır.
+
+Demoların kendiliğinden inmesi için bot sahibinin bir kez `STEAM_API_KEY` ve ayrı bir bot hesabı
+(`STEAM_BOT_USERNAME/PASSWORD`, Steam Guard kapalı) tanımlaması gerekir.
 
 Valve demoları yaklaşık 2–4 hafta saklar. Demo dosyaları analizden sonra silinir; yalnız sonuçlar
 (sıkıştırılmış analiz + kişisel özet) tutulur.
@@ -161,7 +174,8 @@ Bütün ayarlar `.env.example` içinde açıklamalı. Özet:
 
 ## Gizlilik ve güvenlik
 
-- Steam şifresi, çerezi veya oturumu **hiç istenmez**. Steam bağlantısı OpenID ile doğrulanır.
+- Steam şifresi **hiç istenmez**. QR ile bağlanmada bot kısa süreli oturumu yalnız kimlik kodunu
+  okumak için kullanır, hemen kapatır; oturum ve çerez saklanmaz. Web'de bağlantı OpenID ile doğrulanır.
 - Steam maç geçmişi kimlik kodu AES-256-GCM ile şifreli saklanır; sırlar loglarda maskelenir.
 - `/hesap sil` bütün kişisel verileri siler. "Herkese açık profil" kapalıysa kişi liderlik
   tablosunda, karşılaştırmada ve otomatik sunucu raporlarında görünmez.
