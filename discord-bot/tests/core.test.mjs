@@ -285,8 +285,10 @@ test(".env'deki boş satırlar varsayılan değere düşer (DATA_DIR= boş)", as
 });
 
 test("Steam bot hesabı kod isteyince bir kez durur; tekrar tekrar giriş denemez", async () => {
+  assert.match(new SteamService({ apiKey: "k", bot: { username: "u" } }).shareCodeBlocker(), /STEAM_BOT_PASSWORD/);
   const steam = new SteamService({ apiKey: "k", bot: { username: "u", password: "p" } });
   assert.equal(steam.canResolveShareCodes(), true);
+  assert.equal(steam.shareCodeBlocker(), null);
   steam.gcBlocked = "Steam bot hesabı e-posta kodu istiyor (gmail.com).";
   assert.equal(steam.canResolveShareCodes(), false);
   await assert.rejects(steam.ensureGc(), /e-posta kodu/);

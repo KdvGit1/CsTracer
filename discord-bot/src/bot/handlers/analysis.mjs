@@ -42,7 +42,9 @@ export async function analiz(app, interaction) {
     if (!isShareCode(shareCode)) return interaction.reply({ ...errorMessage("Paylaşım kodu CSGO-xxxxx-xxxxx-xxxxx-xxxxx-xxxxx biçiminde olmalı."), flags: EPHEMERAL });
     if (!app.steam.canResolveShareCodes()) {
       const url = app.createUploadLink(userId, { guildId: interaction.guildId, channelId: interaction.channelId, playerHint });
-      return interaction.reply({ ...infoMessage("Bu botta paylaşım kodundan otomatik demo indirme kapalı (bot sahibi bir Steam bot hesabı tanımlamamış). CS2'de **İzle → Maçlarım** bölümünden demoyu indirip yükleyebilirsin.", { components: url ? uploadMessage(app, url).components : [] }), flags: EPHEMERAL });
+      // Bot sahibine neyin eksik olduğunu açıkça söyle; diğerlerine yalnız ne yapabileceklerini.
+      const ownerNote = app.entitlements.isOwner(userId) ? `\n\n🔧 **Bot sahibi olarak sana:** ${app.steam.shareCodeBlocker()}` : "";
+      return interaction.reply({ ...infoMessage(`Bu botta paylaşım kodundan otomatik demo indirme kapalı. CS2'de **İzle → Maçlarım** bölümünden demoyu indirip yükleyebilirsin.${ownerNote}`, { components: url ? uploadMessage(app, url).components : [] }), flags: EPHEMERAL });
     }
     source = { type: "sharecode", shareCode };
     dedupeKey = `sc:${shareCode}`;

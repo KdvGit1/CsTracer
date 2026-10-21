@@ -80,7 +80,14 @@ export class SteamService {
   }
 
   canResolveShareCodes() {
-    return Boolean(this.botConfig?.username && this.botConfig?.password) && !this.gcBlocked;
+    return !this.shareCodeBlocker();
+  }
+
+  /** Paylaşım kodundan demo alınamıyorsa bot sahibine gösterilecek neden; alınabiliyorsa null. */
+  shareCodeBlocker() {
+    if (this.gcBlocked) return this.gcBlocked;
+    const missing = [["STEAM_BOT_USERNAME", this.botConfig?.username], ["STEAM_BOT_PASSWORD", this.botConfig?.password]].filter(([, value]) => !value).map(([name]) => name);
+    return missing.length ? `.env'de boş: ${missing.join(", ")}. Yazdıysan botu yeniden başlat: sudo systemctl restart tracer-bot` : null;
   }
 
   async api(path, params = {}, { allowStatus = [] } = {}) {

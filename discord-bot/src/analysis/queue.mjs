@@ -128,7 +128,7 @@ export class AnalysisQueue {
       return { type: "url", url, matchId: match.id, playedAt: match.timestamp, meta: { mode: "FACEIT", faceit: match, faceitUrl: match.faceitUrl }, source: "faceit" };
     }
     if (source.type === "sharecode") {
-      if (!this.steam?.canResolveShareCodes()) throw new DemoError("Paylaşım kodundan demo almak için botun Steam hesabı yapılandırılmamış. Demo dosyasını /analiz ile yükleyebilirsin.");
+      if (!this.steam?.canResolveShareCodes()) throw new DemoError(this.steam?.gcBlocked || "Paylaşım kodundan demo almak için botun Steam hesabı yapılandırılmamış. Demo dosyasını /analiz ile yükleyebilirsin.");
       const resolved = await this.steam.resolveShareCode(source.shareCode, signal);
       return { type: "url", url: resolved.url, matchId: `steam_${resolved.matchId}`, playedAt: resolved.matchTime, meta: { mode: resolved.mode || "Premier / Rekabetçi", shareCode: source.shareCode }, source: "steam" };
     }
