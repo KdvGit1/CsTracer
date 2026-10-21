@@ -35,6 +35,14 @@ await check("Görsel çizici (@resvg/resvg-js)", async () => {
   const png = await renderPng('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><text x="2" y="15" font-family="Inter" font-size="12">ŞİĞ</text></svg>');
   return `${png.length} bayt PNG`;
 });
+await check("Radyo (ffmpeg + Discord ses)", async () => {
+  const { checkFfmpeg } = await import("../src/services/radio.mjs");
+  const ffmpeg = checkFfmpeg();
+  if (!ffmpeg.ok) throw new Error(ffmpeg.reason);
+  const { generateDependencyReport } = await import("@discordjs/voice");
+  if (!/@snazzah\/davey: \d/.test(generateDependencyReport())) throw new Error("DAVE şifreleme kitaplığı yok");
+  return "hazır";
+}, "sudo apt-get install -y ffmpeg && npm ci --omit=dev");
 await check("Inter yazı tipi", () => {
   const files = readdirSync(join(BOT_ROOT, "assets", "fonts")).filter((file) => file.endsWith(".otf"));
   if (files.length < 5) throw new Error(`${files.length} dosya`);

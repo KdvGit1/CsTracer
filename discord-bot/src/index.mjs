@@ -8,6 +8,7 @@ import { AnalysisQueue } from "./analysis/queue.mjs";
 import { App } from "./bot/app.mjs";
 import { uploadHook } from "./bot/handlers/analysis.mjs";
 import { forgetAnalysis } from "./bot/match-view.mjs";
+import { refreshPanel } from "./bot/handlers/radio.mjs";
 import { handleInteraction } from "./bot/router.mjs";
 import { features, loadConfig } from "./config.mjs";
 import { Store } from "./db.mjs";
@@ -18,6 +19,8 @@ import { loadSecretKey } from "./secrets.mjs";
 import { Entitlements } from "./services/entitlements.mjs";
 import { FaceitService } from "./services/faceit.mjs";
 import { LiveService } from "./services/live.mjs";
+import { RadioService } from "./services/radio.mjs";
+import { RadioCatalog } from "./services/radio-catalog.mjs";
 import { Reporter } from "./services/reporter.mjs";
 import { SteamService } from "./services/steam.mjs";
 import { Tracker } from "./services/tracker.mjs";
@@ -35,7 +38,8 @@ const renderer = new Renderer();
 const steam = new SteamService({ apiKey: config.steamApiKey, bot: config.steamBot });
 const faceit = new FaceitService({ apiKey: config.faceitApiKey, downloadsToken: config.faceitDownloadsToken, store });
 const entitlements = new Entitlements({ store, config });
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+// Ses durumları: radyo için kimin hangi ses kanalında olduğunu bilmek gerekir.
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
 const app = new App({ config, features: enabled, store, renderer, steam, faceit, entitlements, secretKey, client });
 
 app.queue = new AnalysisQueue({ store, config, faceit, steam, hooks: app.queueHooks() });
@@ -46,6 +50,11 @@ app.live = new LiveService({
     onMatchEnd: (userId) => app.tracker.scheduleSoon(userId),
     onUpdate: (userId, state) => void app.updateLiveBoards(userId, state, { reconcileLiveSession, roundMessageKey, buildRoundMessage }).catch(() => null),
   },
+});
+app.radio = new RadioService({
+  catalog: new RadioCatalog({ file: join(config.dataDir, "radio-stations.json") }),
+  botId: () => client.user?.id || "",
+  onUpdate: (session, event) => void refreshPanel(app, session, event),
 });
 app.web = new WebServer({
   config,
@@ -116,9 +125,16 @@ client.once(Events.ClientReady, async (ready) => {
     }
   }
   const appId = config.clientId || ready.user.id;
-  log.info(`Sunucuna eklemek için: https://discord.com/oauth2/authorize?client_id=${appId}&scope=bot+applications.commands&permissions=309237763072`);
+  log.info(`Sunucuna eklemek için: https://discord.com/oauth2/authorize?client_id=${appId}&scope=bot+applications.commands&permissions=309240908800`);
   log.info(`Kendine eklemek için:  https://discord.com/oauth2/authorize?client_id=${appId}&integration_type=1&scope=applications.commands`);
   for (const guild of ready.guilds.cache.values()) store.touchGuild(guild.id, guild.name);
+  if (!app.radio.ffmpeg.ok) log.warn(`Radyo kapalı: ${app.radio.ffmpeg.reason}`);
+  app.radio.catalog.load();
+  const refreshRadio = () => {
+    if (app.radio.catalog.stale()) app.radio.catalog.refresh().catch((error) => log.warn(error.message));
+  };
+  refreshRadio();
+  setInterval(refreshRadio, 3_600_000).unref();
   app.queue.start();
   app.reporter.start();
   app.tracker.start();
@@ -137,6 +153,7 @@ client.on(Events.GuildDelete, (guild) => {
   store.removeGuild(guild.id);
   log.info(`Sunucudan çıkarıldı: ${guild.name || guild.id}`);
 });
+client.on(Events.VoiceStateUpdate, (oldState, newState) => app.radio.voiceStateUpdate(oldState, newState));
 client.on(Events.EntitlementCreate, (entitlement) => log.info(`Yeni premium hakkı: ${entitlement.userId || entitlement.guildId} (SKU ${entitlement.skuId})`));
 client.on(Events.Error, (error) => log.error("Discord istemci hatası", redact(error?.message)));
 client.on(Events.Warn, (message) => log.warn(redact(message)));
@@ -150,6 +167,7 @@ async function shutdown(signal) {
   app.reporter.stop();
   app.tracker.stop();
   app.web.stop();
+  app.radio.stopAll();
   renderer.close();
   steam.close();
   await client.destroy().catch(() => null);

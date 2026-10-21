@@ -49,8 +49,25 @@ istenmediği için bota eklenmedi; analizin kanıta dayalı notları rapor görs
 | `/sunucu kur · durum · test · kapat · liderlik` | Rapor kanalı, rol, test görseli (Sunucuyu Yönet izni) |
 | `/takim kur · rapor · taktik · plan · canli · liste · sil` | Takım koçu |
 | `/canli kur · durum` | Kişisel CS2 GSI dosyası ve canlı durum |
+| `/radyo cal [istasyon] · dur` | Bulunduğun ses kanalına gelip Türk radyosu çalar (aşağıya bak) |
 | `/sozluk` · `/yardim` · `/premium` · `/admin` | Sözlük, rehber, plan bilgisi, bot sahibi araçları |
 | Sağ tık → Uygulamalar | "TRACER profili", "TRACER ile karşılaştır" |
+
+## Radyo
+
+`/radyo cal` yazan kişinin ses kanalına gelir ve seçilen radyoyu çalar. İstasyon listesi
+[Radio Browser](https://www.radio-browser.info/) açık veritabanından gelir: Türkiye'deki ve
+yurt dışındaki Türkçe yayınların hepsi (yüzlerce istasyon), dinlenme sayısına göre sıralı.
+Liste `data/radio-stations.json`'da saklanır ve günde bir yenilenir.
+
+- **İstasyon seçme:** `istasyon:` alanına yazmaya başla (ör. "kral", "trt", "rap"); boş bırakırsan
+  popüler istasyonlar menüsü gelir.
+- **Panel:** çalan istasyon, logosu ve yayın gönderiyorsa çalan şarkı. Menüden istasyon değiştir,
+  🔀 rastgele, ⏹️ durdur. Botla aynı ses kanalındakiler yönetebilir.
+- **Kendiliğinden:** yayın koparsa yeniden bağlanır; kanalda kimse kalmayınca 2 dakika sonra çıkar.
+- **Bot sahibi** listede olmayan bir yayının bağlantısını (`https://…`) doğrudan çalabilir.
+- **Gerekenler:** sunucuda `ffmpeg` (kurulum betiği kurar) ve botun ses kanalında **Bağlan** ve
+  **Konuş** izni. Analiz sürerken ses takılmasın diye analiz düşük öncelikte çalışır.
 
 ## Demo nasıl gelir?
 
@@ -78,7 +95,7 @@ Valve demoları yaklaşık 2–4 hafta saklar. Demo dosyaları analizden sonra s
 3. **Installation** sekmesi → hem **Guild Install** hem **User Install** açık; Guild Install
    kapsamları `bot` ve `applications.commands`.
 4. Davet bağlantıları (`CLIENT_ID` = Application ID):
-   - Sunucuya ekle: `https://discord.com/oauth2/authorize?client_id=CLIENT_ID&scope=bot+applications.commands&permissions=309237763072`
+   - Sunucuya ekle: `https://discord.com/oauth2/authorize?client_id=CLIENT_ID&scope=bot+applications.commands&permissions=309240908800`
      (Kanalı gör, Mesaj gönder, Bağlantı yerleştir, Dosya ekle, Mesaj geçmişi, Gönderi/başlık aç)
    - Kendine ekle: `https://discord.com/oauth2/authorize?client_id=CLIENT_ID&integration_type=1&scope=applications.commands`
 

@@ -31,6 +31,7 @@ export const HELP_SECTIONS = [
   ["Maçların", "`/maclar` filtreli kütüphane · `/mac` takım tablosu, tepki, düello, silah/mesafe ve T tarafı sekmeleri"],
   ["Gelişim", "`/profil` oyuncu kartı · `/gelisim` eğilim grafikleri · `/karsilastir` iki oyuncu · `/faceit` ELO kartı"],
   ["Sunucu", "`/sunucu kur` maç raporu kanalı ve rol · `/liderlik` sıralama · `/sunucu test` örnek rapor"],
+  ["Radyo", "`/radyo cal` bulunduğun ses kanalına gelip Türk radyosu çalar · `/radyo dur` kapatır · panelden istasyon değiştir"],
   ["Takım koçu", "`/takim kur` beşlini oluştur · `/takim rapor` roller · `/takim taktik` T taktikleri · `/takim plan` maç öncesi plan · `/takim canli baslat` round round canlı tahta"],
   ["Canlı", "`/canli kur` kişisel GSI dosyası: maç bitince yeni demo otomatik aranır"],
   ["Gizlilik", "Steam şifren veya çerezin istenmez. Kimlik kodun şifreli saklanır. `/hesap sil` bütün kişisel verini siler."],

@@ -136,6 +136,18 @@ export const COMMANDS = [
     ],
   },
   {
+    name: "radyo",
+    description: "Bulunduğun ses kanalında Türk radyosu çal",
+    ...GUILD_ONLY,
+    options: [
+      {
+        type: SUB, name: "cal", description: "Ses kanalına gelip radyo çalar (boş bırakırsan popülerlerden seç)",
+        options: [{ type: STRING, name: "istasyon", description: "Radyo adı: yazmaya başla, listeden seç", autocomplete: true, max_length: 300 }],
+      },
+      { type: SUB, name: "dur", description: "Radyoyu kapat ve ses kanalından çık" },
+    ],
+  },
+  {
     name: "sunucu",
     description: "Sunucu ayarları: maç raporu kanalı, rol bildirimi, test",
     ...GUILD_ONLY,

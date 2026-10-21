@@ -8,6 +8,7 @@ import * as analysis from "./handlers/analysis.mjs";
 import * as guild from "./handlers/guild.mjs";
 import * as matches from "./handlers/matches.mjs";
 import * as misc from "./handlers/misc.mjs";
+import * as radio from "./handlers/radio.mjs";
 import * as squad from "./handlers/squad.mjs";
 import * as stats from "./handlers/stats.mjs";
 import { glossaryChoices } from "./text.mjs";
@@ -33,6 +34,7 @@ const COMMANDS = {
   sozluk: misc.sozluk,
   premium: misc.premium,
   admin: misc.admin,
+  radyo: radio.radyo,
 };
 
 const COMPONENTS = {
@@ -53,6 +55,7 @@ const COMPONENTS = {
   sqp: squad.squadButton,
   sqs: squad.strategySelect,
   livestop: squad.liveStopButton,
+  radio: radio.radioComponent,
 };
 
 const MODALS = { modal: account.modalSubmit };
@@ -61,6 +64,7 @@ function autocomplete(app, interaction) {
   const focused = interaction.options.getFocused(true);
   if (interaction.commandName === "mac") return matches.matchAutocomplete(app, interaction);
   if (interaction.commandName === "sozluk") return glossaryChoices(focused.value);
+  if (interaction.commandName === "radyo") return radio.radioAutocomplete(app, interaction);
   if (interaction.commandName === "takim" && focused.name === "takim") return squad.squadAutocomplete(app, interaction);
   return [];
 }

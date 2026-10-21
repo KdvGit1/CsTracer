@@ -4,7 +4,7 @@
 import { fork } from "node:child_process";
 import { existsSync, mkdirSync, statSync } from "node:fs";
 import { rename, rm } from "node:fs/promises";
-import { freemem } from "node:os";
+import { freemem, setPriority } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ANALYSIS_VERSION } from "../../engine/companion/analysis_version.mjs";
@@ -232,6 +232,8 @@ export class AnalysisQueue {
         execArgv: [`--max-old-space-size=${this.config.analysisMemoryMb}`, "--disable-warning=ExperimentalWarning"],
         stdio: ["ignore", "inherit", "inherit", "ipc"],
       });
+      // Analiz işlemciyi doldurur; düşük öncelik bot yanıtlarını ve radyo sesini akıcı tutar.
+      try { setPriority(child.pid, 10); } catch { /* izin yoksa normal öncelik */ }
       let settled = false;
       const finish = (error, value) => {
         if (settled) return;

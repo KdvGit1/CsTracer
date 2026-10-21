@@ -4,7 +4,7 @@
 #   sudo bash oracle-setup.sh                      # depo zaten /opt/tracer'da ise
 #   sudo bash oracle-setup.sh https://github.com/KULLANICI/CsTracer.git [dal]
 #
-# Yaptıkları: Node.js 22, yazı tipleri, 4 GB swap, "tracer" sistem kullanıcısı,
+# Yaptıkları: Node.js 22, ffmpeg (radyo), yazı tipleri, 4 GB swap, "tracer" sistem kullanıcısı,
 # bağımlılıklar (npm ci), radar görselleri, systemd servisi. İsteğe bağlı olarak
 # OPEN_HTTP=1 ile 80/443 portlarını işletim sistemi güvenlik duvarında açar.
 set -euo pipefail
@@ -22,7 +22,7 @@ fi
 
 echo "==> Sistem paketleri"
 apt-get update -y
-DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git fonts-dejavu-core fonts-noto-core fonts-noto-color-emoji
+DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl git ffmpeg fonts-dejavu-core fonts-noto-core fonts-noto-color-emoji
 
 if ! command -v node >/dev/null || [[ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]]; then
   echo "==> Node.js 22 (NodeSource)"
@@ -154,7 +154,7 @@ APP_ID="$(bot_id "$TOKEN")"
 cat <<EOF
 
 Bot çalışıyor. Şimdi Discord'a ekle (bağlantıyı tarayıcıda aç):
-  Sunucuna:  https://discord.com/oauth2/authorize?client_id=${APP_ID:-UYGULAMA_ID}&scope=bot+applications.commands&permissions=309237763072
+  Sunucuna:  https://discord.com/oauth2/authorize?client_id=${APP_ID:-UYGULAMA_ID}&scope=bot+applications.commands&permissions=309240908800
   Kendine:   https://discord.com/oauth2/authorize?client_id=${APP_ID:-UYGULAMA_ID}&integration_type=1&scope=applications.commands
 Sonra Discord'da /baslat yaz. Komutların görünmesi birkaç dakika sürebilir.
 

@@ -17,6 +17,7 @@
     "check": "node --disable-warning=ExperimentalWarning scripts/check-install.mjs"
   },
   "dependencies": {
+    "@discordjs/voice": "0.19.2",
     "@laihoe/demoparser2": "0.42.0",
     "@resvg/resvg-js": "2.6.2",
     "discord.js": "14.27.0",
